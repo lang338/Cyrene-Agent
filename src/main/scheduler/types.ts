@@ -20,6 +20,14 @@ export interface ScheduledTask {
   allowedToolIds: string[];
   createdAt: string;
   updatedAt: string;
+  /** 新建时预生成的提醒内容（到点直接展示，不再调用模型） */
+  alertContent?: string;
+  /** 预生成失败原因（存在时到点回退为实时执行） */
+  alertContentError?: string;
+  /** 预生成完成时间 */
+  alertPregeneratedAt?: string;
+  /** 预生成进行中标记：此时 alertContent 可能是旧值，runner 不应信任 */
+  alertPregenerating?: boolean;
 }
 
 export interface NewScheduledTaskInput {
@@ -33,7 +41,7 @@ export interface NewScheduledTaskInput {
 
 export type ScheduledTaskPatch = Partial<Pick<
   ScheduledTask,
-  "title" | "prompt" | "enabled" | "schedule" | "nextFireAt" | "lastFiredAt" | "toolMode" | "allowedToolIds"
+  "title" | "prompt" | "enabled" | "schedule" | "nextFireAt" | "lastFiredAt" | "toolMode" | "allowedToolIds" | "alertContent" | "alertContentError" | "alertPregeneratedAt" | "alertPregenerating"
 >>;
 
 export interface ScheduledTaskHistoryEntry {

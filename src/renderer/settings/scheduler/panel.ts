@@ -21,6 +21,18 @@ import {
 } from "./utils";
 import { showModal } from "../shared/modal";
 
+/** 卡片内按钮右侧轻量提示：放在 scheduler-card__action-hint 里，2.5s 后自动消失 */
+function showCardHint(card: HTMLElement, message: string, durationMs = 2500): void {
+  const hint = card.querySelector(".scheduler-card__action-hint") as HTMLDivElement | null;
+  if (!hint) return;
+  hint.textContent = message;
+  hint.classList.add("is-visible");
+  setTimeout(() => {
+    hint.classList.remove("is-visible");
+    setTimeout(() => { if (hint.textContent === message) hint.textContent = ""; }, 300);
+  }, durationMs);
+}
+
 export function setSchedulerStatus(text: string, className = ""): void {
   if (!schedulerSaveStatus) return;
   schedulerSaveStatus.textContent = text;
@@ -59,7 +71,10 @@ export async function renderSchedulerList(): Promise<void> {
         <div class="scheduler-card__title"><span><svg width="16" height="16" viewBox="0 0 48 48" fill="none" aria-hidden="true"><path d="M23.9998 44.3332C34.1251 44.3332 42.3332 36.1251 42.3332 25.9999C42.3332 15.8747 34.1251 7.66656 23.9998 7.66656C13.8746 7.66656 5.6665 15.8747 5.6665 25.9999C5.6665 36.1251 13.8746 44.3332 23.9998 44.3332Z" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/><path d="M23.7594 15.3536L23.7582 26.3624L31.5305 34.1347" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 9.00001L11 4.00001" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><path d="M44 9.00001L37 4.00001" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg></span><strong></strong><span class="scheduler-badge"></span></div>
       </div>
       <div class="scheduler-card__meta"></div>
-      <div class="scheduler-card__actions"></div>
+      <div class="scheduler-card__actions">
+        <div class="scheduler-card__action-buttons"></div>
+        <div class="scheduler-card__action-hint" aria-live="polite"></div>
+      </div>
       <div class="scheduler-history is-hidden"></div>
     `;
     const strong = card.querySelector("strong");
@@ -71,13 +86,13 @@ export async function renderSchedulerList(): Promise<void> {
     }
     const meta = card.querySelector(".scheduler-card__meta");
     if (meta) meta.textContent = `${describeSchedule(task.schedule)} · 下次运行：${formatSchedulerDate(task.nextFireAt)} · 工具：${task.toolMode === "all-enabled" ? "全部已启用工具" : task.allowedToolIds.join(", ") || "无"}`;
-    const actions = card.querySelector(".scheduler-card__actions") as HTMLDivElement | null;
+    const actions = card.querySelector(".scheduler-card__action-buttons") as HTMLDivElement | null;
     if (actions) {
       const fireBtn = document.createElement("button");
       fireBtn.type = "button";
       fireBtn.className = "ghost-btn";
       fireBtn.textContent = "立即运行";
-      fireBtn.addEventListener("click", () => void fireSchedulerTask(task.id));
+      fireBtn.addEventListener("click", () => void fireSchedulerTask(task.id, card));
       const editBtn = document.createElement("button");
       editBtn.type = "button";
       editBtn.className = "ghost-btn";
@@ -230,9 +245,15 @@ export async function toggleSchedulerTask(id: string, enabled: boolean): Promise
   await loadSchedulerPanel();
 }
 
-export async function fireSchedulerTask(id: string): Promise<void> {
+export async function fireSchedulerTask(id: string, card?: HTMLElement): Promise<void> {
   const result = await window.cyreneScheduler!.fireNow(id);
-  if (!result.ok) window.alert(result.reason === "task already running" ? "该任务正在运行中" : (result.error ?? result.reason ?? "立即运行失败"));
+  if (!result.ok) {
+    if (result.reason === "not_ready" && card) {
+      showCardHint(card, "昔涟还没准备好哦～");
+      return;
+    }
+    window.alert(result.reason === "task already running" ? "该任务正在运行中" : (result.error ?? result.reason ?? "立即运行失败"));
+  }
 }
 
 export async function deleteSchedulerTask(id: string): Promise<void> {

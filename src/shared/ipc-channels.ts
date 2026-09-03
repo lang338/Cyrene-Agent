@@ -262,6 +262,10 @@ export const IPC = {
   SCHEDULER_GET_HISTORY: "scheduler:get-history",
   SCHEDULER_GET_TOOLS: "scheduler:get-tools",
   SCHEDULER_CHANGED: "scheduler:changed",  // main → renderer：任务列表变更通知
+  TASK_ALERT_DATA: "scheduler:task-alert-data", // main → renderer：提醒弹窗任务数据
+  TASK_ALERT_AUDIO: "scheduler:task-alert-audio", // main → renderer：提醒弹窗语音（base64）
+  TASK_ALERT_MINIMIZE: "scheduler:task-alert-minimize",
+  TASK_ALERT_CLOSE: "scheduler:task-alert-close",
 
   // token usage statistics
   TOKEN_USAGE_GET: "token-usage:get",

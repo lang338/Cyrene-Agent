@@ -5,6 +5,7 @@ import { CyreneAgent, type CyreneRunOptions } from "../orchestrator/cyrene-agent
 import { toolRegistry } from "../orchestrator/tools/registry/tool-registry";
 import { filterToolsForTask } from "./tool-filter";
 import type { ScheduledRunResult, ScheduledTask, ScheduledTaskHistoryEntry } from "./types";
+import type { TaskAlertPayload } from "./task-alert-window";
 
 /**
  * 第一期：scheduler 的 buildOptions 返回"传统"形式（包含 system 消息）。
@@ -22,6 +23,8 @@ interface RunnerDeps {
   recordHistory: (entry: ScheduledTaskHistoryEntry) => void;
   id: () => string;
   now: () => Date;
+  /** 任务结束后弹出提醒窗口（成功/失败都调用），fire-and-forget */
+  showTaskAlert?: (payload: TaskAlertPayload) => void;
 }
 
 /** 定时任务是无人值守的 Work Harness：不询问、不审批，直接执行已分配工具。 */
@@ -37,6 +40,47 @@ export function applyScheduledExecutionPolicy(options: CyreneRunOptions): Cyrene
 
 export function createSchedulerRunner(deps: RunnerDeps) {
   async function runScheduledTask(task: ScheduledTask, _scheduledFireAt: Date, manual: boolean): Promise<ScheduledRunResult> {
+    // 新建任务时已预生成播报内容：到点不再调用模型，直接记录历史并弹窗+播放缓存语音。
+    // 预生成失败（alertContent 为空）或预生成仍在进行中时走下方原有的实时执行路径兜底。
+    const pregenContent = !task.alertPregenerating && typeof task.alertContent === "string"
+      ? task.alertContent.trim()
+      : "";
+    if (pregenContent) {
+      const historyId = deps.id();
+      const startedAt = deps.now();
+      const finishedAt = deps.now();
+      deps.recordHistory({
+        id: historyId,
+        taskId: task.id,
+        taskTitle: task.title,
+        firedAt: startedAt.toISOString(),
+        finishedAt: finishedAt.toISOString(),
+        durationMs: finishedAt.getTime() - startedAt.getTime(),
+        status: "success",
+        reason: "预生成播报",
+        outputPreview: pregenContent.slice(0, 160),
+        effectiveToolIds: [],
+      });
+      const wc = deps.getChatWebContents();
+      if (wc && !wc.isDestroyed()) {
+        wc.send(IPC.SCHEDULER_EVENT, {
+          type: "CUSTOM",
+          name: "scheduler.started",
+          schedulerRunId: historyId,
+          schedulerTaskId: task.id,
+          value: { taskId: task.id, title: task.title, manual, firedAt: startedAt.toISOString(), runId: historyId, pregenerated: true },
+        });
+      }
+      void deps.showTaskAlert?.({
+        historyId,
+        taskId: task.id,
+        taskTitle: task.title,
+        content: pregenContent,
+        isError: false,
+      });
+      return { ok: true, historyId, reply: pregenContent, effectiveToolIds: [] };
+    }
+
     const historyId = deps.id();
     const startedAt = deps.now();
     const allTools = toolRegistry.getAllTools();
@@ -121,6 +165,13 @@ export function createSchedulerRunner(deps: RunnerDeps) {
         outputPreview: reply.slice(0, 160),
         effectiveToolIds,
       });
+      void deps.showTaskAlert?.({
+        historyId,
+        taskId: task.id,
+        taskTitle: task.title,
+        content: reply || "（无内容）",
+        isError: false,
+      });
       return { ok: true, historyId, reply, effectiveToolIds };
     } catch (err) {
       const finishedAt = deps.now();
@@ -137,6 +188,13 @@ export function createSchedulerRunner(deps: RunnerDeps) {
         effectiveToolIds,
       });
       send({ type: "RUN_ERROR", message, code: err instanceof AgentRuntimeError ? err.code : undefined, threadId: `scheduler-${task.id}`, runId: historyId, schedulerRunId: historyId, schedulerTaskId: task.id });
+      void deps.showTaskAlert?.({
+        historyId,
+        taskId: task.id,
+        taskTitle: task.title,
+        content: message,
+        isError: true,
+      });
       return { ok: false, historyId, error: message, effectiveToolIds };
     }
   }

@@ -24,6 +24,7 @@ import {
 } from "../settings/settings-facade";
 import {
   getCurrentAppIconPath,
+  getTaskAlertWindow,
   markStartupPhaseReady,
   reactChatWindow,
   setGetCurrentAppIconPath,
@@ -129,7 +130,7 @@ const SPLASH_MIN_MS = 2500;
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 function broadcastToAuxWindows(channel: string, payload: unknown): void {
-  for (const win of [reactChatWindow, sidebarWindow, tasksWindow, settingsWindow]) {
+  for (const win of [reactChatWindow, sidebarWindow, tasksWindow, settingsWindow, getTaskAlertWindow()]) {
     if (win && !win.isDestroyed()) {
       win.webContents.send(channel, payload);
     }
