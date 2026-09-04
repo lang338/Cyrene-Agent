@@ -45,6 +45,7 @@ import { runDocumentIndexJob } from "../rag/document-index-worker";
 import { createLlmClient } from "../services/llm/llm-client";
 import { createTtsSynthesisService } from "../services/tts/tts-synthesis-service";
 import { createEmbeddingIndexService } from "../services/embedding/embedding-index-service";
+import { registerMomentsMediaMatcher } from "../moments/moments-service";
 import {
   addL2MemoryVector,
   deleteUserMemoryVectors,
@@ -80,6 +81,7 @@ import {
 import { memoryStore } from "../memory/memory-store";
 import { backupMemoryRagFiles, reconcileMemoryRag } from "../memory/memory-rag-reconciliation";
 import { registerChatsIpc } from "../chats/chats-ipc";
+import { registerMomentsIpc } from "../moments/moments-ipc";
 import { registerChatUiIpc } from "../chats/chat-ui-ipc";
 import * as chatsStore from "../chats/chats-store";
 import { flush as flushTokenUsage } from "../token-usage-store";
@@ -93,6 +95,8 @@ import { registerCallIpc } from "../call/call-manager";
 import { initSkills, skillRegistry } from "../skills";
 import { createSchedulerSubsystem } from "../scheduler/bootstrap";
 import { createChannelsSubsystem } from "../channels/bootstrap";
+import { createLifecyclePublisher } from "../plugin-host/lifecycle-publisher";
+import { createPendingTurnLifecycle } from "../plugin-host/pending-turn-lifecycle";
 import { startPluginRuntime } from "../plugin-runtime";
 import { createAgentRuntime } from "../orchestrator/agent-runtime";
 import { createRuntimeStateService } from "../orchestrator/runtime-state-service";
@@ -158,6 +162,23 @@ async function reconcileUserMemoryIndex(): Promise<void> {
 export function createDefaultApplicationDependencies(): ApplicationDependencies {
   // Agent Runtime 早于插件管理器构造；通过窄闭包在运行期转发宿主事件，避免反转启动顺序。
   let pluginManager: PluginManager | undefined;
+  // 生命周期事件发布器：插件系统就绪前发布的事件没有监听器，直接丢弃
+  const lifecyclePublisher = createLifecyclePublisher({
+    publish: (event, payload) => pluginManager
+      ? pluginManager.publishHostEvent(event, payload)
+      : Promise.resolve(),
+  });
+  // 桌面轮次协调器：turn:finished 等待"终态 + 渲染端落盘确认"双条件；
+  // 计时器均 unref，应用退出前统一清理，不发布任何事件
+  const pendingTurnLifecycle = createPendingTurnLifecycle({
+    publisher: lifecyclePublisher,
+    onAbandon: (runId, reason) => {
+      console.warn(`[plugins] 桌面轮次事件放弃发布: runId=${runId} reason=${reason}`);
+    },
+  });
+  app.on("will-quit", () => {
+    pendingTurnLifecycle.disposeAll();
+  });
   const readiness = createStartupReadiness();
   const activation = createWindowActivationBroker();
   const shutdown = createShutdownCoordinator({ readiness, timeoutMs: SHUTDOWN_TIMEOUT_MS });
@@ -250,6 +271,10 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         const llmClient = createLlmClient();
         const ttsSynthesisService = createTtsSynthesisService();
         const embeddingIndexService = createEmbeddingIndexService();
+        // Moments 配图：贴图 embedding 索引 getter 晚绑定给 moments-service 模块单例（索引未就绪时纯文字降级）
+        registerMomentsMediaMatcher({
+          getStickerIndex: () => embeddingIndexService.getStickerEmbeddingIndex(),
+        });
         const citaService = createCitaService({ llmClient });
         const socialContextService = createSocialContextService({ llmClient, enqueueLLMTask });
         const proactiveLifecycle = createProactiveLifecycle({ loadGeneralSettings });
@@ -380,6 +405,7 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         publishPluginHostEvent: (event, payload) => pluginManager
           ? pluginManager.publishHostEvent(event, payload)
           : Promise.resolve(),
+        publishToolFinished: (event) => lifecyclePublisher.publishToolFinished(event),
       }),
 
       createChannels: (runtime, services) => createChannelsSubsystem({
@@ -387,12 +413,16 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         ttsSynthesisService: services.tts,
         getReactChatWindow: () => reactChatWindow,
         ipc: shell.ipc,
+        publishLifecycle: lifecyclePublisher,
       }),
 
-      startPlugins: async (services) => {
+      startPlugins: async (services, scheduler) => {
         pluginManager = await startPluginRuntime({
           llmClient: services.llm,
           ipc: shell.ipc,
+          schedulerStore: scheduler.store,
+          // 插件启停后让调度引擎重新归一化逾期任务并重排计时器（不补跑）。
+          onPluginRunningStateChange: () => scheduler.engine.refreshPluginTasks(),
         });
         return pluginManager;
       },
@@ -401,6 +431,10 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         agentRuntime: runtime,
         getReactChatWindow: () => reactChatWindow,
         ipc: shell.ipc,
+        publishLifecycle: lifecyclePublisher,
+        // 插件任务只有在所属插件运行中才允许触发；用户任务不受影响。
+        canRunTask: (task) => !task.ownerPluginId
+          || (pluginManager?.isRunning(task.ownerPluginId) ?? false),
       }),
 
       registerCoreIpc: ({ ipc, runtime, services }) => {
@@ -441,6 +475,7 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
 
         // 聊天会话存储 IPC（chats-store.initialize 建好 cyrene-chats 目录并加载 index）
         registerChatsIpc(ipc);
+        registerMomentsIpc(ipc);
         registerCodeGitIpc({ ipc, service: services.git });
 
         // AG-UI 事件流桥：渲染进程 invoke(AGUI_RUN) → CyreneAgent 跑 Agent 循环 → 事件透传
@@ -450,6 +485,7 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           () => reactChatWindow,
           services.proactive.proactiveConversationLifecycle,
           ipc,
+          pendingTurnLifecycle,
         );
 
         // 应用更新 IPC：安装走受控退出；autoUpdater 兜底路径进入同一协调器

@@ -2,13 +2,18 @@ import { BrowserWindow } from "electron";
 import { IPC } from "../../shared/ipc-channels";
 import { createIpcScope, type IpcScope } from "../application/ipc-scope";
 import type { ToolDefinition } from "../orchestrator/tools/registry/tool-registry";
+import {
+  authorizePluginTaskUpdatePatch,
+  isPluginTaskEffectivelyEnabled,
+  pluginTaskTogglePatch,
+} from "./execution-spec";
 import type { SchedulerEngine } from "./scheduler-engine";
 import { pregenerateTaskAlert } from "./task-alert-pregen";
 import { findAction } from "../../shared/live2d-actions";
 import type { NewScheduledTaskInput, ScheduledTask, ScheduledTaskPatch, SchedulerIpcResult } from "./types";
 
 interface SchedulerStoreLike {
-  getTasks(): unknown[];
+  getTasks(): ScheduledTask[];
   addTask(input: NewScheduledTaskInput): unknown;
   updateTask(id: string, patch: ScheduledTaskPatch): unknown;
   deleteTask(id: string): boolean;
@@ -22,6 +27,19 @@ export interface SchedulerToolInfo {
   description: string;
   enabled: boolean;
   risk: string;
+}
+
+/** 渲染层任务视图：不含授权指纹、用户授权位等宿主内部字段。 */
+export type RendererScheduledTask = Omit<ScheduledTask, "approvalFingerprint" | "pluginUserEnabled">;
+
+/**
+ * 渲染层投影：插件任务的界面启停状态映射为有效授权状态
+ * （用户已确认且执行规格指纹一致），与引擎实际运行判断保持同一口径。
+ */
+export function projectTaskForRenderer(task: ScheduledTask): RendererScheduledTask {
+  const { approvalFingerprint: _fingerprint, pluginUserEnabled: _userEnabled, ...rest } = task;
+  if (!task.ownerPluginId) return rest;
+  return { ...rest, enabled: isPluginTaskEffectivelyEnabled(task) };
 }
 
 /** 通知所有窗口任务列表已变更 */
@@ -86,7 +104,7 @@ export function registerSchedulerIpc(
       });
   };
 
-  ipc.handle(IPC.SCHEDULER_LIST, () => ok(store.getTasks()));
+  ipc.handle(IPC.SCHEDULER_LIST, () => ok(store.getTasks().map(projectTaskForRenderer)));
   ipc.handle(IPC.SCHEDULER_ADD, (_event, input: NewScheduledTaskInput) => {
     try {
       const task = store.addTask(input);
@@ -97,7 +115,12 @@ export function registerSchedulerIpc(
   });
   ipc.handle(IPC.SCHEDULER_UPDATE, (_event, id: string, patch: ScheduledTaskPatch) => {
     try {
-      const task = store.updateTask(id, patch);
+      const current = store.getTasks().find(t => t.id === id);
+      // 插件任务的保存编辑走授权转换：按保存后的规格重算指纹，剔除宿主不变量字段。
+      const effective = current?.ownerPluginId
+        ? authorizePluginTaskUpdatePatch(current, patch)
+        : patch;
+      const task = store.updateTask(id, effective);
       // 标题/提示词变化后重新预生成播报内容
       if (patch.title !== undefined || patch.prompt !== undefined) triggerPregen(task);
       broadcastChanged();
@@ -108,7 +131,14 @@ export function registerSchedulerIpc(
     try { const r = ok(store.deleteTask(id)); broadcastChanged(); return r; } catch (err) { return fail(err); }
   });
   ipc.handle(IPC.SCHEDULER_TOGGLE, (_event, id: string, enabled: boolean) => {
-    try { const r = ok(store.toggleTask(id, enabled)); broadcastChanged(); return r; } catch (err) { return fail(err); }
+    try {
+      const task = store.getTasks().find(t => t.id === id);
+      // 用户任务直接写 enabled；插件任务的启停写授权位，启用时按当前规格写入指纹。
+      const patch = task?.ownerPluginId
+        ? pluginTaskTogglePatch(task, enabled)
+        : { enabled };
+      const r = ok(store.updateTask(id, patch)); broadcastChanged(); return r;
+    } catch (err) { return fail(err); }
   });
   ipc.handle(IPC.SCHEDULER_GET_HISTORY, (_event, taskId: string, limit?: number) => {
     try { return ok(store.getHistory(taskId, limit)); } catch (err) { return fail(err); }

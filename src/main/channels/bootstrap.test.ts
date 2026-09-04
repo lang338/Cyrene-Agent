@@ -4,6 +4,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const channelMocks = vi.hoisted(() => ({
+  resolveBoundConversation: undefined as ((sessionId: string) => string | null) | undefined,
+  bindingResolve: vi.fn(),
+  flush: vi.fn(),
+  listSessions: vi.fn(),
+  getSession: vi.fn(),
   buildAndRunAgent: undefined as ((...args: unknown[]) => Promise<unknown>) | undefined,
   agentError: undefined as Error | undefined,
   agentResult: { reply: "渠道回复", toolResults: [] } as {
@@ -37,8 +42,21 @@ vi.mock("./dispatcher", () => ({
   setDispatcherBroadcastChat: vi.fn(),
   setDispatcherLoadGeneralSettings: vi.fn(),
   setDispatcherLoadRecentHistory: vi.fn(),
+  setDispatcherObserveExternalChat: vi.fn(),
+  setDispatcherResolveBoundConversation: vi.fn((handler) => { channelMocks.resolveBoundConversation = handler; }),
+  setDispatcherLoadBoundConversationHistory: vi.fn(),
+  setDispatcherAppendBoundConversationMessage: vi.fn(),
   setDispatcherSynthesizeTts: vi.fn(),
   formatChannelUserText: vi.fn(() => "渠道问题"),
+}));
+
+vi.mock("./conversation-binding-store", () => ({
+  getChannelConversationBindingStore: () => ({ resolve: channelMocks.bindingResolve, flush: channelMocks.flush }),
+}));
+vi.mock("../chats/chats-store", () => ({
+  listSessions: channelMocks.listSessions,
+  getSession: channelMocks.getSession,
+  appendMessage: vi.fn(),
 }));
 
 // 避免拉起真实 tool registry（会级联 import RAG 等重依赖）
@@ -97,6 +115,25 @@ function makeChannelsDeps(): ChannelsSubsystemDeps {
   };
 }
 
+function makePublishLifecycle() {
+  return {
+    publishTurnStarted: vi.fn(),
+    publishTurnFinished: vi.fn(),
+    publishSchedulerFinished: vi.fn(),
+  };
+}
+
+function makeAgentRuntime(onRunFinished = vi.fn(async () => ({ sticker: null }))) {
+  return {
+    buildOptions: vi.fn(async () => ({
+      options: { executionMode: "chat", conversationMode: "chat" },
+      latestUserText: "unused",
+    })),
+    onRunFinished,
+    buildSchedulerOptions: vi.fn(),
+  } as unknown as ChannelsSubsystemDeps["agentRuntime"];
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   channelMocks.agentError = undefined;
@@ -104,6 +141,27 @@ beforeEach(() => {
 });
 
 describe("createChannelsSubsystem lifecycle", () => {
+  it("resolves bindings from metadata without reading the full conversation", () => {
+    channelMocks.bindingResolve.mockReturnValue("desktop-1");
+    channelMocks.listSessions.mockReturnValue([{ id: "desktop-1" }]);
+    createChannelsSubsystem(makeChannelsDeps());
+    expect(channelMocks.resolveBoundConversation?.("channel:qq:a")).toBe("desktop-1");
+    channelMocks.listSessions.mockReturnValue([]);
+    expect(channelMocks.resolveBoundConversation?.("channel:qq:a")).toBeNull();
+    expect(channelMocks.getSession).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("flushes binding observations after shutdown (failure=%s)", async (fail) => {
+    const lifecycle = { initialize: vi.fn(), start: vi.fn(), shutdown: vi.fn(async () => {
+      expect(channelMocks.flush).not.toHaveBeenCalled();
+      if (fail) throw new Error("shutdown failed");
+    }) };
+    const subsystem = createChannelsSubsystem(makeChannelsDeps(), lifecycle);
+    if (fail) await expect(subsystem.shutdown()).rejects.toThrow("shutdown failed");
+    else await subsystem.shutdown();
+    expect(channelMocks.flush).toHaveBeenCalledOnce();
+  });
+
   it("does not initialize or start channels during construction", () => {
     const lifecycle = { initialize: vi.fn(), start: vi.fn(), shutdown: vi.fn() };
     const subsystem = createChannelsSubsystem(makeChannelsDeps(), lifecycle);
@@ -172,17 +230,12 @@ describe("createChannelsSubsystem lifecycle", () => {
 
   it("渠道成功回复把规范化文本和渠道上下文交给统一收尾路径", async () => {
     const onRunFinished = vi.fn(async () => ({ sticker: null }));
-    const agentRuntime = {
-      buildOptions: vi.fn(async () => ({
-        options: { executionMode: "chat", conversationMode: "chat" },
-        latestUserText: "unused",
-      })),
-      onRunFinished,
-      buildSchedulerOptions: vi.fn(),
-    } as unknown as ChannelsSubsystemDeps["agentRuntime"];
+    const agentRuntime = makeAgentRuntime(onRunFinished);
+    const publishLifecycle = makePublishLifecycle();
     createChannelsSubsystem({
       ...makeChannelsDeps(),
       agentRuntime,
+      publishLifecycle,
     });
 
     const buildAndRunAgent = channelMocks.buildAndRunAgent;
@@ -204,6 +257,31 @@ describe("createChannelsSubsystem lifecycle", () => {
         channel: "telegram",
       },
     );
+
+    // 成功轮次：开始与结束事件各发布一次，携带渠道会话标识与运行 id
+    expect(publishLifecycle.publishTurnStarted).toHaveBeenCalledTimes(1);
+    const startedPayload = publishLifecycle.publishTurnStarted.mock.calls[0][0] as Record<string, unknown>;
+    expect(startedPayload).toMatchObject({
+      source: "channel",
+      channel: "telegram",
+      conversationId: "channel-session",
+      mode: "chat",
+    });
+    expect(typeof startedPayload.runId).toBe("string");
+    // 渠道不写桌面会话 Store，事件不提供消息边界
+    expect("inputMessageId" in startedPayload).toBe(false);
+
+    expect(publishLifecycle.publishTurnFinished).toHaveBeenCalledTimes(1);
+    const finishedPayload = publishLifecycle.publishTurnFinished.mock.calls[0][0] as Record<string, unknown>;
+    expect(finishedPayload).toMatchObject({
+      source: "channel",
+      channel: "telegram",
+      conversationId: "channel-session",
+      runId: startedPayload.runId,
+      mode: "chat",
+      status: "success",
+    });
+    expect(typeof finishedPayload.durationMs).toBe("number");
   });
 
   it("渠道超时终态不进入成功收尾", async () => {
@@ -217,17 +295,12 @@ describe("createChannelsSubsystem lifecycle", () => {
       },
     };
     const onRunFinished = vi.fn(async () => ({ sticker: null }));
-    const agentRuntime = {
-      buildOptions: vi.fn(async () => ({
-        options: { executionMode: "chat", conversationMode: "chat" },
-        latestUserText: "unused",
-      })),
-      onRunFinished,
-      buildSchedulerOptions: vi.fn(),
-    } as unknown as ChannelsSubsystemDeps["agentRuntime"];
+    const agentRuntime = makeAgentRuntime(onRunFinished);
+    const publishLifecycle = makePublishLifecycle();
     createChannelsSubsystem({
       ...makeChannelsDeps(),
       agentRuntime,
+      publishLifecycle,
     });
 
     const buildAndRunAgent = channelMocks.buildAndRunAgent;
@@ -241,22 +314,26 @@ describe("createChannelsSubsystem lifecycle", () => {
 
     expect(result.text).toBe("超时前的部分回复");
     expect(onRunFinished).not.toHaveBeenCalled();
+
+    // 超时终态仍发布一次结束事件，状态与 agent 终态一致
+    expect(publishLifecycle.publishTurnStarted).toHaveBeenCalledTimes(1);
+    expect(publishLifecycle.publishTurnFinished).toHaveBeenCalledTimes(1);
+    expect(publishLifecycle.publishTurnFinished.mock.calls[0][0]).toMatchObject({
+      source: "channel",
+      status: "timeout",
+      conversationId: "channel-session",
+    });
   });
 
   it("渠道执行失败时不进入成功收尾路径", async () => {
     channelMocks.agentError = new Error("渠道执行失败");
     const onRunFinished = vi.fn(async () => ({ sticker: null }));
-    const agentRuntime = {
-      buildOptions: vi.fn(async () => ({
-        options: { executionMode: "chat", conversationMode: "chat" },
-        latestUserText: "unused",
-      })),
-      onRunFinished,
-      buildSchedulerOptions: vi.fn(),
-    } as unknown as ChannelsSubsystemDeps["agentRuntime"];
+    const agentRuntime = makeAgentRuntime(onRunFinished);
+    const publishLifecycle = makePublishLifecycle();
     createChannelsSubsystem({
       ...makeChannelsDeps(),
       agentRuntime,
+      publishLifecycle,
     });
 
     const buildAndRunAgent = channelMocks.buildAndRunAgent;
@@ -269,5 +346,14 @@ describe("createChannelsSubsystem lifecycle", () => {
     }, "channel-session", [])).rejects.toThrow("渠道执行失败");
 
     expect(onRunFinished).not.toHaveBeenCalled();
+
+    // 异常退出也要发布一次 runtime_error 结束事件（finally 路径）
+    expect(publishLifecycle.publishTurnStarted).toHaveBeenCalledTimes(1);
+    expect(publishLifecycle.publishTurnFinished).toHaveBeenCalledTimes(1);
+    expect(publishLifecycle.publishTurnFinished.mock.calls[0][0]).toMatchObject({
+      source: "channel",
+      status: "runtime_error",
+      conversationId: "channel-session",
+    });
   });
 });

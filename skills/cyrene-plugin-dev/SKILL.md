@@ -1,7 +1,7 @@
 ---
 name: cyrene-plugin-dev
 description: 当用户想为 Cyrene 开发插件（扩展昔涟的工具、做插件弹窗、接入渠道）、调试插件报错，或询问插件怎么写时使用。涉及 Cyrene 本体源码的功能开发不使用本 Skill。
-version: 1.1.0
+version: 1.3.0
 effectKind: mutation
 modes:
   - code
@@ -28,7 +28,7 @@ modes:
 2. `references/api-spec.md` —— 完整接口规范（manifest 字段表、ctx API、生命周期、zip 导入限制）
 3. `references/example-walkthrough.md` —— 官方示例插件 system-status 走读，覆盖工具 + 弹窗 + IPC 全部知识点；写新插件前通读一遍
 
-开发版仓库中另有 `docs/plugins/` 文档和 `examples/system-status/` 源码可对照，但以 references/ 为准。
+开发版仓库中另有 `docs/plugins/` 文档和 `examples/` 官方示例（`system-status` 为 JS 全功能走读；`weather-tool`、`long-term-memory`、`scheduled-automation`、`local-asr-contract` 为 TypeScript + SDK 示例，分别覆盖 Secrets/轮次事件冻结分页/调度任务/语音租约契约），以 references/ 为准。
 
 ## 开发流程
 
@@ -44,6 +44,8 @@ modes:
 | 动态上下文插件 | `ctx.registerPromptProvider`：让昔涟主动感知实时状态（天气/日程/番茄钟），无需用户开口问 |
 | 调用 LLM 的插件 | manifest 声明 `"deps": ["llm"]` |
 | 渠道插件 | `ctx.registerChannelAdapter`（进阶，先确认用户真的需要） |
+| 数据服务插件 | `deps` 声明后经 `ctx.deps` 使用：`secrets`（密钥保管）、`conversations`（只读对话分页）、`workspace`（工作区只读绑定）、`scheduler`（自有定时任务） |
+| 语音输入插件 | `deps: ["speech-input"]`：自带 ASR 模型，取独占语音租约后把识别文本提交进正常对话 |
 
 ### 2. 搭骨架
 
@@ -85,6 +87,21 @@ p.register({
 });
 ```
 
+TypeScript 插件优先用官方 SDK 的测试工具（不需要启动 Cyrene）：
+
+```bash
+npm install @playa0v0/cyrene-plugin-sdk
+```
+
+```js
+// 测试脚本：Mock Context 验证 register 契约、工具 id、清理回调
+const { createMockPluginContext, assertPluginTool } = require("@playa0v0/cyrene-plugin-sdk/testing");
+const ctx = createMockPluginContext({ pluginId: "<plugin-id>" });
+await plugin.register(ctx);
+ctx.tools.forEach((t) => assertPluginTool(t, "<plugin-id>"));
+await ctx.dispose();
+```
+
 涉及弹窗的逻辑无法脱离 Electron 验证，跳过此步，靠安装后实测。
 
 ### 5. 打包安装
@@ -101,6 +118,12 @@ p.register({
 1. 聊天窗口插件卡片状态为 `running`
 2. 有弹窗的：点“打开”按钮窗口正常显示、关闭再开正常
 3. 有工具的：对话里问一个应触发工具的问题，确认 AI 调用并转述结果
+
+## 分发与收录
+
+- 插件装好后只在用户本机可用。**用户想让插件被更多人看到/使用时，主动提醒**：可提交 PR 到官方收录仓库 [Cyrene-Plugins](https://github.com/Playa-0v0/Cyrene-Plugins)，审核通过后其他用户可直接下载 ZIP 导入
+- 收录要求（完整规范见仓库 CONTRIBUTING.md）：`plugins/<插件id>/` 下放可直接安装的产物（manifest + 编译后入口 + README）+ `registry.json` 登记 + README「已收录插件」表格加一行；**不要上传 zip**，ZIP 由维护者从审核过的源码统一打包
+- 反过来，用户想安装别人开发的插件：从仓库 README「已收录插件」表格下载 ZIP，走上方导入流程即可
 
 ## 排查既有插件问题
 

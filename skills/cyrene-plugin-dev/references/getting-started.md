@@ -56,6 +56,8 @@ module.exports = {
 
 把 `my-first-plugin` 文件夹压成 zip（整体一个文件夹，或 manifest + 入口放 zip 根目录都行），然后：**Cyrene 聊天窗口 → 插件 → 右上角添加按钮 → 选 zip**。插件默认停用，点击“启用”才真正加载。
 
+想让插件被更多人看到？提交 PR 到官方收录仓库 [Cyrene-Plugins](https://github.com/Playa-0v0/Cyrene-Plugins)，审核通过后其他用户可直接下载 ZIP 导入；想装别人写的插件也去那里找。
+
 ### 5. 验证
 
 对昔涟说“打个招呼”，她会调用工具并转述返回内容；聊天窗口插件卡片状态为 `running` 即成功。
@@ -178,7 +180,7 @@ ctx.registerPromptProvider({
 |---|---|
 | 启用报错“工具 id 必须以 xxx 开头” | 工具 id 没加 `<插件id>_` 前缀 |
 | 启用报错“version 不是 SemVer” | 要写 `1.0.0`，不能 `1.0` / `v1.0` |
-| 启用报错“deps 含未知值” | `deps` 只接受 `channels` / `llm` |
+| 启用报错“deps 含未知值” | `deps` 接受 `channels` / `llm` / `secrets` / `workspace` / `conversations` / `scheduler` / `speech-input` |
 | AI 不用我的工具 | description 没写清使用场景 |
 | 弹窗图片不显示 | 相对路径 + 文件确实打进包 |
 | 改了代码没生效 | 聊天窗口插件面板点“刷新插件”（清模块缓存） |

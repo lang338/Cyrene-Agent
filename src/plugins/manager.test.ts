@@ -122,6 +122,30 @@ describe("PluginManager", () => {
     expect(readFileSync(marker, "utf8")).toBe("core");
   });
 
+  it("普通宿主事件旁路发布，不等待监听器的未决 Promise", async () => {
+    const h = harness();
+    const marker = path.join(tmp, "slow-listener-entered");
+    writeFileSync(
+      path.join(tmp, "demo", "index.cjs"),
+      `const fs = require("node:fs");
+      module.exports = { register(ctx) {
+        ctx.events.on("host:runtime:ready", () => {
+          fs.writeFileSync(${JSON.stringify(marker)}, "entered");
+          return new Promise(() => {});
+        });
+      } };`,
+      "utf8",
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mgr = new PluginManager(h.options);
+    await mgr.start();
+
+    // 监听器返回永不兑现的 Promise：若发布路径等待监听器，这里会一直挂起
+    await mgr.publishHostEvent("runtime:ready", { phase: "core" });
+
+    expect(readFileSync(marker, "utf8")).toBe("entered");
+  });
+
   it("在插件仍可接收时发布插件系统 ready 和 stopping 事件", async () => {
     const h = harness();
     const marker = path.join(tmp, "lifecycle-events");
@@ -472,6 +496,45 @@ describe("PluginManager", () => {
     expect(h.ipc.has("plugin:demo:ping")).toBe(false);
     expect(h.getEnabledMap()).toEqual({});
     expect(mgr.list()).toEqual([]);
+  });
+
+  it("卸载时通过持久化资源清理钩子删除插件名下的定时任务", async () => {
+    const cleaned: string[] = [];
+    const h = harness({
+      loadEnabledMap: () => ({ demo: true }),
+      cleanupPersistentResources: async (pluginId) => {
+        cleaned.push(pluginId);
+      },
+    });
+    h.options.scanRoots = [{ path: path.dirname(fixturePlugin("demo")), source: "user" }];
+    const mgr = new PluginManager(h.options);
+    await mgr.start();
+
+    const result = await mgr.uninstall("demo");
+
+    expect(result.ok).toBe(true);
+    expect(cleaned).toEqual(["demo"]);
+    expect(existsSync(path.join(tmp, "demo"))).toBe(false);
+  });
+
+  it("插件任务清理失败时卸载中止并保留目录，避免留下孤儿任务", async () => {
+    const h = harness({
+      loadEnabledMap: () => ({ demo: true }),
+      cleanupPersistentResources: async () => {
+        throw new Error("task file locked");
+      },
+    });
+    h.options.scanRoots = [{ path: path.dirname(fixturePlugin("demo")), source: "user" }];
+    const pluginDir = path.join(tmp, "demo");
+    const mgr = new PluginManager(h.options);
+    await mgr.start();
+
+    const result = await mgr.uninstall("demo");
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("卸载插件失败（目录未删除）");
+    expect(existsSync(pluginDir)).toBe(true);
+    expect(mgr.list()).toContainEqual(expect.objectContaining({ id: "demo" }));
   });
 
   it("拒绝卸载内置插件", async () => {

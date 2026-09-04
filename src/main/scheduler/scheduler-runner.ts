@@ -1,7 +1,9 @@
 import type { WebContents } from "electron";
 import { IPC } from "../../shared/ipc-channels";
+import type { PluginPromptMode, PluginTurnStatus } from "../../plugins/api";
 import { AgentRuntimeError } from "../orchestrator/agent-runtime-error";
 import { CyreneAgent, type CyreneRunOptions } from "../orchestrator/cyrene-agent";
+import type { LifecyclePublisher } from "../plugin-host/lifecycle-publisher";
 import { toolRegistry } from "../orchestrator/tools/registry/tool-registry";
 import { filterToolsForTask } from "./tool-filter";
 import type { ScheduledRunResult, ScheduledTask, ScheduledTaskHistoryEntry } from "./types";
@@ -25,14 +27,20 @@ interface RunnerDeps {
   now: () => Date;
   /** 任务结束后弹出提醒窗口（成功/失败都调用），fire-and-forget */
   showTaskAlert?: (payload: TaskAlertPayload) => void;
+  /** 生命周期事件发布器；缺省不发布（早期装配与纯策略测试场景）。 */
+  publishLifecycle?: LifecyclePublisher;
 }
 
-/** 定时任务是无人值守的 Work Harness：不询问、不审批，直接执行已分配工具。 */
-export function applyScheduledExecutionPolicy(options: CyreneRunOptions): CyreneRunOptions {
+/**
+ * 定时任务是无人值守的 Work Harness：不询问、不审批，直接执行已分配工具。
+ * 会话模式来自任务冻结的 mode 字段（旧任务默认 work）；执行循环沿用现有
+ * 映射：chat 走 chat loop，其余模式走 work harness。
+ */
+export function applyScheduledExecutionPolicy(options: CyreneRunOptions, mode: PluginPromptMode = "work"): CyreneRunOptions {
   return {
     ...options,
-    executionMode: "work",
-    conversationMode: "work",
+    executionMode: mode === "chat" ? "chat" : "work",
+    conversationMode: mode,
     harnessInteractiveTools: false,
     permissionMode: "allow_all",
   };
@@ -111,6 +119,15 @@ export function createSchedulerRunner(deps: RunnerDeps) {
       value: { taskId: task.id, title: task.title, manual, firedAt: startedAt.toISOString(), runId: historyId },
     });
 
+    // 调度执行没有桌面会话，事件只携带任务与历史标识，不伪造 conversationId
+    deps.publishLifecycle?.publishTurnStarted({
+      source: "scheduler",
+      runId: historyId,
+      mode: task.mode ?? "work",
+      taskId: task.id,
+      schedulerRunId: historyId,
+    });
+
     try {
       const legacyOptions = await deps.buildOptions(task);
       legacyOptions.tools = effectiveTools;
@@ -134,7 +151,7 @@ export function createSchedulerRunner(deps: RunnerDeps) {
         messages,
         toolSystemContent,
         soulSystemBaseContent,
-      });
+      }, task.mode ?? "work");
 
       const agent = new CyreneAgent({ threadId: `scheduler-${task.id}`, description: `Scheduled task: ${task.title}` });
 
@@ -154,16 +171,34 @@ export function createSchedulerRunner(deps: RunnerDeps) {
 
       const finishedAt = deps.now();
       const reply = agent.lastResult?.reply ?? "";
+      const durationMs = finishedAt.getTime() - startedAt.getTime();
+      // Observable 在超时等非成功终态下也会正常 complete：事件状态以 agent 终态为准
+      const status: PluginTurnStatus = agent.lastResult?.terminal?.status ?? "success";
       deps.recordHistory({
         id: historyId,
         taskId: task.id,
         taskTitle: task.title,
         firedAt: startedAt.toISOString(),
         finishedAt: finishedAt.toISOString(),
-        durationMs: finishedAt.getTime() - startedAt.getTime(),
+        durationMs,
         status: "success",
         outputPreview: reply.slice(0, 160),
         effectiveToolIds,
+      });
+      deps.publishLifecycle?.publishTurnFinished({
+        source: "scheduler",
+        runId: historyId,
+        mode: task.mode ?? "work",
+        taskId: task.id,
+        schedulerRunId: historyId,
+        status,
+        durationMs,
+      });
+      deps.publishLifecycle?.publishSchedulerFinished({
+        taskId: task.id,
+        schedulerRunId: historyId,
+        status,
+        durationMs,
       });
       void deps.showTaskAlert?.({
         historyId,
@@ -176,6 +211,22 @@ export function createSchedulerRunner(deps: RunnerDeps) {
     } catch (err) {
       const finishedAt = deps.now();
       const message = err instanceof Error ? err.message : String(err);
+      const durationMs = finishedAt.getTime() - startedAt.getTime();
+      deps.publishLifecycle?.publishTurnFinished({
+        source: "scheduler",
+        runId: historyId,
+        mode: task.mode ?? "work",
+        taskId: task.id,
+        schedulerRunId: historyId,
+        status: "runtime_error",
+        durationMs,
+      });
+      deps.publishLifecycle?.publishSchedulerFinished({
+        taskId: task.id,
+        schedulerRunId: historyId,
+        status: "runtime_error",
+        durationMs,
+      });
       deps.recordHistory({
         id: historyId,
         taskId: task.id,

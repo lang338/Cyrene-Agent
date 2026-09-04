@@ -71,6 +71,7 @@ export function createEmbeddingIndexService(): EmbeddingIndexService {
     })();
   }
 
+
   return {
     getStickerEmbeddingIndex: () => stickerEmbeddingIndex,
     getSceneEmbeddingIndex: () => sceneEmbeddingIndex,
