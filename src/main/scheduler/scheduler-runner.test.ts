@@ -215,3 +215,90 @@ describe("createSchedulerRunner lifecycle events", () => {
     expect(result.ok).toBe(true);
   });
 });
+
+describe("createSchedulerRunner task-alert 快慢路径", () => {
+  it("有预生成内容且不在生成中 → 走快路径：不调 buildOptions，历史标记预生成播报并弹窗", async () => {
+    const showTaskAlert = vi.fn();
+    const deps = makeRunnerDeps({ showTaskAlert });
+    const runner = createSchedulerRunner(deps as never);
+    const result = await runner.runScheduledTask(
+      makeTask({ alertContent: "  预生成的播报  ", alertPregenerating: false }),
+      new Date(),
+      false,
+    );
+
+    expect(result).toMatchObject({ ok: true, reply: "预生成的播报", effectiveToolIds: [] });
+    expect(deps.buildOptions).not.toHaveBeenCalled();
+    expect(deps.recordHistory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "task-1",
+        status: "success",
+        reason: "预生成播报",
+        outputPreview: "预生成的播报",
+      }),
+    );
+    expect(showTaskAlert).toHaveBeenCalledWith({
+      historyId: "hist-1",
+      taskId: "task-1",
+      taskTitle: "每日整理",
+      content: "预生成的播报",
+      isError: false,
+    });
+  });
+
+  it("预生成仍在进行中（alertPregenerating=true）→ 旧 alertContent 不可信，走实时执行", async () => {
+    const showTaskAlert = vi.fn();
+    const deps = makeRunnerDeps({ showTaskAlert });
+    const runner = createSchedulerRunner(deps as never);
+    await runner.runScheduledTask(
+      makeTask({ alertContent: "旧内容", alertPregenerating: true }),
+      new Date(),
+      false,
+    );
+
+    expect(deps.buildOptions).toHaveBeenCalledTimes(1);
+    expect(showTaskAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ content: "调度回复", isError: false }),
+    );
+  });
+
+  it("alertContent 缺失或空白 → 走实时执行", async () => {
+    for (const overrides of [{}, { alertContent: "   " }]) {
+      const deps = makeRunnerDeps();
+      const runner = createSchedulerRunner(deps as never);
+      await runner.runScheduledTask(makeTask(overrides), new Date(), false);
+      expect(deps.buildOptions).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("实时执行成功 → 弹窗推送回复文本", async () => {
+    const showTaskAlert = vi.fn();
+    const deps = makeRunnerDeps({ showTaskAlert });
+    const runner = createSchedulerRunner(deps as never);
+    await runner.runScheduledTask(makeTask(), new Date(), false);
+
+    expect(showTaskAlert).toHaveBeenCalledWith({
+      historyId: "hist-1",
+      taskId: "task-1",
+      taskTitle: "每日整理",
+      content: "调度回复",
+      isError: false,
+    });
+  });
+
+  it("实时执行失败 → 弹窗推送错误原因且 isError=true", async () => {
+    runnerMocks.agentError = new Error("模型请求失败");
+    const showTaskAlert = vi.fn();
+    const deps = makeRunnerDeps({ showTaskAlert });
+    const runner = createSchedulerRunner(deps as never);
+    await runner.runScheduledTask(makeTask(), new Date(), false);
+
+    expect(showTaskAlert).toHaveBeenCalledWith({
+      historyId: "hist-1",
+      taskId: "task-1",
+      taskTitle: "每日整理",
+      content: "模型请求失败",
+      isError: true,
+    });
+  });
+});
