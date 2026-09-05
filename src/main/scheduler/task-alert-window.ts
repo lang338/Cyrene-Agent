@@ -22,6 +22,8 @@ export interface TaskAlertPayload {
 let pendingData: TaskAlertPayload | null = null;
 /** 同理暂存 TTS 语音（缓存命中时 sendTaskAlertAudio 可能早于 did-finish-load） */
 let pendingAudio: { base64: string; format: string } | { error: string } | null = null;
+/** 当前活跃弹窗归属的任务 id：TTS 异步合成完成时校验归属，防止旧任务的语音配新任务的文字 */
+let activeTaskAlertId: string | null = null;
 
 /**
  * 创建/复用定时任务提醒弹窗（右下角置顶，手动关闭）。
@@ -33,6 +35,8 @@ export function showTaskAlertWindow(payload: TaskAlertPayload): void {
     existing.close();
   }
   pendingData = payload;
+  activeTaskAlertId = payload.taskId;
+  pendingAudio = null;
 
   const display = screen.getPrimaryDisplay();
   const { x: dx, y: dy, width: dw, height: dh } = display.workArea;
@@ -66,13 +70,10 @@ export function showTaskAlertWindow(payload: TaskAlertPayload): void {
   window.webContents.on("did-finish-load", () => {
     if (window.isDestroyed()) return;
     if (pendingData) {
-      console.log("[TaskAlert] did-finish-load → 推送 TASK_ALERT_DATA");
       window.webContents.send(IPC.TASK_ALERT_DATA, pendingData);
       pendingData = null;
     }
     if (pendingAudio) {
-      console.log("[TaskAlert] did-finish-load → 推送缓存 TASK_ALERT_AUDIO",
-        "error" in pendingAudio ? `error=${pendingAudio.error}` : `format=${pendingAudio.format}`);
       window.webContents.send(IPC.TASK_ALERT_AUDIO, pendingAudio);
       pendingAudio = null;
     }
@@ -100,10 +101,16 @@ export function showTaskAlertWindow(payload: TaskAlertPayload): void {
   });
 }
 
-/** TTS 就绪后推送语音；弹窗已被用户关掉则静默丢弃。 */
+/** TTS 就绪后推送语音；弹窗已被关掉或已归属其他任务时静默丢弃。 */
 export function sendTaskAlertAudio(
+  taskId: string,
   audio: { base64: string; format: string } | { error: string },
 ): void {
+  // 归属校验：语音合成是异步的，完成时活跃弹窗可能已被其他提醒顶掉
+  if (activeTaskAlertId !== taskId) {
+    console.warn("[TaskAlert] sendTaskAlertAudio: 弹窗已归属其他任务，丢弃过期语音");
+    return;
+  }
   const win = getTaskAlertWindow();
   if (!win || win.isDestroyed()) {
     console.warn("[TaskAlert] sendTaskAlertAudio: 窗口不存在，丢弃语音");
@@ -111,11 +118,8 @@ export function sendTaskAlertAudio(
   }
   // 页面还没加载完（did-finish-load 未触发），先暂存等 did-finish-load 时一起推。
   if (!win.webContents.isLoading()) {
-    console.log("[TaskAlert] 直接推送 TASK_ALERT_AUDIO",
-      "error" in audio ? `error=${audio.error}` : `format=${audio.format}, bytes=${audio.base64.length}`);
     win.webContents.send(IPC.TASK_ALERT_AUDIO, audio);
   } else {
-    console.log("[TaskAlert] 页面仍在加载，暂存 TASK_ALERT_AUDIO");
     pendingAudio = audio;
   }
 }
@@ -125,12 +129,6 @@ export function sendTaskAlertAudio(
  * 失败任务只弹窗展示原因，不合成语音。
  */
 export function notifyTaskResult(payload: TaskAlertPayload): void {
-  console.log("[TaskAlert] notifyTaskResult", JSON.stringify({
-    taskId: payload.taskId,
-    taskTitle: payload.taskTitle,
-    isError: payload.isError,
-    contentLen: payload.content.length,
-  }));
   try {
     showTaskAlertWindow(payload);
   } catch (err) {
@@ -138,20 +136,17 @@ export function notifyTaskResult(payload: TaskAlertPayload): void {
     return;
   }
   if (payload.isError || !payload.content.trim()) {
-    console.log("[TaskAlert] 跳过 TTS：isError=", payload.isError, "content为空=", !payload.content.trim());
     return;
   }
   void synthesizeTaskAlertTts(payload.content)
     .then((audio) => {
       if ("error" in audio) {
         console.warn("[TaskAlert] TTS 合成返回 error:", audio.error);
-      } else {
-        console.log("[TaskAlert] TTS 合成成功 format=", audio.format, "bytes=", audio.base64.length);
       }
-      sendTaskAlertAudio(audio);
+      sendTaskAlertAudio(payload.taskId, audio);
     })
     .catch((err) => {
       console.warn("[TaskAlert] 语音合成异常:", err);
-      sendTaskAlertAudio({ error: err instanceof Error ? err.message : String(err) });
+      sendTaskAlertAudio(payload.taskId, { error: err instanceof Error ? err.message : String(err) });
     });
 }
