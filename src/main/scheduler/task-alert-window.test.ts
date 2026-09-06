@@ -72,15 +72,19 @@ const alertMocks = vi.hoisted(() => {
   const ttsResult: { current: { base64: string; format: string } | { error: string } } = {
     current: { base64: "QUJD", format: "mp3" },
   };
+  /** 置 true 时 screen.getPrimaryDisplay 抛错，驱动真实的窗口创建失败路径 */
+  const displayFailure = { current: false };
 
   return {
     FakeBrowserWindow,
     windowRef,
     ttsResult,
+    displayFailure,
     reset(): void {
       FakeBrowserWindow.instances.length = 0;
       windowRef.current = null;
       ttsResult.current = { base64: "QUJD", format: "mp3" };
+      displayFailure.current = false;
     },
   };
 });
@@ -88,7 +92,10 @@ const alertMocks = vi.hoisted(() => {
 vi.mock("electron", () => ({
   BrowserWindow: alertMocks.FakeBrowserWindow,
   screen: {
-    getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }),
+    getPrimaryDisplay: () => {
+      if (alertMocks.displayFailure.current) throw new Error("显示不可用");
+      return { workArea: { x: 0, y: 0, width: 1920, height: 1080 } };
+    },
   },
   app: { getAppPath: () => "/fake-app" },
 }));
@@ -99,7 +106,7 @@ vi.mock("../windows/window-state", () => ({
   getCurrentAppIconPath: () => "/icon.png",
   getTaskAlertWindow: () => alertMocks.windowRef.current,
   setTaskAlertWindow: (win: unknown) => {
-    alertMocks.windowRef.current = win as typeof alertMocks.FakeBrowserWindow | null;
+    alertMocks.windowRef.current = win as InstanceType<typeof alertMocks.FakeBrowserWindow> | null;
   },
 }));
 
@@ -172,7 +179,7 @@ describe("sendTaskAlertAudio 归属与暂存", () => {
     const win = alertMocks.FakeBrowserWindow.instances[0];
 
     const audio = { base64: "QUJD", format: "mp3" };
-    mod.sendTaskAlertAudio("task-A", audio);
+    mod.sendTaskAlertAudio("hist-1", audio);
     expect(sentTo(win, IPC.TASK_ALERT_AUDIO)).toEqual([]);
 
     win.webContents.emit("did-finish-load");
@@ -186,45 +193,66 @@ describe("sendTaskAlertAudio 归属与暂存", () => {
     win.webContents.emit("did-finish-load");
 
     const audio = { base64: "QUJD", format: "mp3" };
-    mod.sendTaskAlertAudio("task-A", audio);
+    mod.sendTaskAlertAudio("hist-1", audio);
 
     expect(sentTo(win, IPC.TASK_ALERT_AUDIO)).toEqual([audio]);
   });
 
-  it("弹窗已归属其他任务时丢弃过期语音（防串台）", async () => {
+  it("弹窗已归属其他运行时丢弃过期语音（防串台）", async () => {
     const mod = await loadModule();
-    mod.showTaskAlertWindow(makePayload({ taskId: "task-A" }));
-    mod.showTaskAlertWindow(makePayload({ taskId: "task-B", taskTitle: "任务B" }));
+    mod.showTaskAlertWindow(makePayload({ taskId: "task-A", historyId: "hist-1" }));
+    mod.showTaskAlertWindow(makePayload({ taskId: "task-B", taskTitle: "任务B", historyId: "hist-2" }));
     const winB = alertMocks.FakeBrowserWindow.instances[1];
     winB.webContents.emit("did-finish-load");
 
-    mod.sendTaskAlertAudio("task-A", { base64: "QUJD", format: "mp3" });
+    mod.sendTaskAlertAudio("hist-1", { base64: "QUJD", format: "mp3" });
 
     expect(sentTo(winB, IPC.TASK_ALERT_AUDIO)).toEqual([]);
     expect(sentTo(winB, IPC.TASK_ALERT_DATA)).toEqual([
-      makePayload({ taskId: "task-B", taskTitle: "任务B" }),
+      makePayload({ taskId: "task-B", taskTitle: "任务B", historyId: "hist-2" }),
     ]);
+  });
+
+  it("同一任务重跑：旧运行的语音不得配新弹窗（按 historyId 校验归属）", async () => {
+    const mod = await loadModule();
+    const audio = { base64: "QUJD", format: "mp3" };
+    mod.showTaskAlertWindow(makePayload({ taskId: "task-A", historyId: "hist-1" }));
+    // 第一轮的 TTS 尚未就绪，窗口还在加载中
+    mod.sendTaskAlertAudio("hist-1", audio);
+
+    // 同一任务再次触发：新弹窗顶掉旧窗，归属切到 hist-2
+    mod.showTaskAlertWindow(makePayload({ taskId: "task-A", historyId: "hist-2" }));
+    const win2 = alertMocks.FakeBrowserWindow.instances[1];
+    win2.webContents.emit("did-finish-load");
+
+    // 旧运行的语音迟到：任务 id 相同，但运行已过期，必须丢弃
+    mod.sendTaskAlertAudio("hist-1", audio);
+    expect(sentTo(win2, IPC.TASK_ALERT_AUDIO)).toEqual([]);
+
+    // 新运行的语音正常推送
+    mod.sendTaskAlertAudio("hist-2", audio);
+    expect(sentTo(win2, IPC.TASK_ALERT_AUDIO)).toEqual([audio]);
   });
 
   it("新弹窗顶掉旧弹窗时清空暂存的旧语音", async () => {
     const mod = await loadModule();
-    mod.showTaskAlertWindow(makePayload({ taskId: "task-A" }));
+    mod.showTaskAlertWindow(makePayload({ taskId: "task-A", historyId: "hist-1" }));
     // A 的语音在 A 弹窗加载期间就绪，被暂存
-    mod.sendTaskAlertAudio("task-A", { base64: "QUJD", format: "mp3" });
+    mod.sendTaskAlertAudio("hist-1", { base64: "QUJD", format: "mp3" });
 
-    mod.showTaskAlertWindow(makePayload({ taskId: "task-B", taskTitle: "任务B" }));
+    mod.showTaskAlertWindow(makePayload({ taskId: "task-B", taskTitle: "任务B", historyId: "hist-2" }));
     const winB = alertMocks.FakeBrowserWindow.instances[1];
     winB.webContents.emit("did-finish-load");
 
     expect(sentTo(winB, IPC.TASK_ALERT_DATA)).toEqual([
-      makePayload({ taskId: "task-B", taskTitle: "任务B" }),
+      makePayload({ taskId: "task-B", taskTitle: "任务B", historyId: "hist-2" }),
     ]);
     expect(sentTo(winB, IPC.TASK_ALERT_AUDIO)).toEqual([]);
   });
 
   it("窗口不存在时静默丢弃不抛错", async () => {
     const mod = await loadModule();
-    expect(() => mod.sendTaskAlertAudio("task-A", { base64: "QUJD", format: "mp3" })).not.toThrow();
+    expect(() => mod.sendTaskAlertAudio("hist-1", { base64: "QUJD", format: "mp3" })).not.toThrow();
   });
 });
 
@@ -278,9 +306,10 @@ describe("notifyTaskResult", () => {
 
   it("弹窗打开失败时不抛错（fire-and-forget）", async () => {
     const mod = await loadModule();
-    vi.spyOn(mod, "showTaskAlertWindow").mockImplementation(() => {
-      throw new Error("窗口创建失败");
-    });
+    // notifyTaskResult 直接调用模块内 showTaskAlertWindow 绑定，spy 拦不到；
+    // 让 screen.getPrimaryDisplay 抛错走真实失败路径（BrowserWindow 构造前）。
+    alertMocks.displayFailure.current = true;
     expect(() => mod.notifyTaskResult(makePayload())).not.toThrow();
+    expect(alertMocks.FakeBrowserWindow.instances).toHaveLength(0);
   });
 });

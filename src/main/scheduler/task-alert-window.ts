@@ -22,8 +22,9 @@ export interface TaskAlertPayload {
 let pendingData: TaskAlertPayload | null = null;
 /** 同理暂存 TTS 语音（缓存命中时 sendTaskAlertAudio 可能早于 did-finish-load） */
 let pendingAudio: { base64: string; format: string } | { error: string } | null = null;
-/** 当前活跃弹窗归属的任务 id：TTS 异步合成完成时校验归属，防止旧任务的语音配新任务的文字 */
-let activeTaskAlertId: string | null = null;
+/** 当前活跃弹窗归属的运行 id（historyId）：TTS 异步合成完成时校验归属，防止过期语音配新弹窗。
+ *  以运行而非任务为粒度：同一任务的两次触发是两轮独立播报，旧运行的语音同样不得串台。 */
+let activeAlertHistoryId: string | null = null;
 
 /**
  * 创建/复用定时任务提醒弹窗（右下角置顶，手动关闭）。
@@ -35,7 +36,7 @@ export function showTaskAlertWindow(payload: TaskAlertPayload): void {
     existing.close();
   }
   pendingData = payload;
-  activeTaskAlertId = payload.taskId;
+  activeAlertHistoryId = payload.historyId;
   pendingAudio = null;
 
   const display = screen.getPrimaryDisplay();
@@ -101,14 +102,14 @@ export function showTaskAlertWindow(payload: TaskAlertPayload): void {
   });
 }
 
-/** TTS 就绪后推送语音；弹窗已被关掉或已归属其他任务时静默丢弃。 */
+/** TTS 就绪后推送语音；弹窗已被关掉或已归属其他运行时静默丢弃。 */
 export function sendTaskAlertAudio(
-  taskId: string,
+  historyId: string,
   audio: { base64: string; format: string } | { error: string },
 ): void {
   // 归属校验：语音合成是异步的，完成时活跃弹窗可能已被其他提醒顶掉
-  if (activeTaskAlertId !== taskId) {
-    console.warn("[TaskAlert] sendTaskAlertAudio: 弹窗已归属其他任务，丢弃过期语音");
+  if (activeAlertHistoryId !== historyId) {
+    console.warn("[TaskAlert] sendTaskAlertAudio: 弹窗已归属其他运行，丢弃过期语音");
     return;
   }
   const win = getTaskAlertWindow();
@@ -143,10 +144,10 @@ export function notifyTaskResult(payload: TaskAlertPayload): void {
       if ("error" in audio) {
         console.warn("[TaskAlert] TTS 合成返回 error:", audio.error);
       }
-      sendTaskAlertAudio(payload.taskId, audio);
+      sendTaskAlertAudio(payload.historyId, audio);
     })
     .catch((err) => {
       console.warn("[TaskAlert] 语音合成异常:", err);
-      sendTaskAlertAudio(payload.taskId, { error: err instanceof Error ? err.message : String(err) });
+      sendTaskAlertAudio(payload.historyId, { error: err instanceof Error ? err.message : String(err) });
     });
 }

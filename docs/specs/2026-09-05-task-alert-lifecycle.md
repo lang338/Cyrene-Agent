@@ -24,7 +24,7 @@ This feature lives in the scheduler (main process) because it completes the task
 
 ## Data and interfaces
 
-- Task fields (persisted by `scheduler-store`): `alertContent`, `alertContentError`, `alertPregeneratedAt`, `alertPregenerating`. The in-flight flag exists so the runner never trusts a possibly-stale `alertContent` while regeneration is running.
+- Task fields (persisted by `scheduler-store`): `alertContent`, `alertContentError`, `alertPregeneratedAt`, `alertPregenerating`. The in-flight flag exists so the runner never trusts a possibly-stale `alertContent` while regeneration is running. It is an in-process transient: `alertPregenerating` is never trusted from disk and is normalized away on load, so an app exit mid-generation cannot permanently block the fast path or `fireNow`.
 - Dedicated IPC channels (`IPC.TASK_ALERT_DATA` / `IPC.TASK_ALERT_AUDIO` / `IPC.TASK_ALERT_*` control channels) between the main process and the popup page; the popup renderer talks only through the `taskAlert` preload API with context isolation enabled.
 - TTS requests are built by `buildTaskAlertTtsRequest(settings, text)` — a pure function mapping `GeneralSettings` to the engine payload and cache key, shared by both pre-generation warm-up and fire-time synthesis. Its format semantics differ from the channel TTS path: the engine default format is used, not a channel-imposed one.
 - Synthesized audio is written to `cyrene-tts-cache` keyed by engine settings + text, so the fire-time synthesis of the same text is an instant cache hit.
@@ -40,7 +40,7 @@ This feature lives in the scheduler (main process) because it completes the task
 
 ### Voice
 
-- TTS synthesis is asynchronous and may complete at any point relative to the window lifecycle. `sendTaskAlertAudio(taskId, audio)` therefore verifies ownership: if `activeTaskAlertId` no longer matches the payload's task, the audio is dropped (prevents task A's voice over task B's text after a takeover).
+- TTS synthesis is asynchronous and may complete at any point relative to the window lifecycle. `sendTaskAlertAudio(historyId, audio)` therefore verifies ownership by run, not by task: if `activeAlertHistoryId` no longer matches the payload's run, the audio is dropped. Keying on `historyId` also covers repeated runs of the same task (interval tasks, repeated "run now"): a previous run's late audio can never attach to the new popup.
 - If the popup is still loading, the audio is staged and flushed together with the data on `did-finish-load`; otherwise it is pushed immediately.
 - A new alert resets `pendingAudio` before rebuilding the window, so staged audio from the replaced alert can never leak into the replacement.
 

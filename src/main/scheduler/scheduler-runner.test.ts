@@ -41,7 +41,7 @@ function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     title: "每日整理",
     prompt: "整理资料",
     enabled: true,
-    schedule: { kind: "daily", at: "08:00" } as ScheduledTask["schedule"],
+    schedule: { kind: "daily", timeOfDay: "08:00" },
     nextFireAt: null,
     toolMode: "allow-list",
     allowedToolIds: [],
@@ -244,6 +244,41 @@ describe("createSchedulerRunner task-alert 快慢路径", () => {
       content: "预生成的播报",
       isError: false,
     });
+  });
+
+  it("预生成快路径补齐事件序列：播报内容经 TEXT_MESSAGE_* 落入消息体并以 RUN_FINISHED 收尾", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const deps = makeRunnerDeps({
+      getChatWebContents: () => ({
+        isDestroyed: () => false,
+        send: (_channel: string, event: unknown) => void sent.push(event as Record<string, unknown>),
+      }),
+    });
+    const runner = createSchedulerRunner(deps as never);
+    await runner.runScheduledTask(
+      makeTask({ alertContent: "预生成的播报", alertPregenerating: false }),
+      new Date(),
+      false,
+    );
+
+    const types = sent.map((e) => e.type ?? (e.name === "scheduler.started" ? "CUSTOM" : "unknown"));
+    expect(types).toEqual(["CUSTOM", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END", "RUN_FINISHED"]);
+    // 内容事件携带播报文本；全部事件归属同一次运行
+    const contentEvent = sent.find((e) => e.type === "TEXT_MESSAGE_CONTENT");
+    expect(contentEvent).toMatchObject({ delta: "预生成的播报", schedulerRunId: "hist-1", schedulerTaskId: "task-1" });
+    for (const event of sent) expect(event.schedulerRunId).toBe("hist-1");
+  });
+
+  it("agent 终态非 success 时弹窗按失败处理（不播 TTS）", async () => {
+    runnerMocks.agentResult = { reply: "部分回复", terminal: { status: "timeout" } };
+    const showTaskAlert = vi.fn();
+    const deps = makeRunnerDeps({ showTaskAlert });
+    const runner = createSchedulerRunner(deps as never);
+    await runner.runScheduledTask(makeTask(), new Date(), false);
+
+    expect(showTaskAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ content: "部分回复", isError: true }),
+    );
   });
 
   it("预生成仍在进行中（alertPregenerating=true）→ 旧 alertContent 不可信，走实时执行", async () => {

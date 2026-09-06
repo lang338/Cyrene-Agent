@@ -78,6 +78,12 @@ export function createSchedulerRunner(deps: RunnerDeps) {
           schedulerTaskId: task.id,
           value: { taskId: task.id, title: task.title, manual, firedAt: startedAt.toISOString(), runId: historyId, pregenerated: true },
         });
+        // 补齐事件序列：useSchedulerEvents 的加载占位只在 RUN_FINISHED/RUN_ERROR 清除，
+        // 播报内容经 TEXT_MESSAGE_* 事件落入消息体，避免占位气泡永久挂起。
+        wc.send(IPC.SCHEDULER_EVENT, { type: "TEXT_MESSAGE_START", schedulerRunId: historyId, schedulerTaskId: task.id });
+        wc.send(IPC.SCHEDULER_EVENT, { type: "TEXT_MESSAGE_CONTENT", delta: pregenContent, schedulerRunId: historyId, schedulerTaskId: task.id });
+        wc.send(IPC.SCHEDULER_EVENT, { type: "TEXT_MESSAGE_END", schedulerRunId: historyId, schedulerTaskId: task.id });
+        wc.send(IPC.SCHEDULER_EVENT, { type: "RUN_FINISHED", schedulerRunId: historyId, schedulerTaskId: task.id });
       }
       void deps.showTaskAlert?.({
         historyId,
@@ -205,7 +211,8 @@ export function createSchedulerRunner(deps: RunnerDeps) {
         taskId: task.id,
         taskTitle: task.title,
         content: reply || "（无内容）",
-        isError: false,
+        // 终态非 success（timeout/cancelled/runtime_error）时按失败弹窗：不播 TTS
+        isError: status !== "success",
       });
       return { ok: true, historyId, reply, effectiveToolIds };
     } catch (err) {
