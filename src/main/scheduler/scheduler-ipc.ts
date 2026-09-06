@@ -8,6 +8,8 @@ import {
   pluginTaskTogglePatch,
 } from "./execution-spec";
 import type { SchedulerEngine } from "./scheduler-engine";
+import { pregenerateTaskAlert } from "./task-alert-pregen";
+import { findAction } from "../../shared/live2d-actions";
 import type { NewScheduledTaskInput, ScheduledTask, ScheduledTaskPatch, SchedulerIpcResult } from "./types";
 
 interface SchedulerStoreLike {
@@ -57,6 +59,7 @@ export function registerSchedulerIpc(
   engine: SchedulerEngine,
   getTools: () => ToolDefinition[],
   ipcOption?: IpcScope,
+  generateContent?: (task: ScheduledTask) => Promise<string>,
 ): void {
   if (schedulerIpcRegistered) return;
   schedulerIpcRegistered = true;
@@ -65,9 +68,70 @@ export function registerSchedulerIpc(
   const ok = <T>(value: T): SchedulerIpcResult<T> => ({ ok: true, value });
   const fail = (err: unknown): SchedulerIpcResult => ({ ok: false, error: err instanceof Error ? err.message : String(err) });
 
+  /** 每任务预生成令牌：完成回调只在仍是最新请求时写回，防止旧完成覆盖新内容 */
+  const pregenTokens = new Map<string, number>();
+
+  /**
+   * 完成回调守卫：令牌已过期（同任务又发起了新预生成）→ 静默丢弃；
+   * 任务已删除 → 清理令牌并丢弃（updateTask 对不存在任务会抛错）。
+   */
+  const completionCurrent = (id: string, token: number): boolean => {
+    if (pregenTokens.get(id) !== token) return false;
+    if (!store.getTasks().some(t => t.id === id)) {
+      pregenTokens.delete(id);
+      return false;
+    }
+    return true;
+  };
+
+  /** 新建/编辑任务后 fire-and-forget 预生成播报内容 + TTS 暖缓存 */
+  const triggerPregen = (task: unknown): void => {
+    if (!generateContent || !task) return;
+    const scheduled = task as ScheduledTask;
+    const token = (pregenTokens.get(scheduled.id) ?? 0) + 1;
+    pregenTokens.set(scheduled.id, token);
+    // 立即标记「预生成中」并清掉旧的 alertContent，防止 fireNow 在预生成完成前
+    // 拿到过期的旧内容直接弹窗播报。
+    store.updateTask(scheduled.id, {
+      alertPregenerating: true,
+      alertContent: undefined,
+      alertContentError: undefined,
+    });
+    void pregenerateTaskAlert(scheduled, generateContent)
+      .then((result) => {
+        if (!completionCurrent(scheduled.id, token)) return;
+        if ("content" in result) {
+          store.updateTask(scheduled.id, {
+            alertContent: result.content,
+            alertContentError: undefined,
+            alertPregeneratedAt: new Date().toISOString(),
+            alertPregenerating: false,
+          });
+        } else {
+          store.updateTask(scheduled.id, {
+            alertContentError: result.error,
+            alertPregeneratedAt: new Date().toISOString(),
+            alertPregenerating: false,
+          });
+        }
+        broadcastChanged();
+      })
+      .catch((err) => {
+        console.warn("[TaskAlert] 预生成流程异常:", err);
+        if (!completionCurrent(scheduled.id, token)) return;
+        store.updateTask(scheduled.id, { alertPregenerating: false });
+        broadcastChanged();
+      });
+  };
+
   ipc.handle(IPC.SCHEDULER_LIST, () => ok(store.getTasks().map(projectTaskForRenderer)));
   ipc.handle(IPC.SCHEDULER_ADD, (_event, input: NewScheduledTaskInput) => {
-    try { const r = ok(store.addTask(input)); broadcastChanged(); return r; } catch (err) { return fail(err); }
+    try {
+      const task = store.addTask(input);
+      triggerPregen(task);
+      broadcastChanged();
+      return ok(task);
+    } catch (err) { return fail(err); }
   });
   ipc.handle(IPC.SCHEDULER_UPDATE, (_event, id: string, patch: ScheduledTaskPatch) => {
     try {
@@ -76,11 +140,19 @@ export function registerSchedulerIpc(
       const effective = current?.ownerPluginId
         ? authorizePluginTaskUpdatePatch(current, patch)
         : patch;
-      const r = ok(store.updateTask(id, effective)); broadcastChanged(); return r;
+      const task = store.updateTask(id, effective);
+      // 标题/提示词/会话模式变化后重新预生成播报内容（内容按 mode 生成）
+      if (patch.title !== undefined || patch.prompt !== undefined || patch.mode !== undefined) triggerPregen(task);
+      broadcastChanged();
+      return ok(task);
     } catch (err) { return fail(err); }
   });
   ipc.handle(IPC.SCHEDULER_DELETE, (_event, id: string) => {
-    try { const r = ok(store.deleteTask(id)); broadcastChanged(); return r; } catch (err) { return fail(err); }
+    try {
+      // 进行中的预生成完成回调随任务一起作废
+      pregenTokens.delete(id);
+      const r = ok(store.deleteTask(id)); broadcastChanged(); return r;
+    } catch (err) { return fail(err); }
   });
   ipc.handle(IPC.SCHEDULER_TOGGLE, (_event, id: string, enabled: boolean) => {
     try {
@@ -97,6 +169,21 @@ export function registerSchedulerIpc(
   });
   ipc.handle(IPC.SCHEDULER_FIRE_NOW, async (_event, id: string) => {
     try {
+      // 预生成仍在进行中时拒绝立即运行，让昔涟表演一个「还没准备好」的动作
+      const task = store.getTasks().find((t: unknown) => (t as ScheduledTask).id === id) as ScheduledTask | undefined;
+      if (task?.alertPregenerating) {
+        // 发 Live2D 动作到桌宠窗口
+        const action = findAction("问号");
+        if (action) {
+          for (const win of BrowserWindow.getAllWindows()) {
+            if (!win.isDestroyed() && win.webContents.getURL().includes("live2d")) {
+              win.webContents.send(IPC.LIVE2D_PLAY_ACTION, action.target);
+              break;
+            }
+          }
+        }
+        return { ok: false, reason: "not_ready" };
+      }
       const result = await engine.fireNow(id);
       return result.ok ? ok(true) : { ok: false, reason: result.reason };
     } catch (err) {

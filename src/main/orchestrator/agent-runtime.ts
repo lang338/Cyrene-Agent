@@ -108,6 +108,8 @@ export interface AgentRuntime {
   buildOptions(input: AguiRunInput): Promise<{ options: CyreneRunOptions; latestUserText: string }>;
   onRunFinished(result: CyreneRunResult, latestUserText: string, context: AgentRunFinishedContext): Promise<{ sticker: string | null }>;
   buildSchedulerOptions(task: ScheduledTask): Promise<SchedulerRunOptions>;
+  /** 一次性 LLM 调用：为定时任务预生成到点播报内容（不进聊天、不写记录） */
+  pregenerateTaskAlert(task: ScheduledTask): Promise<string>;
 }
 
 export function createAgentRuntime(rawDeps: AgentRuntimeDeps): AgentRuntime {
@@ -273,6 +275,33 @@ export function createAgentRuntime(rawDeps: AgentRuntimeDeps): AgentRuntime {
     };
   }
 
+  /** 与聊天路径一致的 scheduler prompt 构建：解析默认模型档案 + 按任务模式的 system 内容。 */
+  const buildSchedulerPrompt = async (task: ScheduledTask, mode: PluginPromptMode = "work") => {
+    // 与聊天路径一致：解析默认模型档案。否则定时任务会拿到未解析的顶层设置，
+    // 在使用模型档案的场景下调用到过期/无余额的端点（表现为"模型服务请求失败"）。
+    const settings = resolveModelSettingsProfile(rawDeps.loadModelSettings());
+    const profile = rawDeps.loadUserProfile();
+    const generalSettings = rawDeps.loadGeneralSettings();
+    const messages = [{ role: "user" as const, content: task.prompt }];
+    // 定时任务按任务模式过滤 skill，并尊重 skill-模式覆盖层；
+    // 与聊天路径同约定：chat 模式不暴露 skill。
+    const scheduledSkills = mode === "chat"
+      ? []
+      : rawDeps.skillRegistry.getEnabledForMode(mode, generalSettings.skillModeOverrides);
+    const systemContent = [
+      buildModePrompt(mode),
+      buildEnvironmentContext({ provider: settings.provider, model: settings.model }, profile),
+      buildSkillCatalog(scheduledSkills),
+      await buildAlwaysOnContext(task.prompt, messages),
+      await rawDeps.buildPluginPromptContext({
+        source: "scheduler",
+        mode,
+        userText: task.prompt,
+      }),
+    ].join("\n\n---\n\n");
+    return { settings, systemContent };
+  };
+
   // 工具完成观察回调：harness 事件结构与插件事件字段一一对应，直接透传；
   // 未配置发布入口时不注入，harness 侧零开销。
   const onToolFinished = rawDeps.publishToolFinished
@@ -316,47 +345,51 @@ export function createAgentRuntime(rawDeps: AgentRuntimeDeps): AgentRuntime {
     },
 
     buildSchedulerOptions: async (task) => {
-      // 与 channel bot / 聊天路径同策略：先展开默认模型档案再取顶层镜像，
-      // 否则用户只在档案里配模型时顶层 baseUrl/apiKey 可能为空，定时任务会调不到 LLM。
-      const settings = resolveModelSettingsProfile(rawDeps.loadModelSettings());
-      const profile = rawDeps.loadUserProfile();
-      const generalSettings = rawDeps.loadGeneralSettings();
       // 会话模式取任务冻结字段（旧任务默认 work）：skill 过滤、模式提示词
       // 和插件提示词上下文都跟随该模式。
-      const mode = task.mode ?? "work";
-      const messages = [{ role: "user" as const, content: task.prompt }];
-      // 定时任务按任务模式过滤 skill，并尊重 skill-模式覆盖层；
-      // 与聊天路径同约定：chat 模式不暴露 skill。
-      const scheduledSkills = mode === "chat"
-        ? []
-        : rawDeps.skillRegistry.getEnabledForMode(mode, generalSettings.skillModeOverrides);
-      const systemContent = [
-        buildModePrompt(mode),
-        buildEnvironmentContext({ provider: settings.provider, model: settings.model }, profile),
-        buildSkillCatalog(scheduledSkills),
-        await buildAlwaysOnContext(task.prompt, messages),
-        await rawDeps.buildPluginPromptContext({
-          source: "scheduler",
-          mode,
-          userText: task.prompt,
-        }),
-      ].join("\n\n---\n\n");
+      const { settings, systemContent } = await buildSchedulerPrompt(task, task.mode ?? "work");
       return {
         settings: {
           provider: settings.provider,
           baseUrl: settings.baseUrl,
           model: settings.model,
           apiKey: settings.apiKey,
-          // 协议与推理偏好需与聊天路径一致透传，否则定时任务会按默认协议发请求。
+          // 必须带上档案的传输协议，否则 anthropic 端点会按 openai 路径拼 URL，
+          // 请求打到畸形地址上得到空回复。
           explicitTransport: settings.explicitTransport,
           reasoning: settings.reasoning,
           contextWindowTokens: settings.contextWindowTokens,
         },
-        messages: [{ role: "system" as const, content: systemContent }, ...messages],
+        messages: [{ role: "system" as const, content: systemContent }, { role: "user" as const, content: task.prompt }],
         // 定时任务也不因整轮耗时被中断；仍保留单次模型/工具自身的超时。
         timeoutMs: 0,
         onToolFinished,
       };
+    },
+
+    pregenerateTaskAlert: async (task) => {
+      const { settings, systemContent } = await buildSchedulerPrompt(task, task.mode ?? "work");
+      const userMessage = [
+        `用户刚刚创建了一个定时任务，现在需要你预生成它到点触发时要展示的提醒内容。`,
+        `任务标题：${task.title}`,
+        `任务提示词：${task.prompt}`,
+        ``,
+        `请直接输出这段提醒内容本身：符合你的性格和说话方式，像到点时对用户说的话一样自然；`,
+        `不要任何前言、解释、引号或 Markdown 代码块；长度控制在 200 字以内。`,
+      ].join("\n");
+      return rawDeps.enqueueLLMTask("定时任务预生成", () =>
+        rawDeps.llmClient.chat(
+          settings as ModelSettings,
+          [
+            { role: "system" as const, content: systemContent },
+            { role: "user" as const, content: userMessage },
+          ],
+          undefined,
+          60000,
+          "定时任务预生成",
+          false,
+        ),
+      );
     },
   };
 }

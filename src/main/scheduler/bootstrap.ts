@@ -8,6 +8,7 @@ import { SchedulerEngine, type SchedulerEngineDeps } from "./scheduler-engine";
 import { getSchedulerStore } from "./scheduler-store";
 import { registerSchedulerIpc } from "./scheduler-ipc";
 import { createSchedulerRunner } from "./scheduler-runner";
+import { notifyTaskResult } from "./task-alert-window";
 
 export interface SchedulerSubsystemDeps {
   agentRuntime: AgentRuntime;
@@ -50,6 +51,7 @@ export function createSchedulerSubsystem(deps: SchedulerSubsystemDeps): Schedule
     recordHistory: (entry) => store.recordHistory(entry),
     id: () => `hist-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     now: () => new Date(),
+    showTaskAlert: notifyTaskResult,
     ...(deps.publishLifecycle ? { publishLifecycle: deps.publishLifecycle } : {}),
   });
 
@@ -72,7 +74,9 @@ export function createSchedulerSubsystem(deps: SchedulerSubsystemDeps): Schedule
       if (initialized) return;
       initialized = true;
       store.load();
-      registerIpc(store, engine, () => toolRegistry.getAllTools(), deps.ipc);
+      registerIpc(store, engine, () => toolRegistry.getAllTools(), deps.ipc, (task) =>
+        deps.agentRuntime.pregenerateTaskAlert(task),
+      );
     },
     /** 只启动 engine 定时器（必须在 MCP 恢复之后调用）。 */
     start(): void {

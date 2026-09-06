@@ -22,6 +22,14 @@ export interface ScheduledTask {
   allowedToolIds: string[];
   createdAt: string;
   updatedAt: string;
+  /** 新建时预生成的提醒内容（到点直接展示，不再调用模型） */
+  alertContent?: string;
+  /** 预生成失败原因（存在时到点回退为实时执行） */
+  alertContentError?: string;
+  /** 预生成完成时间 */
+  alertPregeneratedAt?: string;
+  /** 预生成进行中标记：此时 alertContent 可能是旧值，runner 不应信任 */
+  alertPregenerating?: boolean;
   /** 创建该任务的插件 id；缺失表示用户任务。插件任务的磁盘 enabled 永远为 false。 */
   ownerPluginId?: string;
   /** 插件任务的用户授权状态：用户在宿主界面确认后才允许运行，插件无法写入。 */
@@ -47,7 +55,7 @@ export interface NewScheduledTaskInput {
 
 export type ScheduledTaskPatch = Partial<Pick<
   ScheduledTask,
-  "title" | "prompt" | "enabled" | "schedule" | "nextFireAt" | "lastFiredAt" | "toolMode" | "allowedToolIds" | "pluginUserEnabled" | "approvalFingerprint" | "mode"
+  "title" | "prompt" | "enabled" | "schedule" | "nextFireAt" | "lastFiredAt" | "toolMode" | "allowedToolIds" | "alertContent" | "alertContentError" | "alertPregeneratedAt" | "alertPregenerating" | "pluginUserEnabled" | "approvalFingerprint" | "mode"
 >>;
 
 export interface ScheduledTaskHistoryEntry {

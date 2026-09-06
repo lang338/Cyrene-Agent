@@ -1,0 +1,222 @@
+/* ============================================================
+   定时任务提醒弹窗（task-alert）
+   视觉语言与今日日程窗口（tasks.css）一致：
+   粉/紫玻璃拟态 + 珍珠白主题 token。
+   ============================================================ */
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: transparent;
+  color: var(--rb-text-default);
+  font: var(--rb-text-body);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+.task-alert {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  margin: 0;
+  border-radius: var(--cy-window-radius, 24px);
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 18% 8%, var(--rb-bg-elevated) 0%, transparent 38%),
+    radial-gradient(circle at 88% 22%, var(--rb-bg-3) 0%, transparent 38%),
+    radial-gradient(circle at 50% 110%, var(--rb-bg-3) 0%, transparent 38%),
+    linear-gradient(155deg, var(--rb-bg-3) 0%, var(--rb-bg-1) 60%, var(--rb-bg-2) 100%);
+  border: 1px solid rgba(255, 190, 226, 0.36);
+  box-shadow: 0 18px 48px rgba(70, 30, 80, 0.35);
+}
+
+.task-alert::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.10), transparent 30%, var(--rb-border-faint) 70%, rgba(255, 255, 255, 0.04));
+  opacity: 0.58;
+}
+
+/* ── 标题栏 ────────────────────────────────────────────────── */
+.task-alert__titlebar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 52px;
+  padding: 0 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.025));
+  border-bottom: 1px solid var(--rb-border-soft);
+  -webkit-app-region: drag;
+  user-select: none;
+  flex: 0 0 auto;
+}
+
+.task-alert__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.task-alert__icon {
+  font-size: 16px;
+  filter: drop-shadow(var(--rb-glow-pink));
+}
+
+.task-alert__name {
+  font: var(--rb-text-body-em);
+  color: var(--rb-text-strong);
+  text-shadow: var(--rb-glow-soft);
+  white-space: nowrap;
+}
+
+.task-alert__hint {
+  font: var(--rb-text-micro);
+  color: var(--rb-text-muted);
+  padding: 3px 9px;
+  border: 1px solid var(--rb-border-soft);
+  border-radius: var(--rb-radius-full);
+  background: var(--rb-bg-2);
+  white-space: nowrap;
+}
+
+.task-alert__hint--error {
+  color: #ff9db5;
+  border-color: rgba(255, 157, 181, 0.45);
+}
+
+.task-alert__titlebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  -webkit-app-region: no-drag;
+}
+
+.task-alert__winbtn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--rb-radius-full);
+  color: var(--rb-text-default);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--rb-border-soft);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: background 120ms ease, color 120ms ease, transform 120ms ease, border-color 120ms ease, box-shadow 200ms ease;
+}
+
+.task-alert__winbtn svg { display: block; }
+
+.task-alert__winbtn:hover {
+  background: var(--rb-glow-soft);
+  border-color: var(--rb-border-soft);
+  color: var(--rb-text-strong);
+  transform: translateY(-1px);
+  box-shadow: var(--rb-glow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.10);
+}
+
+.task-alert__winbtn--close {
+  background: var(--rb-glow-soft);
+  color: var(--rb-pink-200);
+}
+
+.task-alert__winbtn--close:hover {
+  background: var(--rb-grad-pink-hot);
+  color: var(--rb-text-on-pink);
+}
+
+/* ── 主体 ──────────────────────────────────────────────────── */
+.task-alert__body {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  padding: 16px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+  user-select: none;
+}
+
+.task-alert__card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  background: var(--rb-bg-elevated);
+  border: 1px solid var(--rb-border-soft);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.task-alert__task-title {
+  margin: 0;
+  font: var(--rb-text-body-em);
+  font-size: 17px;
+  color: var(--rb-text-strong);
+  text-shadow: var(--rb-glow-soft);
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.task-alert__content {
+  margin: 0;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: var(--rb-text-body);
+  line-height: 1.7;
+  color: var(--rb-text-default);
+}
+
+.task-alert__content::-webkit-scrollbar { width: 4px; }
+.task-alert__content::-webkit-scrollbar-track { background: transparent; }
+.task-alert__content::-webkit-scrollbar-thumb {
+  background: var(--rb-border-strong);
+  border-radius: 2px;
+}
+
+.task-alert__loading {
+  margin: auto 0;
+  text-align: center;
+  font: var(--rb-text-body);
+  color: var(--rb-text-muted);
+}
+
+/* ── 语音状态条 ────────────────────────────────────────────── */
+.task-alert__audio-status {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  border-radius: var(--rb-radius-full);
+  font: var(--rb-text-micro);
+  color: var(--rb-pink-200);
+  background: var(--rb-glow-soft);
+  border: 1px solid var(--rb-border-soft);
+  text-align: center;
+  animation: task-alert-pulse 1.6s ease-in-out infinite;
+}
+
+.task-alert__audio-status--muted {
+  color: var(--rb-text-muted);
+  animation: none;
+}
+
+@keyframes task-alert-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
