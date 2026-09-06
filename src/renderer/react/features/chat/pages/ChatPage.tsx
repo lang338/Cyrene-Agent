@@ -55,6 +55,8 @@ import {
 } from "./openSessionByDeps";
 import { useComposerAttachments } from "../hooks/useComposerAttachments";
 import { useSessionMessages } from "../hooks/useSessionMessages";
+import { useSchedulerEvents } from "../hooks/useSchedulerEvents";
+import { useChannelMirrorEvents } from "../hooks/useChannelMirrorEvents";
 import { AgentRunController, type AgentRunInput } from "./run/AgentRunController";
 import {
   appendPendingQueueEntry,
@@ -167,6 +169,22 @@ export function ChatPage() {
     appendMessages,
     patchMessageAttachments: updateMessageAttachments,
   } = useSessionMessages((targetMode) => activeSessionIdsRef.current[targetMode]);
+
+  // 定时任务执行事件：任务触发/流式回复/终态展示在当前会话（主进程 scheduler-runner 推送）
+  useSchedulerEvents({
+    getActiveSessionId: () => activeSessionIdsRef.current[activeModeRef.current],
+    appendMessages,
+    patchMessage: updateMessage,
+    persistMessage: (sessionId, message) => {
+      void chatStore()?.append(sessionId, message);
+    },
+  });
+
+  // 渠道消息镜像：微信/飞书等外部渠道收发消息以临时系统消息展示在当前会话（dispatcher 推送）
+  useChannelMirrorEvents({
+    getActiveSessionId: () => activeSessionIdsRef.current[activeModeRef.current],
+    appendMessages,
+  });
 
   useEffect(() => {
     const settings = settingsApprovalApi();
