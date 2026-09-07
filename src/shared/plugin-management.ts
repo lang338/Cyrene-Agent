@@ -58,7 +58,7 @@ export interface MarketListResult {
 }
 
 export type MarketInstallResult =
-  | { ok: true; plugin: { id: string; name: string; version: string }; overview: PluginOverview }
+  | { ok: true; plugin: { id: string; name: string; version: string }; overview?: PluginOverview }
   | { ok: false; error: string };
 
 export interface PluginManagementApi {
