@@ -341,3 +341,19 @@
   height: 38px;
   object-fit: contain;
 }
+
+/* 插件市场入口按钮内的小人图标 */
+.plugin-panel__market-icon {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
+/* 市场卡片元信息分隔符与下载量强调色 */
+.plugin-card-ui__meta-sep {
+  color: var(--cy-text-muted, #6e6e73);
+}
+
+.plugin-card-ui__downloads {
+  color: var(--cy-accent, #ff5b8a);
+}

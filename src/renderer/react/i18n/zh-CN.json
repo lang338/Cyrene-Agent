@@ -260,6 +260,24 @@
       "running": "运行中",
       "stopping": "停用中",
       "failed": "启动失败"
+    },
+    "market": {
+      "title": "插件市场",
+      "subtitle": "从官方收录仓库在线安装插件；安装后默认停用，可返回插件列表启用。",
+      "toggle": "插件市场",
+      "back": "返回插件管理",
+      "install": "安装",
+      "update": "更新",
+      "installing": "安装中…",
+      "installed": "已安装 v{{version}}",
+      "installedLocalNewer": "已安装 v{{version}}（本地版本更高）",
+      "replaceInstall": "替换安装",
+      "replaceHint": "已存在同 ID 的本地插件，点击后将弹出替换确认",
+      "emptyHint": "市场暂无插件",
+      "downloads": "{{downloads}} 次下载",
+      "loadFailed": "获取插件列表失败：{{error}}",
+      "installFailed": "安装失败：{{error}}",
+      "installSuccess": "“{{name}}”安装成功，默认停用中，可返回插件列表启用。"
     }
   },
   "toolPanel": {
