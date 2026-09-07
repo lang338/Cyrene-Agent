@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { deflateRawSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
-import { commitPreparedPlugin, discardPreparedPlugin, preparePluginZip } from "./installer";
+import {
+  commitPreparedPlugin,
+  discardPreparedPlugin,
+  preparePluginZip,
+  readHostMetadataSync,
+} from "./installer";
 
 interface ZipEntry {
   name: string;
@@ -189,5 +194,81 @@ describe("plugin ZIP installer", () => {
 
     expect(existsSync(path.join(existing, "old.txt"))).toBe(false);
     expect(readFileSync(data, "utf8")).toBe("keep");
+  });
+});
+
+describe("marketplace install contracts", () => {
+  it("rejects a ZIP whose manifest id differs from the expected identity", async () => {
+    const { root, zip } = setup();
+    createZip(zip, [
+      { name: "manifest.json", data: manifest("another-plugin") },
+      { name: "index.cjs", data: "module.exports={register(){}}" },
+    ]);
+    await expect(
+      preparePluginZip(zip, root, { expectedIdentity: { id: "zip-demo", version: "1.0.0" } }),
+    ).rejects.toThrow("插件包与市场登记信息不符");
+  });
+
+  it("rejects a ZIP whose manifest version differs from the expected identity", async () => {
+    const { root, zip } = setup();
+    createZip(zip, [
+      { name: "manifest.json", data: manifest("zip-demo", "9.9.9") },
+      { name: "index.cjs", data: "module.exports={register(){}}" },
+    ]);
+    await expect(
+      preparePluginZip(zip, root, { expectedIdentity: { id: "zip-demo", version: "1.0.0" } }),
+    ).rejects.toThrow("插件包与市场登记信息不符");
+  });
+
+  it("accepts a ZIP matching the expected identity", async () => {
+    const { root, zip } = setup();
+    createZip(zip, [
+      { name: "manifest.json", data: manifest("zip-demo", "1.0.0") },
+      { name: "index.cjs", data: "module.exports={register(){}}" },
+    ]);
+    const prepared = await preparePluginZip(zip, root, {
+      expectedIdentity: { id: "zip-demo", version: "1.0.0" },
+    });
+    expect(prepared.manifest.id).toBe("zip-demo");
+    await discardPreparedPlugin(prepared);
+  });
+
+  it("rejects a ZIP containing the host metadata reserved file name", async () => {
+    const { root, zip } = setup();
+    createZip(zip, [
+      { name: "manifest.json", data: manifest() },
+      { name: "index.cjs", data: "module.exports={register(){}}" },
+      { name: "cyrene-market.json", data: "{\"origin\":\"market\"}" },
+    ]);
+    await expect(preparePluginZip(zip, root)).rejects.toThrow("宿主保留文件");
+  });
+
+  it("writes market origin metadata on commit and reports it back on read", async () => {
+    const { root, zip } = setup();
+    createZip(zip, [
+      { name: "manifest.json", data: manifest("zip-demo", "1.0.0") },
+      { name: "index.cjs", data: "module.exports={register(){}}" },
+    ]);
+    const prepared = await preparePluginZip(zip, root);
+
+    await commitPreparedPlugin(prepared, root, false, { marketOrigin: { registryId: "cyrene-official" } });
+
+    const metadata = readHostMetadataSync(root, "zip-demo");
+    expect(metadata?.origin).toBe("market");
+    expect(metadata?.registryId).toBe("cyrene-official");
+    expect(metadata?.installedVersion).toBe("1.0.0");
+  });
+
+  it("keeps local installs free of market metadata", async () => {
+    const { root, zip } = setup();
+    createZip(zip, [
+      { name: "manifest.json", data: manifest() },
+      { name: "index.cjs", data: "module.exports={register(){}}" },
+    ]);
+    const prepared = await preparePluginZip(zip, root);
+
+    await commitPreparedPlugin(prepared, root, false);
+
+    expect(readHostMetadataSync(root, "zip-demo")).toBeUndefined();
   });
 });

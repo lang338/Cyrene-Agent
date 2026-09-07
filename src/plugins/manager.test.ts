@@ -633,3 +633,80 @@ describe("PluginManager", () => {
     expect(mgr.overview().issues[0]?.message).toMatch(/无法扫描插件目录/);
   });
 });
+
+describe("marketplace origin bookkeeping", () => {
+  const importedManifest = {
+    apiVersion: 1 as const,
+    id: "zip-demo",
+    name: "ZIP Demo",
+    version: "1.0.0",
+    description: "d",
+    author: "a",
+    entry: "index.cjs",
+    defaultEnabled: true,
+  };
+
+  /** 伪造一个已通过 ZIP 校验的 staging 目录，让真实 commit 流程可执行 */
+  function fakePrepared(userRoot: string, version = "1.0.0") {
+    const stagingDir = path.join(userRoot, ".staging");
+    const pluginDir = path.join(stagingDir, "package");
+    mkdirSync(pluginDir, { recursive: true });
+    const manifest = { ...importedManifest, version };
+    writeFileSync(path.join(pluginDir, "manifest.json"), JSON.stringify(manifest));
+    writeFileSync(path.join(pluginDir, "index.cjs"), "module.exports={register(){}}");
+    return { stagingDir, pluginDir, manifest };
+  }
+
+  it("市场安装落来源记录，列表 origin 标记为 market", async () => {
+    const h = harness();
+    const userRoot = path.join(tmp, "user-plugins");
+    h.options.scanRoots.push({ path: userRoot, source: "user" });
+    const prepared = fakePrepared(userRoot);
+    vi.spyOn(installer, "preparePluginZip").mockResolvedValue(prepared);
+    const mgr = new PluginManager(h.options);
+    await mgr.start();
+
+    const result = await mgr.installZip(path.join(tmp, "plugin.zip"), {
+      origin: "market",
+      expectedIdentity: { id: "zip-demo", version: "1.0.0" },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mgr.list().find((e) => e.id === "zip-demo")?.origin).toBe("market");
+  });
+
+  it("本地 ZIP 覆盖市场安装的同 id 插件后，origin 回到 local", async () => {
+    const h = harness();
+    const userRoot = path.join(tmp, "user-plugins");
+    h.options.scanRoots.push({ path: userRoot, source: "user" });
+    h.options.confirmPluginReplace = async () => true;
+    const first = fakePrepared(userRoot, "1.0.0");
+    vi.spyOn(installer, "preparePluginZip").mockResolvedValueOnce(first);
+    const mgr = new PluginManager(h.options);
+    await mgr.start();
+    await mgr.installZip(path.join(tmp, "plugin.zip"), { origin: "market" });
+
+    const second = fakePrepared(userRoot, "2.0.0");
+    vi.spyOn(installer, "preparePluginZip").mockResolvedValueOnce(second);
+    const localResult = await mgr.installZip(path.join(tmp, "plugin.zip"));
+
+    expect(localResult.ok).toBe(true);
+    expect(mgr.list().find((e) => e.id === "zip-demo")?.origin).toBe("local");
+  });
+
+  it("卸载市场安装的插件时同步清除来源记录", async () => {
+    const h = harness();
+    const userRoot = path.join(tmp, "user-plugins");
+    h.options.scanRoots.push({ path: userRoot, source: "user" });
+    const prepared = fakePrepared(userRoot);
+    vi.spyOn(installer, "preparePluginZip").mockResolvedValue(prepared);
+    const mgr = new PluginManager(h.options);
+    await mgr.start();
+    await mgr.installZip(path.join(tmp, "plugin.zip"), { origin: "market" });
+
+    const result = await mgr.uninstall("zip-demo");
+
+    expect(result.ok).toBe(true);
+    expect(installer.readHostMetadataSync(userRoot, "zip-demo")).toBeUndefined();
+  });
+});

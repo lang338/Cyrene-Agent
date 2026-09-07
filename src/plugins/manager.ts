@@ -19,6 +19,8 @@ import {
   commitPreparedPlugin,
   discardPreparedPlugin,
   preparePluginZip,
+  readHostMetadataSync,
+  removeHostMetadata,
 } from "./installer";
 import type {
   CyrenePlugin,
@@ -112,11 +114,16 @@ export class PluginManager {
   }
 
   list(): PluginListEntry[] {
+    const userRoot = this.opts.scanRoots.find((root) => root.source === "user")?.path;
     return Array.from(this.records.values())
       .map((record) => {
         const id = record.manifest.id;
         const plugin = this.instances.get(id);
         const status = this.statuses.get(id) ?? "disabled";
+        // 来源以宿主侧安装记录为准：有市场记录即为 market，否则视为本地（含内置）
+        const origin = userRoot && record.source === "user" && readHostMetadataSync(userRoot, id)
+          ? "market" as const
+          : "local" as const;
         return {
           id,
           name: record.manifest.name,
@@ -126,6 +133,7 @@ export class PluginManager {
           entry: record.manifest.entry,
           apiVersion: record.manifest.apiVersion,
           source: record.source,
+          origin,
           path: record.dir,
           defaultEnabled: record.manifest.defaultEnabled,
           configuredEnabled: this.isConfiguredEnabled(record),
@@ -295,14 +303,24 @@ export class PluginManager {
     });
   }
 
-  installZip(zipPath: string): Promise<PluginImportResult> {
+  installZip(
+    zipPath: string,
+    opts: {
+      /** 市场安装时传入：校验插件包身份与市场登记一致，并落市场来源记录 */
+      expectedIdentity?: { id: string; version: string };
+      origin?: "market";
+      registryId?: string;
+    } = {},
+  ): Promise<PluginImportResult> {
     return this.enqueueOperation(async () => {
       const userRoot = this.opts.scanRoots.find((root) => root.source === "user")?.path;
       if (!userRoot) return { ok: false, error: "未配置用户插件目录" };
 
       let prepared;
       try {
-        prepared = await preparePluginZip(zipPath, userRoot);
+        prepared = await preparePluginZip(zipPath, userRoot, {
+          expectedIdentity: opts.expectedIdentity,
+        });
       } catch (error) {
         return { ok: false, error: `插件包校验失败: ${errorMessage(error)}` };
       }
@@ -348,11 +366,23 @@ export class PluginManager {
       }
 
       try {
-        await commitPreparedPlugin(prepared, userRoot, replacing);
+        await commitPreparedPlugin(prepared, userRoot, replacing, {
+          marketOrigin: opts.origin === "market"
+            ? { registryId: opts.registryId ?? "cyrene-official" }
+            : undefined,
+        });
       } catch (error) {
         await this.doRescan(false);
         this.opts.onListChanged?.();
         return { ok: false, error: `安装插件失败: ${errorMessage(error)}` };
+      }
+      if (opts.origin !== "market") {
+        // 本地 ZIP 覆盖了市场安装的同 id 插件：清除市场来源记录
+        try {
+          await removeHostMetadata(userRoot, plugin.id);
+        } catch (error) {
+          console.warn(`[plugins] 清理插件 ${plugin.id} 市场来源记录失败:`, error);
+        }
       }
 
       await this.doRescan(false);
@@ -368,6 +398,8 @@ export class PluginManager {
       if (record.source !== "user") {
         return { ok: false, error: `内置插件不能卸载: ${id}` };
       }
+      const userRoot = this.opts.scanRoots.find((root) => root.source === "user")?.path;
+      if (!userRoot) return { ok: false, error: "未配置用户插件目录" };
 
       try {
         await this.assertSafeUserPluginDirectory(record);
@@ -405,6 +437,12 @@ export class PluginManager {
         this.errors.set(id, message);
         this.opts.onListChanged?.();
         return { ok: false, error: message };
+      }
+
+      try {
+        await removeHostMetadata(userRoot, id);
+      } catch (error) {
+        console.warn(`[plugins] 清理插件 ${id} 市场来源记录失败:`, error);
       }
 
       await this.doRescan(false);

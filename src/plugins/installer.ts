@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { lstat, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { lstat, mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import extract from "extract-zip";
 import { inspectPluginDir } from "./loader";
@@ -18,6 +18,56 @@ export interface PreparedPluginZip {
   stagingDir: string;
   pluginDir: string;
   manifest: PluginManifest;
+}
+
+/**
+ * 宿主安装记录的保留文件名。插件市场安装来源记录保存在宿主管理的
+ * plugin-install-metadata 目录中，插件包内不允许出现同名文件，
+ * 防止插件包伪造来源信息。
+ */
+const HOST_METADATA_RESERVED_NAME = "cyrene-market.json";
+
+/** 市场安装来源记录（宿主侧持久化，与插件目录解耦） */
+export interface PluginHostMetadata {
+  origin: "market";
+  registryId: string;
+  installedVersion: string;
+  installedAt: string;
+}
+
+function hostMetadataPath(userPluginRoot: string, pluginId: string): string {
+  return path.join(path.dirname(userPluginRoot), "plugin-install-metadata", `${pluginId}.json`);
+}
+
+export async function writeHostMetadata(
+  userPluginRoot: string,
+  pluginId: string,
+  metadata: PluginHostMetadata,
+): Promise<void> {
+  const file = hostMetadataPath(userPluginRoot, pluginId);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+}
+
+/** 读取市场安装来源记录；不存在或内容损坏时返回 undefined（按本地插件处理）。 */
+export function readHostMetadataSync(userPluginRoot: string, pluginId: string): PluginHostMetadata | undefined {
+  try {
+    const raw = readFileSync(hostMetadataPath(userPluginRoot, pluginId), "utf8");
+    const parsed = JSON.parse(raw) as Partial<PluginHostMetadata>;
+    if (parsed.origin !== "market" || typeof parsed.installedVersion !== "string") return undefined;
+    return {
+      origin: "market",
+      registryId: typeof parsed.registryId === "string" ? parsed.registryId : "",
+      installedVersion: parsed.installedVersion,
+      installedAt: typeof parsed.installedAt === "string" ? parsed.installedAt : "",
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export async function removeHostMetadata(userPluginRoot: string, pluginId: string): Promise<void> {
+  await rm(hostMetadataPath(userPluginRoot, pluginId), { force: true });
 }
 
 function validateEntryName(fileName: string): string {
@@ -56,9 +106,18 @@ async function locatePluginDirectory(stagingDir: string): Promise<string> {
   return path.join(stagingDir, entries[0].name);
 }
 
+export interface PreparePluginZipOptions {
+  /**
+   * 期望的插件身份（市场安装时传入）。解出的 manifest 必须与之完全一致，
+   * 防止下载的插件包与市场登记条目不符。
+   */
+  expectedIdentity?: { id: string; version: string };
+}
+
 export async function preparePluginZip(
   zipPath: string,
   userPluginRoot: string,
+  opts: PreparePluginZipOptions = {},
 ): Promise<PreparedPluginZip> {
   if (path.extname(zipPath).toLowerCase() !== ".zip") throw new Error("只能导入 .zip 插件包");
   const archive = await stat(zipPath);
@@ -78,6 +137,10 @@ export async function preparePluginZip(
       onEntry(entry) {
         const entryName = validateEntryName(entry.fileName);
         if (entryNames.has(entryName)) throw new Error(`ZIP 包含重复或大小写冲突路径: ${entry.fileName}`);
+        const baseName = entryName.split("/").pop() ?? "";
+        if (baseName === HOST_METADATA_RESERVED_NAME) {
+          throw new Error(`ZIP 不允许包含宿主保留文件: ${entry.fileName}`);
+        }
         entryNames.add(entryName);
         entryCount += 1;
         if (entryCount > PLUGIN_ZIP_LIMITS.entries) throw new Error("ZIP 文件条目超过 2000 项限制");
@@ -102,6 +165,16 @@ export async function preparePluginZip(
     const pluginDir = await locatePluginDirectory(stagingDir);
     const inspected = inspectPluginDir(pluginDir);
     if (!inspected.manifest) throw new Error(inspected.error ?? "插件 manifest 校验失败");
+    const expected = opts.expectedIdentity;
+    if (
+      expected
+      && (inspected.manifest.id !== expected.id || inspected.manifest.version !== expected.version)
+    ) {
+      throw new Error(
+        `插件包与市场登记信息不符: 期望 ${expected.id}@${expected.version}，`
+        + `实际 ${inspected.manifest.id}@${inspected.manifest.version}`,
+      );
+    }
     return { stagingDir, pluginDir, manifest: inspected.manifest };
   } catch (error) {
     await rm(stagingDir, { recursive: true, force: true });
@@ -113,10 +186,16 @@ export async function discardPreparedPlugin(prepared: PreparedPluginZip): Promis
   await rm(prepared.stagingDir, { recursive: true, force: true });
 }
 
+export interface CommitPreparedPluginOptions {
+  /** 市场安装时传入：目录提交成功前先落来源记录，提交失败则一并回滚清除。 */
+  marketOrigin?: { registryId: string };
+}
+
 export async function commitPreparedPlugin(
   prepared: PreparedPluginZip,
   userPluginRoot: string,
   replace: boolean,
+  opts: CommitPreparedPluginOptions = {},
 ): Promise<string> {
   const destination = path.join(userPluginRoot, prepared.manifest.id);
   const backupRoot = path.join(path.dirname(userPluginRoot), "plugin-install-backups");
@@ -125,7 +204,19 @@ export async function commitPreparedPlugin(
   if (destinationExists && !replace) throw new Error(`插件已存在: ${prepared.manifest.id}`);
 
   let backedUp = false;
+  // 替换场景下先留底旧来源记录，提交失败时原样恢复，避免旧插件丢失市场身份
+  const previousMetadata = opts.marketOrigin
+    ? readHostMetadataSync(userPluginRoot, prepared.manifest.id)
+    : undefined;
   try {
+    if (opts.marketOrigin) {
+      await writeHostMetadata(userPluginRoot, prepared.manifest.id, {
+        origin: "market",
+        registryId: opts.marketOrigin.registryId,
+        installedVersion: prepared.manifest.version,
+        installedAt: new Date().toISOString(),
+      });
+    }
     if (destinationExists) {
       await mkdir(backupRoot, { recursive: true });
       await rename(destination, backup);
@@ -134,6 +225,13 @@ export async function commitPreparedPlugin(
     await rename(prepared.pluginDir, destination);
   } catch (error) {
     if (backedUp && !existsSync(destination)) await rename(backup, destination);
+    if (opts.marketOrigin) {
+      if (previousMetadata) {
+        await writeHostMetadata(userPluginRoot, prepared.manifest.id, previousMetadata);
+      } else {
+        await removeHostMetadata(userPluginRoot, prepared.manifest.id);
+      }
+    }
     throw error;
   } finally {
     await rm(prepared.stagingDir, { recursive: true, force: true });
