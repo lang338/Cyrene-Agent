@@ -15,6 +15,12 @@ import { createSpeechInputCommitBridge } from "./plugin-host/speech-input-commit
 import { createSpeechInputCallController } from "./plugin-host/speech-input-call-controller";
 import { PluginManager } from "../plugins/manager";
 import { pluginPromptRegistry } from "../plugins/prompts";
+import {
+  MARKET_REGISTRY_URLS,
+  MARKET_ZIP_URL_PREFIX,
+  createPluginMarketplaceService,
+} from "./plugin-marketplace";
+import { IPC } from "../shared/ipc-channels";
 import type { LlmClient } from "./services/llm/llm-client";
 import { enqueueLLMTask } from "./llm-queue";
 import type { IpcScope } from "./application/ipc-scope";
@@ -111,6 +117,20 @@ export async function startPluginRuntime(deps: PluginRuntimeDeps): Promise<Plugi
       });
       return result.response === 1;
     },
+  });
+  // 插件市场：列表来自官方索引快照，安装下载后走管理器的 ZIP 导入管线（含身份校验与来源记录）
+  const market = createPluginMarketplaceService({
+    registryUrls: MARKET_REGISTRY_URLS,
+    zipUrlPrefix: MARKET_ZIP_URL_PREFIX,
+    cacheDir: path.join(app.getPath("userData"), "plugin-market-cache"),
+    installZip: (zipPath, opts) => manager.installZip(zipPath, opts),
+  });
+  deps.ipc.handle(IPC.PLUGINS_MARKET_LIST, () => market.listMarket());
+  deps.ipc.handle(IPC.PLUGINS_MARKET_INSTALL, (_event, id: unknown) => {
+    if (typeof id !== "string" || !id) {
+      return { ok: false, error: "id 必须是非空字符串" };
+    }
+    return market.installFromMarket(id);
   });
   if (deps.onPluginRunningStateChange) {
     manager.onRunningStateChange(deps.onPluginRunningStateChange);
