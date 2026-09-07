@@ -1,6 +1,6 @@
 {
   "name": "@playa0v0/cyrene-plugin-sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Cyrene 插件开发工具包：公开契约类型、Manifest 校验与插件测试工具",
   "license": "MIT",
   "main": "./dist/index.js",
