@@ -169,7 +169,8 @@ body {
   color: var(--rb-text-strong);
   text-shadow: var(--rb-glow-soft);
   line-height: 1.45;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .task-alert__content {
@@ -178,7 +179,8 @@ body {
   min-height: 0;
   overflow-y: auto;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  word-break: normal;
   font: var(--rb-text-body);
   line-height: 1.7;
   color: var(--rb-text-default);
