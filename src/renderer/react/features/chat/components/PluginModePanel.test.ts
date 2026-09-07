@@ -67,6 +67,8 @@ function apiFor(items: PluginListEntry[]): PluginManagementApi {
     rescan: vi.fn(async () => ({ plugins: items, issues: [] })),
     importZip: vi.fn(async () => ({ ok: false, canceled: true })),
     uninstall: vi.fn(async () => ({ ok: true, overview: { plugins: [], issues: [] } })),
+    marketList: vi.fn(async () => ({ ok: true, plugins: [] })),
+    marketInstall: vi.fn(async () => ({ ok: false, error: "not implemented" })),
   };
 }
 

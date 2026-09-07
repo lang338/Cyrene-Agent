@@ -474,6 +474,8 @@ export const IPC = {
   PLUGINS_RESCAN: "plugins:rescan",
   PLUGINS_IMPORT_ZIP: "plugins:import-zip",
   PLUGINS_UNINSTALL: "plugins:uninstall",
+  PLUGINS_MARKET_LIST: "plugins:market:list",
+  PLUGINS_MARKET_INSTALL: "plugins:market:install",
 
 } as const;
 

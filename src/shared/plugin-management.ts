@@ -14,6 +14,8 @@ export interface PluginListEntry {
   entry: string;
   apiVersion: number;
   source: "builtin" | "user";
+  /** 用户插件来源：market 表示经插件市场安装（宿主安装记录可查），local 表示本地 ZIP 导入 */
+  origin?: "local" | "market";
   path: string;
   defaultEnabled: boolean;
   configuredEnabled: boolean;
@@ -38,6 +40,27 @@ export interface PluginOverview {
   issues: PluginScanIssue[];
 }
 
+/** 插件市场条目（主进程校验 registry 后下发给渲染端的展示数据，不含 zip 地址与哈希） */
+export interface MarketPluginEntry {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  downloads: number;
+  homepage?: string;
+}
+
+export interface MarketListResult {
+  ok: boolean;
+  error?: string;
+  plugins: MarketPluginEntry[];
+}
+
+export type MarketInstallResult =
+  | { ok: true; plugin: { id: string; name: string; version: string }; overview: PluginOverview }
+  | { ok: false; error: string };
+
 export interface PluginManagementApi {
   list(): Promise<PluginOverview | PluginListEntry[]>;
   setEnabled(id: string, enabled: boolean): Promise<{ ok: boolean; error?: string }>;
@@ -51,4 +74,6 @@ export interface PluginManagementApi {
     overview?: PluginOverview;
   }>;
   uninstall(id: string): Promise<{ ok: boolean; error?: string; overview?: PluginOverview }>;
+  marketList(): Promise<MarketListResult>;
+  marketInstall(id: string): Promise<MarketInstallResult>;
 }
