@@ -11,8 +11,13 @@ import { IPC } from "../../shared/ipc-channels";
 import type { MomentCreateCommentInput, MomentCreatePostInput } from "../../shared/moments-types";
 import { createIpcScope, type IpcScope } from "../application/ipc-scope";
 import { loadGeneralSettings } from "../settings/settings-facade";
+import { loadCharacterPersonas } from "./character-personas";
 import { momentsService } from "./moments-service";
 import * as momentsStore from "./moments-store";
+
+function logMoments(event: string, detail?: unknown): void {
+  console.log(`[Moments] ${event}`, detail ?? "");
+}
 
 function broadcastChanged(): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -39,6 +44,24 @@ export function registerMomentsIpc(ipcOption?: IpcScope): void {
     if (behavior === "reaction") return settings.cyreneMomentsReactionsEnabled;
     if (behavior === "posting") return settings.cyreneMomentsPostingEnabled;
     return true;
+  });
+
+  // 角色行为的提交时开关复核：总开关 + 角色互动开关双闸。
+  // 随机点赞不走决策阶段，这里是它唯一的开关防线（入队前闸门关掉的是"还没入队的"）。
+  momentsStore.setCharacterBehaviorGate(() => {
+    const settings = loadGeneralSettings();
+    return settings.momentsEnabled && settings.momentsCharacterReactionsEnabled;
+  });
+
+  // 角色入驻名单：立绘池 ∩ 人设 md。store 只信任名单内的角色身份写入（渲染端无法伪造）。
+  // 启动时先注册一次——重启后队列里存留的角色任务（如随机点赞）会先于任何抽签被扫描执行
+  const characterRegistry = () => new Set(loadCharacterPersonas({ log: logMoments }).keys());
+  momentsStore.setCharacterAuthorRegistry(characterRegistry());
+
+  // 点名名单：渲染端选择框的数据源（昔涟 + 全部入驻角色，昵称按名排序）
+  ipc.handle(IPC.MOMENTS_LIST_CHARACTERS, () => {
+    const characters = [...characterRegistry()].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+    return ["cyrene", ...characters];
   });
 
   ipc.handle(IPC.MOMENTS_LIST, (_event, options?: { limit?: number; before?: number }) =>

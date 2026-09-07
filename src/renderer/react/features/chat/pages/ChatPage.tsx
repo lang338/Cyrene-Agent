@@ -21,7 +21,7 @@ import {
   RunRecoveryNotices,
 } from "../components/ChatWorkspaceNotices";
 import { getTtsPlaybackSnapshot, playTtsToCompletion, stopTtsPlayback } from "../components/tts-playback";
-import { EarlyTtsPlaybackQueue } from "../tts/early-tts-queue";
+import { EarlyTtsPlaybackQueue, type EarlyTtsSplitMode } from "../tts/early-tts-queue";
 
 import type { ChatMessage, ChatSession, ChatSessionMeta, ConversationMode } from "../../../../../shared/chat-types";
 import { type ContextUsageSnapshot } from "../../../../../shared/context-usage";
@@ -563,6 +563,7 @@ export function ChatPage() {
     targetMode: ConversationMode,
     sessionId: string,
     messageId: string,
+    splitMode: EarlyTtsSplitMode = "sentence",
   ): EarlyTtsPlaybackQueue {
     activeEarlyTtsRef.current?.queue.cancel();
     const queue = new EarlyTtsPlaybackQueue(
@@ -582,6 +583,7 @@ export function ChatPage() {
         });
       },
       stopTtsPlayback,
+      splitMode,
     );
     activeEarlyTtsRef.current = { queue, mode: targetMode, sessionId, messageId };
     return queue;
@@ -1478,10 +1480,12 @@ export function ChatPage() {
               if (!choice) return;
               setInteractionBusyForSession(activeSessionId, true);
               void choice.resolve(id, answer).then((result) => {
+                // ok:false = pending 已在主进程被结算（超时/取消等）：卡片不可能再提交成功，直接清掉，
+                // 避免留下一张点多少次都没反应的僵尸卡。
                 if (result.ok) {
-                  clearInteractionForSession(activeSessionId);
                   runCheckpointBySessionRef.current[activeSessionId]?.("running");
                 }
+                clearInteractionForSession(activeSessionId);
                 setInteractionBusyForSession(activeSessionId, false);
               }).catch(() => setInteractionBusyForSession(activeSessionId, false));
             }}
@@ -1491,10 +1495,11 @@ export function ChatPage() {
               if (!choice) return;
               setInteractionBusyForSession(activeSessionId, true);
               void choice.resolve(id, "").then((result) => {
+                // 同 onAnswer：ok:false 说明 pending 已被主进程结算，卡片清掉不留僵尸。
                 if (result.ok) {
-                  clearInteractionForSession(activeSessionId);
                   runCheckpointBySessionRef.current[activeSessionId]?.("running");
                 }
+                clearInteractionForSession(activeSessionId);
                 setInteractionBusyForSession(activeSessionId, false);
               }).catch(() => setInteractionBusyForSession(activeSessionId, false));
             }}

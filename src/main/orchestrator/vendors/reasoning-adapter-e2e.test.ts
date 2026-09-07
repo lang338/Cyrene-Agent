@@ -83,6 +83,18 @@ describe("ChatGPT 端到端", () => {
     const body = buildOpenAI(cap, "gpt-4o", { mode: "on", effort: "high" });
     expect("reasoning_effort" in body).toBe(false);
   });
+
+  // GPT-6 Astra 官方明确不支持 none 档：off 必须折叠为 on 落 defaultEffort，
+  // 绝不能把 reasoning_effort:"none" 发出去（服务端会拒绝）。
+  test("#24 gpt-6-astra + off → 折叠为 on 落 defaultEffort，绝不发 'none'", () => {
+    const body = buildOpenAI(cap, "gpt-6-astra", { mode: "off" });
+    expect(body.reasoning_effort).toBe("medium");
+    expect(body.reasoning_effort).not.toBe("none");
+  });
+
+  test("#25 gpt-6-astra + {on, xhigh} → reasoning_effort === 'xhigh'", () => {
+    expect(buildOpenAI(cap, "gpt-6-astra", { mode: "on", effort: "xhigh" }).reasoning_effort).toBe("xhigh");
+  });
 });
 
 // ── Claude ──────────────────────────────────────────────

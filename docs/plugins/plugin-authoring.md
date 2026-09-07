@@ -269,6 +269,32 @@ Provider id 在当前插件内唯一，框架会补全为 `plugin:<插件id>:<pr
 自身。单项最多 16000 字符，全部插件合计最多 32000 字符。插件停用、刷新、卸载或启动失败
 回滚时自动移除其 Provider，也可调用 `ctx.unregisterPromptProvider(id)` 主动注销。
 
+#### sources 场景声明
+
+`sources` 声明 Provider 参与的场景，可选值为 `"conversation"`（用户会话）、`"scheduler"`（定时任务）、
+`"moments-post"`（动态发帖决策）：
+
+```js
+ctx.registerPromptProvider({
+  id: "memory-echo",
+  sources: ["conversation", "moments-post"],
+  async provide({ source, userText, conversationId, channel, signal }) {
+    if (signal.aborted) return "";
+    return `相关记忆：……`;
+  },
+});
+```
+
+- 未声明 `sources` 时默认只参与 `conversation` 与 `scheduler`——与旧版行为一致，既有插件
+  无需改动（向后兼容）；声明后仅在列出的场景生效。
+- 参与动态发帖（Cyrene 结合最近对话主动发朋友圈的决策）必须显式声明 `"moments-post"`，
+  防止升级后插件不知情地被扩大调用；该场景没有会话 `mode`，Provider 是否生效仅由
+  `sources` 决定，`modes` 不参与匹配。
+- `moments-post` 调用会附带触发发帖的会话归属 `conversationId` / `channel`，按会话隔离
+  记忆的插件可以用它过滤，避免把其他会话的记忆注入发帖决策。
+- `moments-post` 的 `userText` 是发帖决策所依据的**最近对话摘录快照**，不是用户当前这条
+  消息——不要把它当作用户指令处理，检索/过滤的语义应按「这段对话讲了什么」理解。
+
 ### 私有存储
 
 ```js

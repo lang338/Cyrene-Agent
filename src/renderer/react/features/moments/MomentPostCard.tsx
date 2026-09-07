@@ -1,5 +1,5 @@
 import { CommentOutlined, DeleteOutlined, HeartFilled, HeartOutlined } from "@ant-design/icons";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import {
   MOMENT_MAX_COMMENT_TEXT_LENGTH,
   buildMomentMediaUrl,
@@ -9,9 +9,46 @@ import {
 } from "../../../../shared/moments-types";
 import { resolveAsset } from "../../../../shared/renderer-base";
 import { useTranslation } from "../../i18n";
-import { formatMomentTime, getBackgroundLikers } from "./moments-utils";
+import { getCharacterAvatar } from "../../character-avatars";
+import { formatMomentTime } from "./moments-utils";
 
 const CYRENE_AVATAR_URL = resolveAsset("avatars/cyrene-avatar.png");
+
+/**
+ * 正文按 @昵称 切片：点名片段高亮显示（QQ 群的蓝色 @ 手感）。
+ * 昵称来自 post.mentions（主进程白名单），文本里的其他 @ 不着色。
+ */
+function renderPostText(text: string, mentions: readonly string[] | undefined, cyreneLabel: string) {
+  if (!mentions || mentions.length === 0) return text;
+  const displayNames = mentions.map((name) => (name === "cyrene" ? cyreneLabel : name));
+  // 找出每个 @昵称 在文本中的位置，按出现顺序切片
+  const marks: Array<{ start: number; end: number }> = [];
+  for (const display of displayNames) {
+    let cursor = 0;
+    for (;;) {
+      const at = text.indexOf(`@${display}`, cursor);
+      if (at < 0) break;
+      marks.push({ start: at, end: at + display.length + 1 });
+      cursor = at + display.length + 1;
+    }
+  }
+  if (marks.length === 0) return text;
+  marks.sort((a, b) => a.start - b.start);
+  const nodes: ReactNode[] = [];
+  let pos = 0;
+  for (const mark of marks) {
+    if (mark.start < pos) continue; // 重叠片段跳过
+    if (mark.start > pos) nodes.push(text.slice(pos, mark.start));
+    nodes.push(
+      <span key={`${mark.start}-${mark.end}`} className="moment-card__mention">
+        {text.slice(mark.start, mark.end)}
+      </span>,
+    );
+    pos = mark.end;
+  }
+  if (pos < text.length) nodes.push(text.slice(pos));
+  return nodes;
+}
 
 interface MomentPostCardProps {
   item: MomentFeedItem;
@@ -40,13 +77,14 @@ export function MomentPostCard({
   const [commentError, setCommentError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
 
+  // 作者显示名：昔涟/用户走既定名，其余一律按角色人设昵称原样显示
   const authorName = (author: MomentAuthor): string =>
-    author === "cyrene" ? t("moments.cyreneName") : userDisplayName;
+    author === "cyrene" ? t("moments.cyreneName") : author === "user" ? userDisplayName : author;
+  const isCharacterAuthor = (author: MomentAuthor): boolean => author !== "user" && author !== "cyrene";
 
   const likedByUser = likes.some((like) => like.actor === "user");
-  // 背景点赞：按动态 id 派生的路人好友名单，拼在真实点赞后面展示
-  const backgroundLikers = useMemo(() => getBackgroundLikers(post.id), [post.id]);
-  const likeNames = [...likes.map((like) => authorName(like.actor)), ...backgroundLikers];
+  // 点赞行只展示真实落库的点赞（角色/昔涟的延迟点赞到达后经广播刷新出现）
+  const likeNames = likes.map((like) => authorName(like.actor));
   const commentsById = useMemo(() => new Map(comments.map((comment) => [comment.id, comment])), [comments]);
   const replyTarget = replyTo ? commentsById.get(replyTo) : undefined;
 
@@ -79,7 +117,8 @@ export function MomentPostCard({
   }
 
   return (
-    <article className="moment-card">
+    // id 作为通知跳转的滚动锚点：点击通知列表里的条目可定位到对应动态
+    <article className="moment-card" id={`moment-post-${post.id}`}>
       <div className="moment-card__avatar">
         {post.author === "cyrene" ? (
           <img src={CYRENE_AVATAR_URL} alt={t("moments.cyreneName")} draggable={false} />
@@ -93,7 +132,9 @@ export function MomentPostCard({
       <div className="moment-card__body">
         <div className="moment-card__name">{authorName(post.author)}</div>
         {post.title && <div className="moment-card__title">{post.title}</div>}
-        {post.text && <div className="moment-card__text">{post.text}</div>}
+        {post.text && (
+          <div className="moment-card__text">{renderPostText(post.text, post.mentions, t("moments.cyreneName"))}</div>
+        )}
 
         {post.media.length > 0 && (
           <div className={imageClass}>
@@ -156,22 +197,43 @@ export function MomentPostCard({
 
             {comments.map((comment) => {
               const target = comment.replyTo ? commentsById.get(comment.replyTo) : undefined;
+              // 角色评论带头像：朋友圈里 NPC 也有脸，头像是最直观的身份标识
+              const avatarUrl = isCharacterAuthor(comment.author)
+                ? getCharacterAvatar(comment.author)
+                : null;
               return (
                 <button
                   type="button"
                   key={comment.id}
                   className="moment-card__comment"
+                  id={`moment-comment-${comment.id}`}
                   onClick={() => startReply(comment.id)}
                 >
-                  <span className="moment-card__comment-name">{authorName(comment.author)}</span>
-                  {target && (
-                    <>
-                      <span className="moment-card__comment-reply">{t("moments.replyPrefix")}</span>
-                      <span className="moment-card__comment-name">{authorName(target.author)}</span>
-                    </>
+                  {avatarUrl && (
+                    <img
+                      className="moment-card__comment-avatar"
+                      src={avatarUrl}
+                      alt=""
+                      draggable={false}
+                    />
                   )}
-                  <span className="moment-card__comment-colon">：</span>
-                  <span className="moment-card__comment-content">{comment.content}</span>
+                  <span className="moment-card__comment-main">
+                    <span
+                      className={`moment-card__comment-name${
+                        isCharacterAuthor(comment.author) ? " moment-card__comment-name--character" : ""
+                      }`}
+                    >
+                      {authorName(comment.author)}
+                    </span>
+                    {target && (
+                      <>
+                        <span className="moment-card__comment-reply">{t("moments.replyPrefix")}</span>
+                        <span className="moment-card__comment-name">{authorName(target.author)}</span>
+                      </>
+                    )}
+                    <span className="moment-card__comment-colon">：</span>
+                    <span className="moment-card__comment-content">{comment.content}</span>
+                  </span>
                 </button>
               );
             })}

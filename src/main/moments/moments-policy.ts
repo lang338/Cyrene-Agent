@@ -1,11 +1,11 @@
-// Moments 主动发帖的策略闸门（设计文档 §6.3 / §7）。
+// Moments 主动发帖的策略闸门。
 //
-// 与 Chat proactive 的分工（D4）：proactive 管"打断用户"的打扰预算，
+// 与 Chat proactive 的分工：proactive 管"打断用户"的打扰预算，
 // Moments 管"被动存在感"的存在感预算——朋友圈躺在 Feed 里，不弹通知，
-// 无夜间禁发（D9）、无 unansweredCount 拦截，两套预算互不共享。
+// 无夜间禁发、无 unansweredCount 拦截，两套预算互不共享。
 //
 // 规则闸门放在 LLM 之前：冷却 / 日上限 / run 粒度去重全部命中后才进入生成，
-// 省 token。去重键粒度是 run 不是 conversation（D10）：
+// 省 token。去重键粒度是 run 不是 conversation：
 // 一个会话里上午发包、晚上修 bug 是两件事，按会话去重会误杀第二件。
 
 import * as fs from "fs";
@@ -13,13 +13,18 @@ import * as path from "path";
 import { createHash } from "crypto";
 import { app } from "electron";
 
-// ── 常量（§7.2） ────────────────────────────────────────────────
+// ── 常量 ────────────────────────────────────────────────────────
 
 /** 同一草稿的最小发帖间隔：6 小时冷却 */
 export const MIN_POST_INTERVAL_MS = 6 * 60 * 60 * 1000;
 /** 每日发帖上限（是上限不是配额，允许 0/1/2 条） */
 export const MAX_POSTS_PER_DAY = 2;
-/** 昔涟生成动态的文案长度上限（§7.2；用户输入的 2000 上限是另一层，不混用） */
+/**
+ * 角色每日模型调用上限（post_eval + reply_eval 合计）。
+ * 随机点赞零模型成本不计入；昔涟不计入，沿用她自己的频率设计。
+ */
+export const MAX_CHARACTER_MODEL_CALLS_PER_DAY = 40;
+/** 昔涟生成动态的文案长度上限（用户输入的 2000 上限是另一层，不混用） */
 export const MOMENTS_CYRENE_POST_TEXT_MAX = 300;
 /** 去重键 FIFO 容量 */
 export const RECENT_EVENT_KEYS_CAPACITY = 64;
@@ -32,10 +37,17 @@ export interface MomentsPolicyState {
   postsToday: { date: string; count: number };
   /** 已发事件的去重键（run 粒度，容量 64 FIFO 淘汰） */
   recentEventKeys: string[];
+  /** 角色当日模型调用计数（按本地日期滚动，跨重启不重置） */
+  characterModelCalls: { date: string; count: number };
 }
 
 export function defaultMomentsPolicyState(): MomentsPolicyState {
-  return { lastPostAt: null, postsToday: { date: "", count: 0 }, recentEventKeys: [] };
+  return {
+    lastPostAt: null,
+    postsToday: { date: "", count: 0 },
+    recentEventKeys: [],
+    characterModelCalls: { date: "", count: 0 },
+  };
 }
 
 function pad2(value: number): string {
@@ -54,7 +66,7 @@ export type MomentsPostGate =
   | { ok: true }
   | { ok: false; reason: "cooldown" | "daily_limit" };
 
-/** 冷却与日上限判定；不包含任何时段禁发 / 未回复拦截类条件（D9 / D4）。 */
+/** 冷却与日上限判定；不包含任何时段禁发 / 未回复拦截类条件。 */
 export function canPost(state: MomentsPolicyState, now: number): MomentsPostGate {
   if (state.lastPostAt !== null && now - state.lastPostAt < MIN_POST_INTERVAL_MS) {
     return { ok: false, reason: "cooldown" };
@@ -65,7 +77,7 @@ export function canPost(state: MomentsPolicyState, now: number): MomentsPostGate
   return { ok: true };
 }
 
-// ── 去重键（run 粒度，D10） ──────────────────────────────────────
+// ── 去重键（run 粒度） ──────────────────────────────────────────
 
 export interface MomentsEventKeyInput {
   conversationId: string;
@@ -102,6 +114,22 @@ export function recordPost(state: MomentsPolicyState, now: number): MomentsPolic
   return { ...state, lastPostAt: now, postsToday: { date, count } };
 }
 
+// ── 角色模型调用预算 ────────────────────────────────────────────
+
+/** 当日角色模型调用是否还有余量（上限只拦模型类任务，随机点赞不查这里）。 */
+export function canCharacterModelCall(state: MomentsPolicyState, now: number): boolean {
+  const today = localDateKey(now);
+  const count = state.characterModelCalls.date === today ? state.characterModelCalls.count : 0;
+  return count < MAX_CHARACTER_MODEL_CALLS_PER_DAY;
+}
+
+/** 角色模型调用记账：日期滚动，当日 +1。 */
+export function recordCharacterModelCall(state: MomentsPolicyState, now: number): MomentsPolicyState {
+  const date = localDateKey(now);
+  const count = state.characterModelCalls.date === date ? state.characterModelCalls.count + 1 : 1;
+  return { ...state, characterModelCalls: { date, count } };
+}
+
 // ── 持久化（moments-state.json，照 proactive-state-store 模式） ───
 
 function getStatePath(): string {
@@ -118,6 +146,7 @@ export function loadMomentsPolicyState(): MomentsPolicyState {
       ...base,
       ...raw,
       postsToday: { ...base.postsToday, ...(raw.postsToday ?? {}) },
+      characterModelCalls: { ...base.characterModelCalls, ...(raw.characterModelCalls ?? {}) },
       recentEventKeys: Array.isArray(raw.recentEventKeys) ? raw.recentEventKeys : [],
     };
   } catch {

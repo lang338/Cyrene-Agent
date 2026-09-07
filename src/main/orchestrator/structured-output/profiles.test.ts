@@ -6,6 +6,7 @@ import {
 
 describe("resolveStructuredOutputProfile", () => {
   test.each([
+    ["chatgpt", "gpt-6-astra", "openai", "provider_json_schema"],
     ["chatgpt", "gpt-5.6", "openai", "provider_json_schema"],
     ["claude", "claude-sonnet-4-6", "anthropic", "provider_json_schema"],
     ["kimi", "kimi-k3", "openai", "provider_json_schema"],

@@ -82,8 +82,9 @@ export const MODEL_PRESETS: ModelPreset[] = [
     // 官方主推 Responses（o 系列完整思考摘要仅此协议有），新建档案默认预填 responses。
     transport: "responses",
     // 官方入口只推荐已纳入结构化输出 Profile 的型号；代理与自定义型号走“自定义端点”。
-    // gpt-5.6 为别名，路由到旗舰 Sol；terra/luna 为平衡与低成本档。
-    mainModels: ["gpt-5.6", "gpt-5.6-terra", "gpt-5.6-luna"],
+    // gpt-6-astra 为 2026-09-03 新旗舰（API 正在分批开放中）；gpt-5.6 为别名，
+    // 路由到旗舰 Sol；terra/luna 为平衡与低成本档。
+    mainModels: ["gpt-6-astra", "gpt-5.6", "gpt-5.6-terra", "gpt-5.6-luna"],
     iconUrl: "../icons/providers/openai.svg",
     websiteUrl: "https://platform.openai.com/",
   },

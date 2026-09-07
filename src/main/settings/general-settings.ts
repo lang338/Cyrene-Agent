@@ -35,6 +35,8 @@ export interface GeneralSettings extends ChatAppearanceSettings {
   cyreneMomentsPostingEnabled: boolean;
   /** 昔涟对朋友圈动态的点赞/评论反应；默认开启（Feed 内被动行为，不打扰）。 */
   cyreneMomentsReactionsEnabled: boolean;
+  /** 角色对朋友圈动态的点赞/评论/互聊；默认开启（有独立日调用上限兜底成本）。 */
+  momentsCharacterReactionsEnabled: boolean;
   petAlwaysOnTop: boolean;
   petVisible: boolean;
   /** 桌宠缩放因子：1.0=默认，0.5~2.0，窗口与模型同步等比缩放。 */
@@ -73,6 +75,10 @@ export interface GeneralSettings extends ChatAppearanceSettings {
   ttsAutoRead: boolean;
   ttsSpeed: number;
   ttsVolume: number;
+  /** 自动语音早播的文本切分是否开启：关闭时不再流式切分，收完整条回复再整段朗读。 */
+  ttsEarlyReadSplitEnabled: boolean;
+  /** 自动语音早播的文本切分方式：sentence=一句一切（默认，现状）；paragraph=一段一切（仅空行段落切分）。 */
+  ttsEarlyReadSplitMode: "sentence" | "paragraph";
   // MiniMax
   ttsMinimaxKey: string;
   ttsMinimaxVoiceId: string;

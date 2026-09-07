@@ -1,10 +1,14 @@
-// Moments（动态 / 朋友圈）的 LLM 调用：评价用户动态 + 生成评论回复。
+// Moments（动态 / 朋友圈）的 LLM 调用：评价用户动态 + 生成评论回复 + 主动发帖。
 //
 // 后台调用规范（照 runProactiveModel 的约束）：
 // - 非流式、maxTokens 600，消息里不得含 tool 内容；
 // - JSON 决策输出 + 容错解析，解析失败一律静默放弃，不影响主流程；
 // - 由 moments-service 经后台串行队列调度，本模块不做排队；
 // - 记录 token 用量。
+//
+// 表态与回复只产出决策不落库：动态可能在排队期间被删除（决策前重读，变了
+// 返回 stale）、模型可能失败（返回 retry）、输出可能非法（返回 invalid），
+// 由调用方决定重试、放弃或落库——决策与副作用分离后才能做崩溃续接。
 
 import { recordUsage, recordRequest } from "../token-usage-store";
 import {
@@ -24,6 +28,7 @@ import {
 import { buildPostGenerationPacket } from "./moments-context";
 import { buildMomentImageQuery } from "./moment-media-matcher";
 import { MOMENTS_CYRENE_POST_TEXT_MAX } from "./moments-policy";
+import type { ReactionDecision, ReactionDecideOutcome } from "./reaction-queue";
 
 export const MOMENTS_MODEL_MAX_TOKENS = 600;
 
@@ -54,9 +59,9 @@ export type MomentsModelOutput =
 // ── prompt 构建 ─────────────────────────────────────────────────
 
 const MOMENTS_REACT_SYSTEM = `[moments_react_system]
-你正在浏览用户刚刚发出的朋友圈动态，决定是否点赞、是否评论。
-不是每条动态都值得反应：内容空洞的动态（例如随手测试、单字符、无意义的灌水）可以既不点赞也不评论，不必勉强。
-点赞表示你注意到了这条动态；评论应当简短自然，像朋友在朋友圈下留言，一两句话即可。
+你正在浏览用户刚刚发出的朋友圈动态，决定怎么回应。
+你和用户关系最好，他的每条动态你都会回应：值得说话的就留一条评论，说不上什么的至少点个赞。
+评论应当简短自然，像最亲近的朋友在朋友圈下留言，一两句话即可。
 不要说教，不要复述动态原文，不要提及系统、规则、评分或决策机制。
 不要声称自己看到了动态内容以外的信息。`;
 
@@ -82,7 +87,7 @@ export interface MomentPostImage {
 }
 
 /** 用户动态图片挂到 user 消息尾部：成功转 image_url block 直发，失败降级"无法读取"文字块 */
-function appendImageBlocks(text: string, images?: readonly MomentPostImage[]): ChatMessageContent {
+export function appendImageBlocks(text: string, images?: readonly MomentPostImage[]): ChatMessageContent {
   if (!images || images.length === 0) return text;
   const blocks: OpenAIContentBlock[] = [{ type: "text", text }];
   for (const image of images) {
@@ -113,12 +118,14 @@ function formatDateTime(at: number): string {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
-function formatClock(at: number): string {
+/** 评论行前缀用的时分（HH:mm） */
+export function formatClock(at: number): string {
   const d = new Date(at);
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
-function formatNow(now: Date): string {
+/** prompt 里注入的当前时间（日期 + 星期） */
+export function formatNow(now: Date): string {
   return `${formatDateTime(now.getTime())} 周${WEEKDAYS[now.getDay()]}`;
 }
 
@@ -153,7 +160,7 @@ export interface BuildReactionMessagesInput {
   persona: string;
   /** 关键词命中的 worldbook 设定块（含常驻）；空串表示无命中不注入 */
   worldbook?: string;
-  post: { title?: string; text: string; imageCount: number; images?: MomentPostImage[] };
+  post: { title?: string; text: string; imageCount: number; images?: MomentPostImage[]; mentioned?: boolean };
   localNow: Date;
 }
 
@@ -164,6 +171,8 @@ export function buildReactionMessages(input: BuildReactionMessagesInput): ChatMe
   if (input.post.title?.trim()) lines.push(`标题：${input.post.title.trim()}`);
   lines.push(`正文：${input.post.text.trim()}`);
   lines.push(`配图：${input.post.imageCount} 张`);
+  // 点名提示：被 @ 的人通常意识到"这是问我的"，回应会更有针对性
+  if (input.post.mentioned) lines.push("（用户在这条动态里 @ 了你）");
   lines.push(`当前时间：${formatNow(input.localNow)}`);
 
   const user = `${lines.join("\n")}
@@ -171,9 +180,7 @@ export function buildReactionMessages(input: BuildReactionMessagesInput): ChatMe
 请只返回以下一种 JSON，不要使用 Markdown 代码块，也不要添加解释：
 {"like":true,"comment":{"shouldComment":true,"text":"要留下的评论"}}
 或
-{"like":true,"comment":{"shouldComment":false}}
-或
-{"like":false,"comment":{"shouldComment":false}}`;
+{"like":true,"comment":{"shouldComment":false}}`;
 
   return [
     { role: "system", content: system },
@@ -244,6 +251,8 @@ export interface BuildPostGenerationMessagesInput {
   persona: string;
   /** 关键词命中的 worldbook 设定块（含常驻）；空串表示无命中不注入 */
   worldbook?: string;
+  /** 插件提示词上下文，moments-post 场景；空串/缺省不注入 */
+  pluginContext?: string;
   /** 触发摘录：ring buffer 组装的会话原文 */
   summary: string;
   /** 最近昔涟动态（供新颖性判断） */
@@ -256,6 +265,7 @@ export function buildPostGenerationMessages(input: BuildPostGenerationMessagesIn
   const packet = buildPostGenerationPacket({
     summary: input.summary,
     recentCyrenePosts: input.recentCyrenePosts,
+    pluginContext: input.pluginContext,
     localNow: input.localNow,
   });
   const user = `${packet}
@@ -417,37 +427,67 @@ export async function runMomentsModel(input: RunMomentsModelInput): Promise<Mome
   }
 }
 
-// ── Agent：决策 → 提交 ──────────────────────────────────────────
+// ── Agent：决策（不落库） ───────────────────────────────────────
 
 export interface MomentsAgentDeps {
   buildPersona: () => string;
   runModel: (messages: ChatMessage[]) => Promise<MomentsModelOutput>;
-  /** 提交昔涟点赞（store 串行队列内含开关与存在性复核） */
-  commitLike: (postId: string) => Promise<unknown>;
-  /** 提交昔涟评论 */
-  commitComment: (input: { postId: string; content: string; replyTo?: string }) => Promise<unknown>;
   /** 提交昔涟动态（store 串行队列内含开关复核）；返回 applied 表示真的落库 */
   commitPost: (input: { text: string; media: MomentMedia[]; source: MomentPostSource }) => Promise<{ applied: boolean }>;
   /** 后置配图匹配：wantImage 时按文案+摘录选官方素材；未命中返回 null（纯文字降级） */
   matchMedia: (query: string) => Promise<MomentMedia | null>;
   /** 关键词命中 worldbook 设定（含常驻）；未注入或无命中时返回空串 */
   buildWorldbookContext?: (text: string) => string;
+  /** 注入插件提示词上下文（moments-post 场景）；未注入或抛错时发帖不带插件上下文 */
+  buildPluginPromptContext?: (input: {
+    source: "moments-post";
+    userText: string;
+    /** 触发发帖的会话（事件到达时的快照）；按会话隔离记忆的插件可用它过滤 */
+    conversationId?: string;
+    /** 触发发帖的渠道（事件到达时的快照） */
+    channel?: string;
+  }) => Promise<string>;
   /** 读取用户动态图片（user_attachment 副本）转 base64 直发多模态模型；未注入时不带图 */
   loadPostImages?: (post: MomentPost) => MomentPostImage[];
-  /** 执行时重读动态与评论线程：AI 思考期间世界可能已变 */
+  /** 决策前重读动态与评论线程：排队期间世界可能已变 */
   loadFeedItem: (postId: string) => MomentFeedItem | null;
   log?: (event: string, detail?: unknown) => void;
 }
 
 export interface MomentsAgent {
-  evaluateUserPost: (post: MomentPost) => Promise<void>;
-  generateCommentReply: (postId: string, replyTargetId: string) => Promise<void>;
-  /** 主动发帖决策：返回是否真的发出了动态（供策略层记账） */
-  generatePost: (input: { summary: string; recentCyrenePosts: readonly MomentPost[] }) => Promise<boolean>;
+  /** 昔涟对动态表态的决策：动态已删 → stale；模型失败 → retry；输出非法 → invalid。
+   *  mentioned：用户在这条动态里 @ 了昔涟——prompt 会感知点名，延迟也走秒回档。 */
+  decideUserPostReaction: (postId: string, mentioned?: boolean) => Promise<ReactionDecideOutcome>;
+  /** 昔涟被回复后的决策：post 已删 / 触发评论已删 → stale */
+  decideCommentReply: (postId: string, replyTargetId: string) => Promise<ReactionDecideOutcome>;
+  /** 主动发帖决策：返回是否真的发出了动态（供策略层记账）；发帖不走决策/落库分离——配图匹配本身就是决策的一部分。
+   *  conversationId / channel 是触发发帖的会话归属（事件到达时冻结的快照），原样透传给插件提示词上下文。 */
+  generatePost: (input: {
+    summary: string;
+    recentCyrenePosts: readonly MomentPost[];
+    conversationId?: string;
+    channel?: string;
+  }) => Promise<boolean>;
+}
+
+/** 表态决策（like + 可选评论）映射为统一决策形态：silent / like / comment / like_comment */
+function toPostReactionDecision(decision: MomentReactionDecision): ReactionDecision {
+  if (decision.kind !== "react") return { action: "silent" };
+  if (decision.like && decision.commentText) {
+    return { action: "like_comment", comment: decision.commentText };
+  }
+  if (decision.like) return { action: "like" };
+  if (decision.commentText) return { action: "comment", comment: decision.commentText };
+  return { action: "silent" };
 }
 
 export function createMomentsAgent(deps: MomentsAgentDeps): MomentsAgent {
-  async function evaluateUserPost(post: MomentPost): Promise<void> {
+  async function decideUserPostReaction(postId: string, mentioned?: boolean): Promise<ReactionDecideOutcome> {
+    // 决策前重读：排队期间动态可能已被删除
+    const feed = deps.loadFeedItem(postId);
+    if (!feed) return { type: "stale", reason: "post_not_found" };
+    const post = feed.post;
+
     const output = await deps.runModel(buildReactionMessages({
       persona: deps.buildPersona(),
       // 用户动态文本扫 worldbook 关键词，命中注入设定防幻觉
@@ -457,28 +497,27 @@ export function createMomentsAgent(deps: MomentsAgentDeps): MomentsAgent {
         text: post.text,
         imageCount: post.media.length,
         images: deps.loadPostImages?.(post),
+        mentioned,
       },
       localNow: new Date(),
     }));
-    if (output.kind !== "text") return;
+    if (output.kind !== "text") return { type: "retry", reason: output.reason };
 
     const decision = parseReactionDecision(output.text);
     if (decision.kind === "invalid") {
       deps.log?.("reaction_decision_invalid", decision.reason);
-      return;
+      return { type: "invalid", reason: decision.reason };
     }
-    if (decision.kind === "ignore") return;
-    if (decision.like) await deps.commitLike(post.id);
-    if (decision.commentText) {
-      await deps.commitComment({ postId: post.id, content: decision.commentText });
-    }
+    return { type: "decided", decision: toPostReactionDecision(decision) };
   }
 
-  async function generateCommentReply(postId: string, replyTargetId: string): Promise<void> {
-    // 执行时重读：动态或触发评论已被删除时静默放弃
+  async function decideCommentReply(postId: string, replyTargetId: string): Promise<ReactionDecideOutcome> {
+    // 决策前重读：动态或触发评论已被删除时任务作废
     const feed = deps.loadFeedItem(postId);
-    if (!feed) return;
-    if (!feed.comments.some((comment) => comment.id === replyTargetId)) return;
+    if (!feed) return { type: "stale", reason: "post_not_found" };
+    if (!feed.comments.some((comment) => comment.id === replyTargetId)) {
+      return { type: "stale", reason: "trigger_comment_not_found" };
+    }
 
     const output = await deps.runModel(buildReplyMessages({
       persona: deps.buildPersona(),
@@ -496,22 +535,41 @@ export function createMomentsAgent(deps: MomentsAgentDeps): MomentsAgent {
       triggerExcerpt: feed.post.source?.triggerExcerpt,
       localNow: new Date(),
     }));
-    if (output.kind !== "text") return;
+    if (output.kind !== "text") return { type: "retry", reason: output.reason };
 
     const decision = parseReplyDecision(output.text);
     if (decision.kind === "invalid") {
       deps.log?.("reply_decision_invalid", decision.reason);
-      return;
+      return { type: "invalid", reason: decision.reason };
     }
-    if (decision.kind === "skip") return;
-    await deps.commitComment({ postId, content: decision.text, replyTo: replyTargetId });
+    if (decision.kind === "skip") return { type: "decided", decision: { action: "silent" } };
+    return { type: "decided", decision: { action: "reply", comment: decision.text } };
   }
 
-  async function generatePost(input: { summary: string; recentCyrenePosts: readonly MomentPost[] }): Promise<boolean> {
+  async function generatePost(input: {
+    summary: string;
+    recentCyrenePosts: readonly MomentPost[];
+    conversationId?: string;
+    channel?: string;
+  }): Promise<boolean> {
+    // 插件补充上下文是锦上添花：构建失败只记日志降级为空串，不阻断发帖主流程（fail-safe）
+    let pluginContext = "";
+    try {
+      // 会话归属可选字段在缺省时不传，保持与 conversation/scheduler 场景一致的形状
+      pluginContext = await deps.buildPluginPromptContext?.({
+        source: "moments-post",
+        userText: input.summary,
+        ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+        ...(input.channel ? { channel: input.channel } : {}),
+      }) ?? "";
+    } catch (error) {
+      deps.log?.("post_plugin_context_failed", error instanceof Error ? error.message : String(error));
+    }
     const output = await deps.runModel(buildPostGenerationMessages({
       persona: deps.buildPersona(),
       // 会话摘录扫 worldbook 关键词，发帖文案才能贴合设定
       worldbook: deps.buildWorldbookContext?.(input.summary) ?? "",
+      pluginContext,
       summary: input.summary,
       recentCyrenePosts: input.recentCyrenePosts,
       localNow: new Date(),
@@ -525,7 +583,7 @@ export function createMomentsAgent(deps: MomentsAgentDeps): MomentsAgent {
     }
     if (decision.kind === "skip") return false;
 
-    // 后置配图（§7.5）：LLM 只表态想要图，选图由本地 embedding 匹配完成；
+    // 后置配图：LLM 只表态想要图，选图由本地 embedding 匹配完成；
     // 未命中阈值 / 索引未就绪时降级纯文字，不硬凑图
     let media: MomentMedia[] = [];
     if (decision.wantImage) {
@@ -542,5 +600,5 @@ export function createMomentsAgent(deps: MomentsAgentDeps): MomentsAgent {
     return result.applied;
   }
 
-  return { evaluateUserPost, generateCommentReply, generatePost };
+  return { decideUserPostReaction, decideCommentReply, generatePost };
 }

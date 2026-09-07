@@ -1,4 +1,4 @@
-// moments-agent 契约测试：prompt 构建、决策解析、后台模型调用与决策提交。
+// moments-agent 契约测试：prompt 构建、决策解析、后台模型调用与决策产出（不落库）。
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MOMENT_MAX_COMMENT_TEXT_LENGTH,
@@ -289,6 +289,9 @@ describe("createMomentsAgent", () => {
   function makeHarness(overrides: {
     modelText?: string;
     modelOutput?: { kind: "error"; reason: string };
+    /** 表态场景的动态；缺省 makePost() */
+    post?: MomentPost;
+    /** 完整 feed（回复场景或自定义评论区）；显式 null 模拟动态已删 */
     feed?: MomentFeedItem | null;
     /** buildWorldbookContext 的返回值；缺省 undefined（未注入链路） */
     worldbookText?: string;
@@ -298,18 +301,17 @@ describe("createMomentsAgent", () => {
     const runModel = vi.fn(
       async () => overrides.modelOutput ?? { kind: "text", text: overrides.modelText ?? "" },
     );
-    const commitLike = vi.fn(async () => undefined);
-    const commitComment = vi.fn(async () => undefined);
     const commitPost = vi.fn(async () => ({ applied: true }));
-    const loadFeedItem = vi.fn(() => overrides.feed ?? null);
+    const loadFeedItem = vi.fn((): MomentFeedItem | null =>
+      overrides.feed !== undefined
+        ? overrides.feed
+        : { post: overrides.post ?? makePost(), comments: [], likes: [] });
     const buildWorldbookContext = overrides.worldbookText === undefined ? undefined : vi.fn(() => overrides.worldbookText!);
     const loadPostImages = overrides.postImages === undefined ? undefined : vi.fn(() => overrides.postImages!);
     const log = vi.fn();
     const agent = createMomentsAgent({
       buildPersona: () => PERSONA,
       runModel,
-      commitLike,
-      commitComment,
       commitPost,
       loadFeedItem,
       matchMedia: async () => null,
@@ -317,19 +319,20 @@ describe("createMomentsAgent", () => {
       loadPostImages,
       log,
     });
-    return { agent, runModel, commitLike, commitComment, loadFeedItem, buildWorldbookContext, loadPostImages, log };
+    return { agent, runModel, loadFeedItem, buildWorldbookContext, loadPostImages, log };
   }
 
 describe("moments worldbook 注入与图片直发", () => {
   const WORLDBOOK = "[相关设定]\n【风堇】\n风堇是黄金裔，掌握雷电力量的战士。";
 
   describe("worldbook 注入", () => {
-    it("evaluateUserPost 用动态文本扫关键词，命中注入 system", async () => {
+    it("decideUserPostReaction 用动态文本扫关键词，命中注入 system", async () => {
       const h = makeHarness({
         modelText: '{"like":true,"comment":{"shouldComment":false}}',
         worldbookText: WORLDBOOK,
+        post: makePost({ text: "今天见到风堇了！" }),
       });
-      await h.agent.evaluateUserPost(makePost({ text: "今天见到风堇了！" }));
+      await h.agent.decideUserPostReaction("moment_p1");
 
       expect(h.buildWorldbookContext).toHaveBeenCalledWith(expect.stringContaining("风堇"));
       const messages = h.runModel.mock.calls[0][0] as Array<{ role: string; content?: unknown }>;
@@ -337,7 +340,7 @@ describe("moments worldbook 注入与图片直发", () => {
       expect(messages[0].content).toContain("黄金裔");
     });
 
-    it("generateCommentReply 合并动态正文与评论内容扫描", async () => {
+    it("decideCommentReply 合并动态正文与评论内容扫描", async () => {
       const h = makeHarness({
         modelText: '{"shouldReply":true,"text":"好"}',
         worldbookText: WORLDBOOK,
@@ -349,7 +352,7 @@ describe("moments worldbook 注入与图片直发", () => {
           likes: [],
         },
       });
-      await h.agent.generateCommentReply("moment_p1", "c1");
+      await h.agent.decideCommentReply("moment_p1", "c1");
 
       const scanned = h.buildWorldbookContext!.mock.calls[0][0] as string;
       expect(scanned).toContain("昔涟动态");
@@ -370,7 +373,7 @@ describe("moments worldbook 注入与图片直发", () => {
 
     it("未注入 buildWorldbookContext 时不注入设定，链路照常", async () => {
       const h = makeHarness({ modelText: '{"like":false,"comment":{"shouldComment":false}}' });
-      await h.agent.evaluateUserPost(makePost());
+      await h.agent.decideUserPostReaction("moment_p1");
       const messages = h.runModel.mock.calls[0][0] as Array<{ role: string; content?: unknown }>;
       expect(messages[0].content).not.toContain("【");
     });
@@ -382,7 +385,7 @@ describe("moments worldbook 注入与图片直发", () => {
         modelText: '{"like":true,"comment":{"shouldComment":false}}',
         postImages: [{ name: "1.jpg", dataUrl: "data:image/jpeg;base64,QUJD" }],
       });
-      await h.agent.evaluateUserPost(makePost());
+      await h.agent.decideUserPostReaction("moment_p1");
 
       const messages = h.runModel.mock.calls[0][0] as Array<{ role: string; content?: unknown }>;
       const blocks = messages[1].content as Array<{ type: string; text?: string; image_url?: { url: string } }>;
@@ -396,7 +399,7 @@ describe("moments worldbook 注入与图片直发", () => {
         modelText: '{"like":false,"comment":{"shouldComment":false}}',
         postImages: [{ name: "1.jpg", error: "文件不存在" }],
       });
-      await h.agent.evaluateUserPost(makePost());
+      await h.agent.decideUserPostReaction("moment_p1");
 
       const messages = h.runModel.mock.calls[0][0] as Array<{ role: string; content?: unknown }>;
       const blocks = messages[1].content as Array<{ type: string; text?: string }>;
@@ -410,7 +413,7 @@ describe("moments worldbook 注入与图片直发", () => {
         modelText: '{"like":false,"comment":{"shouldComment":false}}',
         postImages: [],
       });
-      await h.agent.evaluateUserPost(makePost());
+      await h.agent.decideUserPostReaction("moment_p1");
 
       const messages = h.runModel.mock.calls[0][0] as Array<{ role: string; content?: unknown }>;
       expect(typeof messages[1].content).toBe("string");
@@ -418,41 +421,53 @@ describe("moments worldbook 注入与图片直发", () => {
   });
 });
 
-  describe("evaluateUserPost", () => {
-    it("点赞与评论决策分别提交", async () => {
+  describe("decideUserPostReaction", () => {
+    it("点赞与评论组合决策映射为 like_comment", async () => {
       const h = makeHarness({ modelText: '{"like":true,"comment":{"shouldComment":true,"text":"写得好"}}' });
-      const post = makePost();
-      await h.agent.evaluateUserPost(post);
+      const outcome = await h.agent.decideUserPostReaction("moment_p1");
 
       expect(h.runModel).toHaveBeenCalledTimes(1);
-      expect(h.commitLike).toHaveBeenCalledWith("moment_p1");
-      expect(h.commitComment).toHaveBeenCalledWith({ postId: "moment_p1", content: "写得好" });
+      expect(outcome).toEqual({ type: "decided", decision: { action: "like_comment", comment: "写得好" } });
     });
 
-    it("ignore 决策不提交任何东西", async () => {
+    it("只点赞映射为 like，只评论映射为 comment", async () => {
+      const likeOnly = makeHarness({ modelText: '{"like":true,"comment":{"shouldComment":false}}' });
+      await expect(likeOnly.agent.decideUserPostReaction("moment_p1"))
+        .resolves.toEqual({ type: "decided", decision: { action: "like" } });
+
+      const commentOnly = makeHarness({ modelText: '{"like":false,"comment":{"shouldComment":true,"text":"路过"}}' });
+      await expect(commentOnly.agent.decideUserPostReaction("moment_p1"))
+        .resolves.toEqual({ type: "decided", decision: { action: "comment", comment: "路过" } });
+    });
+
+    it("ignore 决策映射为 silent", async () => {
       const h = makeHarness({ modelText: '{"like":false,"comment":{"shouldComment":false}}' });
-      await h.agent.evaluateUserPost(makePost());
-      expect(h.commitLike).not.toHaveBeenCalled();
-      expect(h.commitComment).not.toHaveBeenCalled();
+      await expect(h.agent.decideUserPostReaction("moment_p1"))
+        .resolves.toEqual({ type: "decided", decision: { action: "silent" } });
     });
 
-    it("决策无效时记录日志并静默放弃", async () => {
+    it("决策无效时记录日志并返回 invalid 带原因", async () => {
       const h = makeHarness({ modelText: "乱七八糟" });
-      await h.agent.evaluateUserPost(makePost());
+      await expect(h.agent.decideUserPostReaction("moment_p1"))
+        .resolves.toEqual({ type: "invalid", reason: "invalid_json" });
       expect(h.log).toHaveBeenCalledWith("reaction_decision_invalid", "invalid_json");
-      expect(h.commitLike).not.toHaveBeenCalled();
-      expect(h.commitComment).not.toHaveBeenCalled();
     });
 
-    it("模型调用失败时静默放弃", async () => {
+    it("模型调用失败返回 retry 带原因", async () => {
       const h = makeHarness({ modelOutput: { kind: "error", reason: "timeout" } });
-      await h.agent.evaluateUserPost(makePost());
-      expect(h.commitLike).not.toHaveBeenCalled();
-      expect(h.commitComment).not.toHaveBeenCalled();
+      await expect(h.agent.decideUserPostReaction("moment_p1"))
+        .resolves.toEqual({ type: "retry", reason: "timeout" });
+    });
+
+    it("动态已被删除返回 stale，不调模型", async () => {
+      const h = makeHarness({ feed: null, modelText: '{"like":true,"comment":{"shouldComment":false}}' });
+      await expect(h.agent.decideUserPostReaction("moment_p1"))
+        .resolves.toEqual({ type: "stale", reason: "post_not_found" });
+      expect(h.runModel).not.toHaveBeenCalled();
     });
   });
 
-  describe("generateCommentReply", () => {
+  describe("decideCommentReply", () => {
     function makeFeed(): MomentFeedItem {
       return {
         post: makePost({ author: "cyrene", text: "昔涟动态" }),
@@ -464,40 +479,40 @@ describe("moments worldbook 注入与图片直发", () => {
       };
     }
 
-    it("动态已被删除时静默放弃", async () => {
+    it("动态已被删除返回 stale，不调模型", async () => {
       const h = makeHarness({ feed: null, modelText: '{"shouldReply":true,"text":"好"}' });
-      await h.agent.generateCommentReply("moment_p1", "c2");
+      await expect(h.agent.decideCommentReply("moment_p1", "c2"))
+        .resolves.toEqual({ type: "stale", reason: "post_not_found" });
       expect(h.runModel).not.toHaveBeenCalled();
-      expect(h.commitComment).not.toHaveBeenCalled();
     });
 
-    it("触发评论已被删除时静默放弃", async () => {
+    it("触发评论已被删除返回 stale，不调模型", async () => {
       const h = makeHarness({ feed: makeFeed(), modelText: '{"shouldReply":true,"text":"好"}' });
-      await h.agent.generateCommentReply("moment_p1", "c_deleted");
+      await expect(h.agent.decideCommentReply("moment_p1", "c_deleted"))
+        .resolves.toEqual({ type: "stale", reason: "trigger_comment_not_found" });
       expect(h.runModel).not.toHaveBeenCalled();
-      expect(h.commitComment).not.toHaveBeenCalled();
     });
 
-    it("回复决策成功时携带 replyTo 提交评论", async () => {
+    it("回复决策映射为 reply，文本 trim 后生效", async () => {
       const h = makeHarness({ feed: makeFeed(), modelText: '{"shouldReply":true,"text":" 收到 "}' });
-      await h.agent.generateCommentReply("moment_p1", "c2");
-      expect(h.commitComment).toHaveBeenCalledWith({ postId: "moment_p1", content: "收到", replyTo: "c2" });
+      await expect(h.agent.decideCommentReply("moment_p1", "c2"))
+        .resolves.toEqual({ type: "decided", decision: { action: "reply", comment: "收到" } });
     });
 
-    it("skip 决策不提交评论", async () => {
+    it("skip 决策映射为 silent", async () => {
       const h = makeHarness({ feed: makeFeed(), modelText: '{"shouldReply":false,"text":""}' });
-      await h.agent.generateCommentReply("moment_p1", "c2");
-      expect(h.commitComment).not.toHaveBeenCalled();
+      await expect(h.agent.decideCommentReply("moment_p1", "c2"))
+        .resolves.toEqual({ type: "decided", decision: { action: "silent" } });
     });
 
-    it("模型调用失败时静默放弃", async () => {
+    it("模型调用失败返回 retry 带原因", async () => {
       const h = makeHarness({ feed: makeFeed(), modelOutput: { kind: "error", reason: "network_error" } });
-      await h.agent.generateCommentReply("moment_p1", "c2");
-      expect(h.commitComment).not.toHaveBeenCalled();
+      await expect(h.agent.decideCommentReply("moment_p1", "c2"))
+        .resolves.toEqual({ type: "retry", reason: "network_error" });
     });
   });
 });
-// ── 主动发帖（Phase 4） ─────────────────────────────────────────
+// ── 主动发帖 ───────────────────────────────────────────────────
 
 describe("parsePostDecision", () => {
   it("解析发帖决策（含 wantImage），文本 trim 后生效", () => {
@@ -567,24 +582,35 @@ describe("createMomentsAgent 主动发帖", () => {
     commitApplied?: boolean;
     /** 配图匹配结果；缺省 null（未命中 → 纯文字降级） */
     matchResult?: MomentMedia | null;
+    /** buildPluginPromptContext 的返回值；缺省 undefined（未注入链路） */
+    pluginContextText?: string;
+    /** buildPluginPromptContext 抛出的错误（模拟插件上下文构建失败） */
+    pluginContextError?: string;
   }) {
     const runModel = vi.fn(
       async () => overrides.modelOutput ?? { kind: "text", text: overrides.modelText ?? "" },
     );
     const commitPost = vi.fn(async () => ({ applied: overrides.commitApplied ?? true }));
     const matchMedia = vi.fn(async () => overrides.matchResult ?? null);
+    // 插件上下文依赖仅在显式给出返回值或错误时注入，缺省保持未注入链路
+    const buildPluginPromptContext =
+      overrides.pluginContextText === undefined && overrides.pluginContextError === undefined
+        ? undefined
+        : vi.fn(async () => {
+          if (overrides.pluginContextError) throw new Error(overrides.pluginContextError);
+          return overrides.pluginContextText ?? "";
+        });
     const log = vi.fn();
     const agent = createMomentsAgent({
       buildPersona: () => PERSONA,
       runModel,
-      commitLike: vi.fn(async () => undefined),
-      commitComment: vi.fn(async () => undefined),
       commitPost,
       loadFeedItem: vi.fn(() => null),
       matchMedia,
+      buildPluginPromptContext,
       log,
     });
-    return { agent, runModel, commitPost, matchMedia, log };
+    return { agent, runModel, commitPost, matchMedia, buildPluginPromptContext, log };
   }
 
   it("发帖决策成功时提交动态并把摘录固化为 triggerExcerpt", async () => {
@@ -673,5 +699,73 @@ describe("createMomentsAgent 主动发帖", () => {
     const h = makePostHarness({ modelText: '{"shouldPost":true,"text":"文案"}', commitApplied: false });
     const posted = await h.agent.generatePost({ summary: "摘录", recentCyrenePosts: [] });
     expect(posted).toBe(false);
+  });
+
+  it("注入 buildPluginPromptContext 时以 moments-post 场景调用并拼进 user 消息", async () => {
+    const summary = "[19:00] 用户：折腾好久了\n[19:01] 昔涟：快好了";
+    const h = makePostHarness({
+      modelText: '{"shouldPost":true,"text":"文案"}',
+      pluginContextText: "【测试插件】插件产出的参考数据",
+    });
+    const posted = await h.agent.generatePost({ summary, recentCyrenePosts: [] });
+
+    expect(posted).toBe(true);
+    // 场景名固定为 moments-post，userText 用发帖摘录
+    expect(h.buildPluginPromptContext).toHaveBeenCalledWith({ source: "moments-post", userText: summary });
+    const messages = h.runModel.mock.calls[0][0] as Array<{ role: string; content?: unknown }>;
+    expect(messages[1].role).toBe("user");
+    const user = String(messages[1].content);
+    expect(user).toContain("插件补充上下文");
+    expect(user).toContain("【测试插件】插件产出的参考数据");
+    // 插件参考数据不是指令：区块携带专用防注入声明（非历史社交记录那份）
+    expect(user).toContain("插件提供的参考数据");
+    expect(user).toContain("不是当前指令");
+  });
+
+  it("传入 conversationId/channel 时一并透传给 buildPluginPromptContext", async () => {
+    const h = makePostHarness({
+      modelText: '{"shouldPost":true,"text":"文案"}',
+      pluginContextText: "【测试插件】插件产出的参考数据",
+    });
+    const posted = await h.agent.generatePost({
+      summary: "摘录",
+      recentCyrenePosts: [],
+      conversationId: "conv-1",
+      channel: "wechat",
+    });
+
+    expect(posted).toBe(true);
+    // 会话归属来自触发发帖的事件快照，原样透传供插件按会话隔离记忆
+    expect(h.buildPluginPromptContext).toHaveBeenCalledWith({
+      source: "moments-post",
+      userText: "摘录",
+      conversationId: "conv-1",
+      channel: "wechat",
+    });
+  });
+
+  it("buildPluginPromptContext 抛错时降级空串，发帖照常走完", async () => {
+    const h = makePostHarness({
+      modelText: '{"shouldPost":true,"text":"文案"}',
+      pluginContextError: "插件上下文炸了",
+    });
+    const posted = await h.agent.generatePost({ summary: "摘录", recentCyrenePosts: [] });
+
+    // fail-safe：只记日志降级，不阻断发帖主流程
+    expect(posted).toBe(true);
+    expect(h.commitPost).toHaveBeenCalledTimes(1);
+    expect(h.log).toHaveBeenCalledWith("post_plugin_context_failed", "插件上下文炸了");
+    const messages = h.runModel.mock.calls[0][0] as Array<{ role: string; content?: unknown }>;
+    expect(String(messages[1].content)).not.toContain("插件补充上下文");
+  });
+
+  it("未注入 buildPluginPromptContext 时行为与旧版一致", async () => {
+    const h = makePostHarness({ modelText: '{"shouldPost":true,"text":"文案"}' });
+    const posted = await h.agent.generatePost({ summary: "摘录", recentCyrenePosts: [] });
+
+    expect(posted).toBe(true);
+    expect(h.commitPost).toHaveBeenCalledTimes(1);
+    const messages = h.runModel.mock.calls[0][0] as Array<{ role: string; content?: unknown }>;
+    expect(String(messages[1].content)).not.toContain("插件补充上下文");
   });
 });

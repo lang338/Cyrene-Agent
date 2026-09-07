@@ -454,6 +454,17 @@ describe("ResponsesAdapter — structuredOutput 与推理控制", () => {
     expect(body.reasoning).toEqual({ effort: "high", mode: "pro" });
   });
 
+  // GPT-6 Astra 官方迁移指南确认继续支持 pro mode（与 5.6 一致）
+  test("gpt-6-astra + proMode → reasoning:{effort, mode:'pro'}", () => {
+    const chatgptCap: ProviderCapability = { ...capability, id: "chatgpt" };
+    const { body } = makeBody([{ role: "user", content: "hi" }], {
+      cap: chatgptCap,
+      config: { model: "gpt-6-astra", reasoning: { mode: "on", effort: "max", proMode: true } },
+    });
+    expect(body.reasoning).toEqual({ effort: "max", mode: "pro" });
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
   test("proMode 不被支持的模型（gpt-5.1）→ 不发 reasoning.mode", () => {
     const chatgptCap: ProviderCapability = { ...capability, id: "chatgpt" };
     const { body } = makeBody([{ role: "user", content: "hi" }], {

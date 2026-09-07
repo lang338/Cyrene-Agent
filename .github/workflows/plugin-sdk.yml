@@ -2,8 +2,7 @@ name: plugin-sdk
 
 # 插件开发包的构建、校验与发布：
 # - PR / master 推送只做构建、打包与示例编译测试
-# - plugin-sdk-v* 标签触发 npm 发布：优先 Trusted Publishing（OIDC + provenance），
-#   仓库未配置 Trusted Publishing 时回退到最小权限的 NPM_TOKEN
+# - plugin-sdk-v* 标签通过 Trusted Publishing（OIDC + provenance）发布到 npm
 on:
   push:
     branches: [master]
@@ -50,7 +49,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "24"
-          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: npm ci --foreground-scripts
@@ -58,14 +56,14 @@ jobs:
       - name: Build SDK
         run: npm run build:plugin-sdk
 
-      # 发布凭据属于仓库外配置：npm 侧已绑定 Trusted Publishing 时直接
-      # publish --provenance；否则使用仓库 secret 中的 NPM_TOKEN
-      - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Verify OIDC publishing prerequisites
         run: |
-          if [ -n "$NODE_AUTH_TOKEN" ]; then
-            npm publish ./packages/plugin-sdk --access public
-          else
-            npm publish ./packages/plugin-sdk --access public --provenance
-          fi
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          npm config get registry
+
+      # npm Trusted Publishing 通过 GitHub OIDC 交换短期发布凭据。
+      # 不配置 registry-url / NODE_AUTH_TOKEN，避免 setup-node 生成空的
+      # _authToken 并使 npm 错走传统令牌鉴权。
+      - name: Publish to npm
+        run: npm publish ./packages/plugin-sdk --access public --loglevel verbose

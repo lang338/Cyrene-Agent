@@ -24,7 +24,9 @@ const DEFINITIONS: readonly ProfileDefinition[] = [
     id: "openai-structured-output",
     provider: "chatgpt",
     transport: "openai",
-    modelPattern: /^(?:gpt-5(?:\.\d+)?(?:-(?:sol|terra|luna))?|gpt-4\.1(?:$|-)|gpt-4o-mini(?:$|-)|gpt-4o-(?:2024-08-06|2024-11-20)|o[134](?:$|-))/i,
+    // gpt-6 只按已发布的家族前缀匹配（gpt-6 / gpt-6-astra），不预测未来小版本号，
+    // 协议兼容矩阵比 UI 能力表更保守。
+    modelPattern: /^(?:gpt-6(?:$|-)|gpt-5(?:\.\d+)?(?:-(?:sol|terra|luna))?|gpt-4\.1(?:$|-)|gpt-4o-mini(?:$|-)|gpt-4o-(?:2024-08-06|2024-11-20)|o[134](?:$|-))/i,
     tier: "A",
     mode: "provider_json_schema",
     verification: "official",

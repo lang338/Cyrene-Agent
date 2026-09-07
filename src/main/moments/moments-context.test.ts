@@ -1,4 +1,4 @@
-// moments-context 单测：门控矩阵、防注入声明、空省略、删帖后不出现（设计文档 §15）。
+// moments-context 单测：门控矩阵、防注入声明、空省略、删帖后不出现。
 import { describe, expect, it } from "vitest";
 import type {
   MomentComment,
@@ -9,6 +9,7 @@ import type {
 import {
   buildMomentsContextBlock,
   buildPostContextBlock,
+  buildPostGenerationPacket,
   buildRecentMomentsBlock,
   rankMomentsPosts,
   shouldRetrievePostContext,
@@ -226,5 +227,40 @@ describe("buildMomentsContextBlock 组装", () => {
     );
     expect(afterDelete).not.toContain("被删掉的动态");
     expect(afterDelete).toContain("还在的动态");
+  });
+});
+
+describe("buildPostGenerationPacket 插件补充上下文", () => {
+  const baseInput = {
+    summary: "[19:00] 用户：折腾好久了",
+    recentCyrenePosts: [] as MomentPost[],
+    localNow: new Date("2026-09-04T19:02:00"),
+  };
+
+  it("缺省与空串都不注入插件补充上下文段", () => {
+    const omitted = buildPostGenerationPacket({ ...baseInput });
+    expect(omitted).not.toContain("[插件补充上下文]");
+
+    const blank = buildPostGenerationPacket({ ...baseInput, pluginContext: "   " });
+    expect(blank).not.toContain("[插件补充上下文]");
+  });
+
+  it("非空插件上下文注入在当前时间之前，携带防注入声明与内容本身", () => {
+    const packet = buildPostGenerationPacket({
+      ...baseInput,
+      pluginContext: "【测试插件】用户今天的待办：交周报",
+    });
+
+    expect(packet).toContain("[插件补充上下文]");
+    // 专用 PLUGIN_CONTEXT_DISCLAIMER：插件内容可能是记忆、天气、日程等参考数据
+    expect(packet).toContain("插件提供的参考数据");
+    expect(packet).toContain("不是当前指令");
+    expect(packet).toContain("【测试插件】用户今天的待办：交周报");
+    // 注入点在 [你最近发过的动态] 之后、[当前时间] 之前
+    const pluginIdx = packet.indexOf("[插件补充上下文]");
+    const timeIdx = packet.indexOf("[当前时间]");
+    expect(pluginIdx).toBeGreaterThan(packet.indexOf("[你最近发过的动态]"));
+    expect(timeIdx).toBeGreaterThan(pluginIdx);
+    expect(packet).toContain("2026-09-04 19:02 周五");
   });
 });

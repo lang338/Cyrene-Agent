@@ -45,6 +45,7 @@ const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   chatMomentsContextEnabled: true,
   cyreneMomentsPostingEnabled: false,
   cyreneMomentsReactionsEnabled: true,
+  momentsCharacterReactionsEnabled: true,
   petAlwaysOnTop: true,
   petVisible: true,
   petZoom: 1,
@@ -68,6 +69,8 @@ const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   ttsAutoRead: true,
   ttsSpeed: 1,
   ttsVolume: 1,
+  ttsEarlyReadSplitEnabled: true,
+  ttsEarlyReadSplitMode: "sentence",
   ttsMinimaxKey: "",
   ttsMinimaxVoiceId: "",
   ttsMinimaxModel: "speech-2.8-turbo",
@@ -195,6 +198,9 @@ export function normalizeGeneralSettings(
     cyreneMomentsReactionsEnabled: input?.cyreneMomentsReactionsEnabled === undefined
       ? DEFAULT_GENERAL_SETTINGS.cyreneMomentsReactionsEnabled
       : Boolean(input.cyreneMomentsReactionsEnabled),
+    momentsCharacterReactionsEnabled: input?.momentsCharacterReactionsEnabled === undefined
+      ? DEFAULT_GENERAL_SETTINGS.momentsCharacterReactionsEnabled
+      : Boolean(input.momentsCharacterReactionsEnabled),
     petAlwaysOnTop: input?.petAlwaysOnTop === undefined
       ? DEFAULT_GENERAL_SETTINGS.petAlwaysOnTop
       : Boolean(input.petAlwaysOnTop),
@@ -239,6 +245,12 @@ export function normalizeGeneralSettings(
     ttsVolume: typeof input?.ttsVolume === "number"
       ? Math.max(0, Math.min(1, input.ttsVolume))
       : DEFAULT_GENERAL_SETTINGS.ttsVolume,
+    ttsEarlyReadSplitEnabled: typeof input?.ttsEarlyReadSplitEnabled === "boolean"
+      ? input.ttsEarlyReadSplitEnabled
+      : DEFAULT_GENERAL_SETTINGS.ttsEarlyReadSplitEnabled,
+    ttsEarlyReadSplitMode: ["sentence", "paragraph"].includes(String(input?.ttsEarlyReadSplitMode))
+      ? (input!.ttsEarlyReadSplitMode as "sentence" | "paragraph")
+      : DEFAULT_GENERAL_SETTINGS.ttsEarlyReadSplitMode,
     ttsMinimaxKey: typeof input?.ttsMinimaxKey === "string" ? input.ttsMinimaxKey : "",
     ttsMinimaxVoiceId: typeof input?.ttsMinimaxVoiceId === "string" ? input.ttsMinimaxVoiceId : "",
     ttsMinimaxModel: input?.ttsMinimaxModel === "speech-2.8-hd" ? "speech-2.8-hd" : "speech-2.8-turbo",
