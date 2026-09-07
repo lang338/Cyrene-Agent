@@ -43,6 +43,44 @@ describe("scheduler store", () => {
     expect(store2.getTasks()[0].title).toBe("Morning");
   });
 
+  it("加载时丢弃落盘残留的 alertPregenerating 瞬态标志（预生成中断恢复）", () => {
+    const dir = tmpDir();
+    const tasksFile = path.join(dir, "scheduled-tasks.json");
+    // 模拟应用在预生成进行中退出：alertPregenerating: true 被持久化
+    fs.writeFileSync(
+      tasksFile,
+      JSON.stringify({
+        tasks: [{
+          id: "task-1",
+          title: "每日整理",
+          prompt: "整理资料",
+          enabled: true,
+          schedule: { kind: "daily", timeOfDay: "09:00" },
+          nextFireAt: "2026-06-23T01:00:00.000Z",
+          toolMode: "allow-list",
+          allowedToolIds: [],
+          createdAt: "2026-06-22T08:00:00.000Z",
+          updatedAt: "2026-06-22T08:00:00.000Z",
+          alertPregenerating: true,
+          alertContent: undefined,
+        }],
+      }),
+      "utf8",
+    );
+
+    const store = createSchedulerStore({
+      tasksFile,
+      historyFile: path.join(dir, "scheduled-tasks-history.jsonl"),
+      now: () => new Date("2026-06-22T08:00:00.000Z"),
+      id: () => "id-1",
+    });
+    store.load();
+
+    const task = store.getTasks()[0];
+    // 瞬态标志被归一化丢弃：到点可走预生成快路径/实时执行兜底，fireNow 不再被永久拒绝
+    expect(task.alertPregenerating).toBeUndefined();
+  });
+
   it("keeps 50 history entries per task and 1000 globally", () => {
     const dir = tmpDir();
     const store = createSchedulerStore({

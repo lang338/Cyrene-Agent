@@ -52,6 +52,18 @@ export async function synthesize(opts: CustomCloudSynthesizeOptions): Promise<Cu
   if (!endpointUrl) throw new Error("缺少自定义云端 TTS 地址");
   if (!text) throw new Error("缺少合成文本");
 
+  // 凭据安全（CWE-319）：apiKey 走 Authorization 头传输，端点必须 https——
+  // 明文 http 下网络观察者可直接读取凭据。
+  let requestUrl: URL;
+  try {
+    requestUrl = new URL(endpointUrl);
+  } catch {
+    throw new Error(`自定义云端 TTS 地址无效: ${endpointUrl}`);
+  }
+  if (requestUrl.protocol !== "https:") {
+    throw new Error("自定义云端 TTS 地址必须使用 https（避免 API key 明文传输）");
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const headers: Record<string, string> = {
@@ -81,6 +93,9 @@ export async function synthesize(opts: CustomCloudSynthesizeOptions): Promise<Cu
         format,
       }),
       signal: controller.signal,
+      // 不跟随重定向：307/308 会把请求体（含播报文本）重放到目标地址，
+      // 若目标降级为 http 则明文外泄（Authorization 会被 fetch 剥离，但 body 不会）。
+      redirect: "error",
     });
   } catch (err) {
     clearTimeout(timer);
@@ -92,6 +107,16 @@ export async function synthesize(opts: CustomCloudSynthesizeOptions): Promise<Cu
     throw new Error(`自定义云端 TTS 请求失败: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     clearTimeout(timer);
+  }
+
+  // 防降级重定向：fetch 会自动跟随重定向，若终态 URL 降级为 http 则中止——
+  // 不向明文连接发送凭据，也不读取其响应。（https→http 必为跨源，fetch 规范
+  // 本就会剥离 Authorization，此处为显式防御 + 阻断明文响应内容。）
+  // 构造的 Response（测试桩等）可能没有 url，回退到已校验 https 的请求地址。
+  const finalUrl = resp.url || requestUrl.href;
+  if (new URL(finalUrl).protocol !== "https:") {
+    log({ phase: "error", error: "redirect downgraded to http", finalUrl, durationMs: Date.now() - startedAt });
+    throw new Error("自定义云端 TTS 重定向降级到 http，已中止以保护 API key");
   }
 
   if (!resp.ok) {

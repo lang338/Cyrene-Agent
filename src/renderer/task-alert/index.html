@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ui-theme="pearl-white">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>昔涟 · 定时任务提醒</title>
+  <link rel="stylesheet" href="../ui/tokens.css" />
+  <link rel="stylesheet" href="../ui/fonts.css" />
+  <link rel="stylesheet" href="../ui/base.css" />
+  <link rel="stylesheet" href="./task-alert.css" />
+  <link rel="stylesheet" href="../ui/theme.css" />
+</head>
+<body>
+  <div class="task-alert">
+    <header class="task-alert__titlebar">
+      <div class="task-alert__title">
+        <span class="task-alert__icon" aria-hidden="true">⏰</span>
+        <span class="task-alert__name">定时任务</span>
+        <span class="task-alert__hint" id="alert-hint">提醒</span>
+      </div>
+      <div class="task-alert__titlebar-actions">
+        <button type="button" class="task-alert__winbtn" id="min-btn" aria-label="最小化" title="最小化">
+          <svg width="9" height="2" viewBox="0 0 9 2" aria-hidden="true"><rect width="9" height="2" rx="1" fill="currentColor"/></svg>
+        </button>
+        <button type="button" class="task-alert__winbtn task-alert__winbtn--close" id="close-btn" aria-label="关闭" title="关闭">
+          <svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true">
+            <line x1="2" y1="2" x2="7" y2="7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+            <line x1="7" y1="2" x2="2" y2="7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="task-alert__body">
+      <section class="task-alert__card" aria-label="任务提醒详情">
+        <h1 class="task-alert__task-title" id="task-title">等待任务…</h1>
+        <p class="task-alert__content" id="alert-content" hidden></p>
+        <p class="task-alert__loading" id="alert-loading">昔涟正在处理任务…</p>
+      </section>
+      <div class="task-alert__audio-status" id="audio-status" hidden></div>
+    </main>
+  </div>
+  <script type="module" src="./task-alert.ts"></script>
+</body>
+</html>

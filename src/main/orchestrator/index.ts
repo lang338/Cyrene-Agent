@@ -1,6 +1,6 @@
 // Orchestrator — unified entry point
 // 只负责构建 always-on 上下文（世界书 + L0/L1）；工具的选择和执行由 CyreneHarness 处理
-import { updateWorldbookActivation, getPermanentWorldbookEntries, getActiveWorldbookEntries, getCascadeWorldbookEntries, searchMemory, INJECTION_HEADER, INJECTION_PREAMBLE } from "../rag";
+import { updateWorldbookActivation, getPermanentWorldbookEntries, getActiveWorldbookEntries, getCascadeWorldbookEntries, getKeywordMatchedWorldbookEntries, searchMemory, INJECTION_HEADER, INJECTION_PREAMBLE } from "../rag";
 import { memoryStore } from "../memory/memory-store";
 import { entityGraph } from "../memory/entity-graph";
 import { recordRecentMemoryInjection } from "../memory/recent-injected-memory";
@@ -95,10 +95,15 @@ function getWorldbookTriggerText(userInput: string): string {
 /**
  * 构建 always-on 上下文：世界书 + L0/L1 画像。
  * 不涉及工具选择和执行——那些由 function calling 处理。
+ *
+ * opts.mutateActivation: false 时走只读路径（后台轻量场景，如 task-alert 预生成）：
+ * 不推进世界书 DMAE 状态机与轮次计数，改用关键词直查注入——避免后台调用的文本
+ * 改写共享激活状态、污染后续聊天轮次的条目激活。
  */
 export async function buildAlwaysOnContext(
   userInput: string,
   recentMessages: Array<{ role: string; content: string }>,
+  opts?: { mutateActivation?: boolean },
 ): Promise<string> {
   const parts: string[] = [];
 
@@ -111,23 +116,31 @@ export async function buildAlwaysOnContext(
       parts.push("【常驻背景】\n" + permanentWb.join("\n\n"));
     }
 
-    const lastAssistant = recentMessages
-      .filter(m => m.role === "assistant")
-      .slice(-1)[0]?.content ?? "";
-    updateWorldbookActivation(getWorldbookTriggerText(userInput), lastAssistant);  // 打分（本轮用户 + 上轮模型）
-    const active = getActiveWorldbookEntries();           // 阈值门控 + 注入
-    // One-Shot cascade：用户命中后连带触发的条目（不入 DMAE 状态表，只本轮有效）
-    const cascade = getCascadeWorldbookEntries();
-    const allInjected = active.length > 0 || cascade.length > 0;
-    if (allInjected) {
-      const sections: string[] = [];
-      if (active.length > 0) {
-        sections.push(active.join("\n\n"));
+    if (opts?.mutateActivation === false) {
+      // 只读路径：关键词直查（不经 DMAE 状态机），条目内容与正常注入保持一致格式。
+      const keywordMatched = getKeywordMatchedWorldbookEntries(getWorldbookTriggerText(userInput));
+      if (keywordMatched.length > 0) {
+        parts.push(INJECTION_HEADER + "\n" + INJECTION_PREAMBLE + "\n\n" + keywordMatched.join("\n\n"));
       }
-      if (cascade.length > 0) {
-        sections.push(cascade.join("\n\n"));
+    } else {
+      const lastAssistant = recentMessages
+        .filter(m => m.role === "assistant")
+        .slice(-1)[0]?.content ?? "";
+      updateWorldbookActivation(getWorldbookTriggerText(userInput), lastAssistant);  // 打分（本轮用户 + 上轮模型）
+      const active = getActiveWorldbookEntries();           // 阈值门控 + 注入
+      // One-Shot cascade：用户命中后连带触发的条目（不入 DMAE 状态表，只本轮有效）
+      const cascade = getCascadeWorldbookEntries();
+      const allInjected = active.length > 0 || cascade.length > 0;
+      if (allInjected) {
+        const sections: string[] = [];
+        if (active.length > 0) {
+          sections.push(active.join("\n\n"));
+        }
+        if (cascade.length > 0) {
+          sections.push(cascade.join("\n\n"));
+        }
+        parts.push(INJECTION_HEADER + "\n" + INJECTION_PREAMBLE + "\n\n" + sections.join("\n\n"));
       }
-      parts.push(INJECTION_HEADER + "\n" + INJECTION_PREAMBLE + "\n\n" + sections.join("\n\n"));
     }
   } catch (err) {
     console.warn("[Orchestrator] worldbook dmae failed:", err);

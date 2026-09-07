@@ -20,6 +20,7 @@ export let settingsWindow: BrowserWindow | null = null;
 export let stickerManagerWindow: BrowserWindow | null = null;
 export let callWindow: BrowserWindow | null = null;
 export let musicPlayerWindow: BrowserWindow | null = null;
+export let taskAlertWindow: BrowserWindow | null = null;
 
 export function setReactChatWindow(win: BrowserWindow | null): void {
   reactChatWindow = win;
@@ -47,6 +48,19 @@ export function setStickerManagerWindow(win: BrowserWindow | null): void {
 
 export function setCallWindowLocal(win: BrowserWindow | null): void {
   callWindow = win;
+}
+
+export function setTaskAlertWindow(win: BrowserWindow | null): void {
+  taskAlertWindow = win;
+}
+
+/**
+ * 获取当前 taskAlertWindow 引用。
+ * 必须通过函数调用而不是直接 import `taskAlertWindow`，
+ * 因为 CommonJS 的 `export let` 不是 live binding，外部模块导入后就固化了初始值 null。
+ */
+export function getTaskAlertWindow(): BrowserWindow | null {
+  return taskAlertWindow;
 }
 
 // 启动阶段控制：在 app startup 完成前，新创建的辅助窗口先不 show，

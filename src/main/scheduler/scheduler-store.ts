@@ -101,6 +101,12 @@ function normalizeLoadedTask(raw: unknown): ScheduledTask | null {
     allowedToolIds: uniq(Array.isArray(task.allowedToolIds) ? task.allowedToolIds : []),
     createdAt: typeof task.createdAt === "string" ? task.createdAt : new Date(0).toISOString(),
     updatedAt: typeof task.updatedAt === "string" ? task.updatedAt : new Date(0).toISOString(),
+    alertContent: typeof task.alertContent === "string" && task.alertContent.trim() ? task.alertContent : undefined,
+    alertContentError: typeof task.alertContentError === "string" ? task.alertContentError : undefined,
+    alertPregeneratedAt: typeof task.alertPregeneratedAt === "string" ? task.alertPregeneratedAt : undefined,
+    // alertPregenerating 是进程内瞬态：应用重启后请求不可能恢复，落盘残留值必须丢弃，
+    // 否则到点永远走不了预生成快路径，fireNow 也会被「还没准备好」永久拒绝。
+    alertPregenerating: undefined,
     ...(ownerPluginId ? {
       ownerPluginId,
       pluginUserEnabled: task.pluginUserEnabled === true,

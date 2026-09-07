@@ -6,6 +6,7 @@ import {
   sidebarWindow,
   tasksWindow,
   settingsWindow,
+  getTaskAlertWindow,
   musicPlayerWindow,
 } from "./window-state";
 import type { WindowManager } from "./window-manager";
@@ -77,6 +78,14 @@ export function registerWindowSystemIpc(deps: WindowSystemIpcDependencies): void
 
   ipc.on(IPC.TASKS_CLOSE, () => {
     tasksWindow?.close();
+  });
+
+  // 定时任务提醒弹窗窗口控制
+  ipc.on(IPC.TASK_ALERT_MINIMIZE, () => {
+    getTaskAlertWindow()?.minimize();
+  });
+  ipc.on(IPC.TASK_ALERT_CLOSE, () => {
+    getTaskAlertWindow()?.close();
   });
   ipc.on(IPC.SETTINGS_MINIMIZE, () => {
     settingsWindow?.minimize();

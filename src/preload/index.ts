@@ -218,6 +218,23 @@ const tasksApi = {
 contextBridge.exposeInMainWorld("sidebar", sidebarApi);
 contextBridge.exposeInMainWorld("tasks", tasksApi);
 
+// 定时任务提醒弹窗 API
+const taskAlertApi = {
+  minimize: () => ipcRenderer.send(IPC.TASK_ALERT_MINIMIZE),
+  close: () => ipcRenderer.send(IPC.TASK_ALERT_CLOSE),
+  onAlertData: (callback: (data: unknown) => void) => {
+    const handler = (_event: unknown, data: unknown) => callback(data);
+    ipcRenderer.on(IPC.TASK_ALERT_DATA, handler);
+    return () => ipcRenderer.removeListener(IPC.TASK_ALERT_DATA, handler);
+  },
+  onAlertAudio: (callback: (data: unknown) => void) => {
+    const handler = (_event: unknown, data: unknown) => callback(data);
+    ipcRenderer.on(IPC.TASK_ALERT_AUDIO, handler);
+    return () => ipcRenderer.removeListener(IPC.TASK_ALERT_AUDIO, handler);
+  },
+};
+contextBridge.exposeInMainWorld("taskAlert", taskAlertApi);
+
 // Moments（动态 / 朋友圈）API：renderer 只能提交内容字段，author/id/createdAt 由主进程强制生成
 const momentsApi: import("../shared/moments-types").MomentsApi = {
   list: (options) => ipcRenderer.invoke(IPC.MOMENTS_LIST, options),
