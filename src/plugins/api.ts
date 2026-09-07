@@ -510,25 +510,71 @@ export type PluginCleanup = () => void | Promise<void>;
 
 export type PluginPromptMode = "chat" | "work" | "learn" | "code";
 
-export interface PluginPromptBuildInput {
-  /** conversation 表示用户会话，scheduler 表示定时任务。 */
-  source: "conversation" | "scheduler";
-  mode: PluginPromptMode;
+/**
+ * 提示词 Provider 的场景来源。新增场景默认不收录既有 Provider，
+ * 插件必须显式声明 sources 才会参与，防止升级后不知情地被扩大调用。
+ */
+export type PluginPromptSource = "conversation" | "scheduler" | "moments-post";
+
+/** 各场景共有的构建输入：本轮用户文本与可选的会话归属。 */
+interface PluginPromptBuildInputCommon {
   userText: string;
   conversationId?: string;
   channel?: string;
 }
 
-export interface PluginPromptProviderInput extends PluginPromptBuildInput {
+/** 用户会话轮次；mode 为当前会话模式。 */
+export interface ConversationPromptBuildInput extends PluginPromptBuildInputCommon {
+  source: "conversation";
+  mode: PluginPromptMode;
+}
+
+/** 定时任务轮次；mode 为任务冻结的执行模式。 */
+export interface SchedulerPromptBuildInput extends PluginPromptBuildInputCommon {
+  source: "scheduler";
+  mode: PluginPromptMode;
+}
+
+/** 动态发帖决策；无会话模式，是否生效仅由 Provider 的 sources 声明决定。 */
+export interface MomentsPostPromptBuildInput extends PluginPromptBuildInputCommon {
+  source: "moments-post";
+  /**
+   * 恒为 undefined：moments-post 不存在会话模式。声明为 never 而非省略字段，
+   * 是为了兼容既有插件 `provide({ source, mode, userText })` 的参数解构写法——
+   * 升级 SDK 后旧代码仍可编译，运行时该值不存在。
+   */
+  mode?: never;
+}
+
+/**
+ * 提示词 Provider 的构建输入，以 source 为判别字段：插件按 source 分支后，
+ * TypeScript 自动收窄出各场景的必填字段（conversation/scheduler 必带 mode，
+ * moments-post 没有会话模式），不需要猜测可选字段是否合法。
+ */
+export type PluginPromptBuildInput =
+  | ConversationPromptBuildInput
+  | SchedulerPromptBuildInput
+  | MomentsPostPromptBuildInput;
+
+/**
+ * PluginPromptBuildInput 是联合，接口不能 extends 联合类型；
+ * 交集会自动分发到各成员，按 source 收窄的行为与逐成员声明一致。
+ */
+export type PluginPromptProviderInput = PluginPromptBuildInput & {
   /** 插件停止时触发；Provider 应尽快结束仍在进行的异步工作。 */
   readonly signal: AbortSignal;
-}
+};
 
 export interface PluginPromptProvider {
   /** 当前插件内唯一；框架会自动补全 plugin:<插件id>: 前缀。 */
   id: string;
   /** 缺省表示全部会话模式。 */
   modes?: PluginPromptMode[];
+  /**
+   * 声明后仅在列出的场景生效；缺省 = 仅 conversation + scheduler
+   * （与旧版行为一致），参与 moments-post 必须显式声明，防止升级后插件不知情地被扩大调用。
+   */
+  sources?: PluginPromptSource[];
   provide(input: PluginPromptProviderInput): string | Promise<string>;
 }
 

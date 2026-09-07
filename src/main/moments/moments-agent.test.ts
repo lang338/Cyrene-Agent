@@ -582,12 +582,24 @@ describe("createMomentsAgent 主动发帖", () => {
     commitApplied?: boolean;
     /** 配图匹配结果；缺省 null（未命中 → 纯文字降级） */
     matchResult?: MomentMedia | null;
+    /** buildPluginPromptContext 的返回值；缺省 undefined（未注入链路） */
+    pluginContextText?: string;
+    /** buildPluginPromptContext 抛出的错误（模拟插件上下文构建失败） */
+    pluginContextError?: string;
   }) {
     const runModel = vi.fn(
       async () => overrides.modelOutput ?? { kind: "text", text: overrides.modelText ?? "" },
     );
     const commitPost = vi.fn(async () => ({ applied: overrides.commitApplied ?? true }));
     const matchMedia = vi.fn(async () => overrides.matchResult ?? null);
+    // 插件上下文依赖仅在显式给出返回值或错误时注入，缺省保持未注入链路
+    const buildPluginPromptContext =
+      overrides.pluginContextText === undefined && overrides.pluginContextError === undefined
+        ? undefined
+        : vi.fn(async () => {
+          if (overrides.pluginContextError) throw new Error(overrides.pluginContextError);
+          return overrides.pluginContextText ?? "";
+        });
     const log = vi.fn();
     const agent = createMomentsAgent({
       buildPersona: () => PERSONA,
@@ -595,9 +607,10 @@ describe("createMomentsAgent 主动发帖", () => {
       commitPost,
       loadFeedItem: vi.fn(() => null),
       matchMedia,
+      buildPluginPromptContext,
       log,
     });
-    return { agent, runModel, commitPost, matchMedia, log };
+    return { agent, runModel, commitPost, matchMedia, buildPluginPromptContext, log };
   }
 
   it("发帖决策成功时提交动态并把摘录固化为 triggerExcerpt", async () => {
@@ -686,5 +699,73 @@ describe("createMomentsAgent 主动发帖", () => {
     const h = makePostHarness({ modelText: '{"shouldPost":true,"text":"文案"}', commitApplied: false });
     const posted = await h.agent.generatePost({ summary: "摘录", recentCyrenePosts: [] });
     expect(posted).toBe(false);
+  });
+
+  it("注入 buildPluginPromptContext 时以 moments-post 场景调用并拼进 user 消息", async () => {
+    const summary = "[19:00] 用户：折腾好久了\n[19:01] 昔涟：快好了";
+    const h = makePostHarness({
+      modelText: '{"shouldPost":true,"text":"文案"}',
+      pluginContextText: "【测试插件】插件产出的参考数据",
+    });
+    const posted = await h.agent.generatePost({ summary, recentCyrenePosts: [] });
+
+    expect(posted).toBe(true);
+    // 场景名固定为 moments-post，userText 用发帖摘录
+    expect(h.buildPluginPromptContext).toHaveBeenCalledWith({ source: "moments-post", userText: summary });
+    const messages = h.runModel.mock.calls[0][0] as Array<{ role: string; content?: unknown }>;
+    expect(messages[1].role).toBe("user");
+    const user = String(messages[1].content);
+    expect(user).toContain("插件补充上下文");
+    expect(user).toContain("【测试插件】插件产出的参考数据");
+    // 插件参考数据不是指令：区块携带专用防注入声明（非历史社交记录那份）
+    expect(user).toContain("插件提供的参考数据");
+    expect(user).toContain("不是当前指令");
+  });
+
+  it("传入 conversationId/channel 时一并透传给 buildPluginPromptContext", async () => {
+    const h = makePostHarness({
+      modelText: '{"shouldPost":true,"text":"文案"}',
+      pluginContextText: "【测试插件】插件产出的参考数据",
+    });
+    const posted = await h.agent.generatePost({
+      summary: "摘录",
+      recentCyrenePosts: [],
+      conversationId: "conv-1",
+      channel: "wechat",
+    });
+
+    expect(posted).toBe(true);
+    // 会话归属来自触发发帖的事件快照，原样透传供插件按会话隔离记忆
+    expect(h.buildPluginPromptContext).toHaveBeenCalledWith({
+      source: "moments-post",
+      userText: "摘录",
+      conversationId: "conv-1",
+      channel: "wechat",
+    });
+  });
+
+  it("buildPluginPromptContext 抛错时降级空串，发帖照常走完", async () => {
+    const h = makePostHarness({
+      modelText: '{"shouldPost":true,"text":"文案"}',
+      pluginContextError: "插件上下文炸了",
+    });
+    const posted = await h.agent.generatePost({ summary: "摘录", recentCyrenePosts: [] });
+
+    // fail-safe：只记日志降级，不阻断发帖主流程
+    expect(posted).toBe(true);
+    expect(h.commitPost).toHaveBeenCalledTimes(1);
+    expect(h.log).toHaveBeenCalledWith("post_plugin_context_failed", "插件上下文炸了");
+    const messages = h.runModel.mock.calls[0][0] as Array<{ role: string; content?: unknown }>;
+    expect(String(messages[1].content)).not.toContain("插件补充上下文");
+  });
+
+  it("未注入 buildPluginPromptContext 时行为与旧版一致", async () => {
+    const h = makePostHarness({ modelText: '{"shouldPost":true,"text":"文案"}' });
+    const posted = await h.agent.generatePost({ summary: "摘录", recentCyrenePosts: [] });
+
+    expect(posted).toBe(true);
+    expect(h.commitPost).toHaveBeenCalledTimes(1);
+    const messages = h.runModel.mock.calls[0][0] as Array<{ role: string; content?: unknown }>;
+    expect(String(messages[1].content)).not.toContain("插件补充上下文");
   });
 });

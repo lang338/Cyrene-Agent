@@ -251,6 +251,8 @@ export interface BuildPostGenerationMessagesInput {
   persona: string;
   /** 关键词命中的 worldbook 设定块（含常驻）；空串表示无命中不注入 */
   worldbook?: string;
+  /** 插件提示词上下文，moments-post 场景；空串/缺省不注入 */
+  pluginContext?: string;
   /** 触发摘录：ring buffer 组装的会话原文 */
   summary: string;
   /** 最近昔涟动态（供新颖性判断） */
@@ -263,6 +265,7 @@ export function buildPostGenerationMessages(input: BuildPostGenerationMessagesIn
   const packet = buildPostGenerationPacket({
     summary: input.summary,
     recentCyrenePosts: input.recentCyrenePosts,
+    pluginContext: input.pluginContext,
     localNow: input.localNow,
   });
   const user = `${packet}
@@ -435,6 +438,15 @@ export interface MomentsAgentDeps {
   matchMedia: (query: string) => Promise<MomentMedia | null>;
   /** 关键词命中 worldbook 设定（含常驻）；未注入或无命中时返回空串 */
   buildWorldbookContext?: (text: string) => string;
+  /** 注入插件提示词上下文（moments-post 场景）；未注入或抛错时发帖不带插件上下文 */
+  buildPluginPromptContext?: (input: {
+    source: "moments-post";
+    userText: string;
+    /** 触发发帖的会话（事件到达时的快照）；按会话隔离记忆的插件可用它过滤 */
+    conversationId?: string;
+    /** 触发发帖的渠道（事件到达时的快照） */
+    channel?: string;
+  }) => Promise<string>;
   /** 读取用户动态图片（user_attachment 副本）转 base64 直发多模态模型；未注入时不带图 */
   loadPostImages?: (post: MomentPost) => MomentPostImage[];
   /** 决策前重读动态与评论线程：排队期间世界可能已变 */
@@ -448,8 +460,14 @@ export interface MomentsAgent {
   decideUserPostReaction: (postId: string, mentioned?: boolean) => Promise<ReactionDecideOutcome>;
   /** 昔涟被回复后的决策：post 已删 / 触发评论已删 → stale */
   decideCommentReply: (postId: string, replyTargetId: string) => Promise<ReactionDecideOutcome>;
-  /** 主动发帖决策：返回是否真的发出了动态（供策略层记账）；发帖不走决策/落库分离——配图匹配本身就是决策的一部分 */
-  generatePost: (input: { summary: string; recentCyrenePosts: readonly MomentPost[] }) => Promise<boolean>;
+  /** 主动发帖决策：返回是否真的发出了动态（供策略层记账）；发帖不走决策/落库分离——配图匹配本身就是决策的一部分。
+   *  conversationId / channel 是触发发帖的会话归属（事件到达时冻结的快照），原样透传给插件提示词上下文。 */
+  generatePost: (input: {
+    summary: string;
+    recentCyrenePosts: readonly MomentPost[];
+    conversationId?: string;
+    channel?: string;
+  }) => Promise<boolean>;
 }
 
 /** 表态决策（like + 可选评论）映射为统一决策形态：silent / like / comment / like_comment */
@@ -528,11 +546,30 @@ export function createMomentsAgent(deps: MomentsAgentDeps): MomentsAgent {
     return { type: "decided", decision: { action: "reply", comment: decision.text } };
   }
 
-  async function generatePost(input: { summary: string; recentCyrenePosts: readonly MomentPost[] }): Promise<boolean> {
+  async function generatePost(input: {
+    summary: string;
+    recentCyrenePosts: readonly MomentPost[];
+    conversationId?: string;
+    channel?: string;
+  }): Promise<boolean> {
+    // 插件补充上下文是锦上添花：构建失败只记日志降级为空串，不阻断发帖主流程（fail-safe）
+    let pluginContext = "";
+    try {
+      // 会话归属可选字段在缺省时不传，保持与 conversation/scheduler 场景一致的形状
+      pluginContext = await deps.buildPluginPromptContext?.({
+        source: "moments-post",
+        userText: input.summary,
+        ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+        ...(input.channel ? { channel: input.channel } : {}),
+      }) ?? "";
+    } catch (error) {
+      deps.log?.("post_plugin_context_failed", error instanceof Error ? error.message : String(error));
+    }
     const output = await deps.runModel(buildPostGenerationMessages({
       persona: deps.buildPersona(),
       // 会话摘录扫 worldbook 关键词，发帖文案才能贴合设定
       worldbook: deps.buildWorldbookContext?.(input.summary) ?? "",
+      pluginContext,
       summary: input.summary,
       recentCyrenePosts: input.recentCyrenePosts,
       localNow: new Date(),

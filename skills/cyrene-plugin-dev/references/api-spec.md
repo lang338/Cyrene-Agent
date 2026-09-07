@@ -98,7 +98,7 @@ async register(ctx) {
 |---|---|
 | `ctx.registerTool(spec)` | 注册 AI 工具，id 必须 `<插件id>_` 前缀 |
 | `ctx.unregisterTool(id)` | 只能注销本插件注册过的工具 |
-| `ctx.registerPromptProvider(spec)` | 注册每轮动态提示词贡献；id 在当前插件内唯一，可按 chat/work/learn/code 过滤 |
+| `ctx.registerPromptProvider(spec)` | 注册每轮动态提示词贡献；id 在当前插件内唯一，可按场景（`sources`：conversation / scheduler / moments-post）与模式（`modes`：chat/work/learn/code）过滤 |
 | `ctx.unregisterPromptProvider(id)` | 只能注销本插件注册过的提示词 Provider |
 | `ctx.events.on(event, listener)` | 订阅 `host:*` 或 `plugin:<id>:*` 事件；停用时自动退订 |
 | `ctx.events.emit(event, payload)` | 发布当前插件自有事件；框架自动添加 `plugin:<id>:` 前缀 |
@@ -174,6 +174,11 @@ ctx.registerPromptProvider({
 
 - 框架自动命名为 `plugin:<插件id>:<provider-id>`，不同插件可复用相同短 id。
 - `modes` 缺省覆盖 chat/work/learn/code；定时任务以 `source: "scheduler"`、`mode: "work"` 调用。
+- `sources` 声明 Provider 参与的场景，可选 `"conversation"` / `"scheduler"` / `"moments-post"`；
+  未声明时默认只参与会话与定时任务（向后兼容），参与动态发帖必须显式声明 `"moments-post"`。
+- `moments-post` 场景没有会话 `mode`（示例解构中的 `mode` 运行时为 `undefined`），
+  是否生效仅由 `sources` 决定；调用会附带触发发帖的 `conversationId` / `channel`，
+  且 `userText` 是发帖决策所依据的最近对话摘录快照，不是用户当前这条消息。
 - 内容进入每轮 runtime context，不修改核心提示词文件或稳定缓存前缀。
 - 多个 Provider 并行生成、按注册顺序拼接；单个最多等待 2 秒、16000 字符，总计最多 32000 字符。
 - 失败、超时或返回空字符串只跳过当前 Provider；插件停止时自动注销。

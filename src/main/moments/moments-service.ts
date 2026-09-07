@@ -20,6 +20,7 @@ import { enqueueLLMTask } from "../llm-queue";
 import { loadGeneralSettings } from "../settings/settings-facade";
 import { loadModelSettings } from "../settings/model-settings";
 import { loadPromptFile } from "../prompts/prompt-loader";
+import { pluginPromptRegistry } from "../../plugins/prompts";
 import type { ChatMessage, VendorConfig } from "../orchestrator/vendors";
 import * as path from "path";
 import { getEmbeddingProvider } from "../rag/embedding";
@@ -166,6 +167,15 @@ export interface MomentsServiceDeps {
   matchMedia?: (query: string) => Promise<MomentMedia | null>;
   /** 关键词命中 worldbook 设定块（未注入时降级空串，不注入设定） */
   buildWorldbookContext?: (text: string) => string;
+  /** 注入插件提示词上下文（moments-post 场景）；未注入或抛错时发帖不带插件上下文 */
+  buildPluginPromptContext?: (input: {
+    source: "moments-post";
+    userText: string;
+    /** 触发发帖的会话（事件到达时的快照）；按会话隔离记忆的插件可用它过滤 */
+    conversationId?: string;
+    /** 触发发帖的渠道（事件到达时的快照） */
+    channel?: string;
+  }) => Promise<string>;
   /** 读取用户动态图片转 base64（未注入时不带图） */
   loadPostImages?: (post: MomentPost) => MomentPostImage[];
   /**
@@ -199,6 +209,7 @@ export function createMomentsService(deps: MomentsServiceDeps): MomentsService {
     loadFeedItem: (postId) => deps.store.getFeedItem(postId),
     matchMedia: deps.matchMedia ?? (async () => null),
     buildWorldbookContext: deps.buildWorldbookContext,
+    buildPluginPromptContext: deps.buildPluginPromptContext,
     loadPostImages: deps.loadPostImages,
     log: deps.log,
   });
@@ -628,8 +639,10 @@ export function createMomentsService(deps: MomentsServiceDeps): MomentsService {
     if (state.recentEventKeys.includes(eventKey)) return;
     savePolicyState(recordEventKey(state, eventKey));
 
-    // 摘要在事件到达时冻结（快照语义，契约 1）
+    // 摘要在事件到达时冻结（快照语义，契约 1）；会话归属同批捕获——
+    // 任务执行时只读这份快照，不重读当前会话状态
     const summary = buildConversationSummary(turns);
+    const { conversationId, channel } = input;
     deps.enqueueTask("MomentsPost", async () => {
       // 执行时复核冷却与日上限：闸门通过到任务执行之间，世界可能已变
       const gate = canPost(loadPolicyState(), now());
@@ -641,7 +654,7 @@ export function createMomentsService(deps: MomentsServiceDeps): MomentsService {
         .map((item) => item.post)
         .filter((post) => post.author === "cyrene")
         .slice(0, RECENT_CYRENE_POSTS_FOR_NOVELTY);
-      const posted = await agent.generatePost({ summary, recentCyrenePosts });
+      const posted = await agent.generatePost({ summary, recentCyrenePosts, conversationId, channel });
       if (posted) savePolicyState(recordPost(loadPolicyState(), now()));
     }).catch((error) => {
       deps.log?.("post_task_failed", error instanceof Error ? error.message : String(error));
@@ -829,6 +842,8 @@ export const momentsService: MomentsService = createMomentsService({
   loadVendorConfig: loadMomentsVendorConfig,
   matchMedia: createMomentsMediaMatcher(),
   buildWorldbookContext: buildMomentsWorldbookContext,
+  // 插件提示词上下文（moments-post 场景）：registry 自带超时/长度/防注入收口，这里只转发
+  buildPluginPromptContext: (input) => pluginPromptRegistry.build(input),
   loadPostImages: loadUserMomentPostImages,
   buildPersona: buildMomentsPersonaPrompt,
   // 角色注册表：立绘池 ∩ 人设 md，md 随时可改，每次抽签/执行前现读；
