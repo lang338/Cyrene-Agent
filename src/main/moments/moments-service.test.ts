@@ -1255,15 +1255,15 @@ describe("moments service 聊天工具通道", () => {
 });
 
 describe("moments service @ 点名直达", () => {
-  it("@ 昔涟与角色：秒回任务直达，不掷抽签双骰，被点名者退出抽签池", async () => {
+  it("@ 昔涟与角色：秒回任务直达，不掷抽签双骰，被点名者退出抽签池，必回必赞", async () => {
     const h = createHarness({
       modelResponse: [
-        '{"like":true,"comment":{"shouldComment":true,"text":"来啦来啦"}}',
+        '{"comment":"来啦来啦"}',
         '{"action":"like_comment","comment":"算我一个"}',
       ],
       random: scriptedRandom([
-        0.5, 0.5,   // 昔涟秒回延迟：第一桶（60%）取中值 60 秒
-        0.5, 0.5,   // 万敌秒回延迟：同为 60 秒
+        0.5, 0.5,   // 昔涟秒回延迟：第一桶（60%，5~15 秒）取中值 10 秒
+        0.5, 0.5,   // 万敌秒回延迟：同为 10 秒
         0.05,       // 抽签第一掷：冷场（长夜月未被点名，走抽签未刷到）
       ]),
       loadPersonas: () => new Map([
@@ -1286,10 +1286,10 @@ describe("moments service @ 点名直达", () => {
     expect(tasks).toHaveLength(2);
     expect(tasks[0]).toMatchObject({ kind: "post_eval", actor: "cyrene", postId: "moment_post1", mentioned: true });
     expect(tasks[1]).toMatchObject({ kind: "post_eval", actor: "万敌", postId: "moment_post1", mentioned: true });
-    expect(tasks[0].dueAt - h.clock.now).toBe(60_000);
-    expect(tasks[1].dueAt - h.clock.now).toBe(60_000);
+    expect(tasks[0].dueAt - h.clock.now).toBe(10_000);
+    expect(tasks[1].dueAt - h.clock.now).toBe(10_000);
 
-    h.clock.now += 60_000;
+    h.clock.now += 10_000;
     await h.service.drainReactionQueue();
 
     expect(h.runModel).toHaveBeenCalledTimes(2);
@@ -1300,6 +1300,9 @@ describe("moments service @ 点名直达", () => {
     expect(h.fake.state.characterComments).toEqual([
       { nickname: "万敌", postId: "moment_post1", content: "算我一个", replyTo: undefined },
     ]);
+    // 必赞：点名任务的决策恒含点赞，两侧点赞通道都落库
+    expect(h.fake.state.cyreneLikes).toEqual(["moment_post1"]);
+    expect(h.fake.state.characterLikes).toEqual([{ nickname: "万敌", postId: "moment_post1" }]);
     expect(readQueueTasks(h.queueFile)).toEqual([]);
   });
 
@@ -1345,6 +1348,175 @@ describe("moments service @ 点名直达", () => {
     await h.service.drainReactionQueue();
     expect(h.runModel).not.toHaveBeenCalled();
     expect(h.fake.state.cyreneComments).toEqual([{ postId: "moment_post1", content: "手动回复", replyTo: undefined }]);
+  });
+
+  it("点名输出非法不沉默：退避重问耗尽后兜底文案落库，点赞照常", async () => {
+    const h = createHarness({
+      // 昔涟每次都输出非 JSON 文本：点名任务不吃 silent 降级
+      modelResponse: "哎呀我看到啦！这就回复你～（忘了格式）",
+      random: scriptedRandom([
+        0.5, 0.5,   // 昔涟秒回延迟 10 秒
+        0.05,       // 角色抽签冷场
+      ]),
+      loadPersonas: () => new Map([["万敌", makePersona()]]),
+    });
+
+    await h.service.createUserPost({ text: "@昔涟 在吗", mentions: ["cyrene"] });
+    h.clock.now += 10_000;
+    await h.service.drainReactionQueue();
+
+    // 首次解析失败：按 retry 退避重问，任务保留不删
+    expect(h.runModel).toHaveBeenCalledTimes(1);
+    expect(readQueueTasks(h.queueFile)).toHaveLength(1);
+    expect(h.fake.state.cyreneComments).toHaveLength(0);
+
+    // 退避梯度 5/15/30 分钟逐次重问，模型输出始终非法
+    h.clock.now += 5 * 60_000;
+    await h.service.drainReactionQueue();
+    h.clock.now += 15 * 60_000;
+    await h.service.drainReactionQueue();
+    expect(readQueueTasks(h.queueFile)).toHaveLength(1);
+
+    h.clock.now += 30 * 60_000;
+    await h.service.drainReactionQueue();
+
+    // 重试耗尽：兜底文案保证评论落地，点赞由代码强制，不依赖模型输出
+    expect(h.runModel).toHaveBeenCalledTimes(4);
+    expect(h.fake.state.cyreneComments).toHaveLength(1);
+    expect(h.fake.state.cyreneComments[0].postId).toBe("moment_post1");
+    expect([
+      "看到啦～", "我在呢。", "怎么啦？", "收到收到！", "嗯嗯，在听～",
+    ]).toContain(h.fake.state.cyreneComments[0].content);
+    expect(h.fake.state.cyreneLikes).toEqual(["moment_post1"]);
+    expect(readQueueTasks(h.queueFile)).toEqual([]);
+  });
+
+  it("自然配额耗尽后点名任务照常回应（豁免不记账）", async () => {
+    const h = createHarness({
+      modelResponse: '{"action":"like_comment","comment":"还轮得到我"}',
+      random: scriptedRandom([
+        0.5, 0.5,   // 点名秒回延迟 10 秒
+      ]),
+      loadPersonas: () => new Map([["万敌", makePersona()]]),
+    });
+
+    // 预先把当日角色配额打满（冷清档 40 次）
+    h.policy.current.characterModelCalls = { date: localDateKey(h.clock.now), count: 40 };
+
+    await h.service.createUserPost({ text: "@万敌 还在吗", mentions: ["万敌"] });
+    const tasks = readQueueTasks(h.queueFile);
+    // 两个任务：万敌点名直达 + 昔涟普通表态（未 @ 昔涟，她走自然链路）
+    expect(tasks).toHaveLength(2);
+    const mentionTask = tasks.find((task) => task.actor === "万敌");
+    const cyreneTask = tasks.find((task) => task.actor === "cyrene");
+    expect(mentionTask).toMatchObject({ kind: "post_eval", mentioned: true, postId: "moment_post1" });
+    expect(cyreneTask).toMatchObject({ kind: "post_eval", postId: "moment_post1" });
+    expect(cyreneTask?.mentioned).toBeUndefined();
+
+    h.clock.now += 60 * 60_000;
+    await h.service.drainReactionQueue();
+
+    // 配额满格也没拦住点名任务：万敌的模型调用与落库照常完成
+    expect(h.fake.state.characterComments).toEqual([
+      { nickname: "万敌", postId: "moment_post1", content: "还轮得到我", replyTo: undefined },
+    ]);
+    expect(h.fake.state.characterLikes).toEqual([{ nickname: "万敌", postId: "moment_post1" }]);
+    // 豁免同时不记账：点名回应不占自然配额，当日计数保持 40
+    expect(h.policy.current.characterModelCalls).toEqual({
+      date: localDateKey(h.clock.now),
+      count: 40,
+    });
+  });
+
+  it("多角色 @ 全部创建点名任务：不受热闹档抽签人数限制", async () => {
+    const h = createHarness({
+      random: scriptedRandom([
+        0.5, 0.5,   // 昔涟普通表态延迟（未被 @，走自然链路）
+        0.5, 0.5,   // 万敌点名秒回延迟 10 秒
+        0.5, 0.5,   // 遐蝶点名秒回延迟 10 秒
+        0.05,       // 角色抽签（池子已被点名者清空，无人可抽）
+      ]),
+      loadPersonas: () => new Map([
+        ["万敌", makePersona()],
+        ["遐蝶", makePersona({ nickname: "遐蝶", assetFileName: "遐蝶.png" })],
+      ]),
+    });
+
+    await h.service.createUserPost({ text: "@万敌 @遐蝶 中午吃啥", mentions: ["万敌", "遐蝶"] });
+    const tasks = readQueueTasks(h.queueFile);
+
+    // 三个任务：两位被点名者各自直达 + 昔涟普通表态；
+    // 用户主动点名的人数不受抽签档位限制，@ 了几个就回应几个
+    expect(tasks).toHaveLength(3);
+    for (const nickname of ["万敌", "遐蝶"]) {
+      const task = tasks.find((candidate) => candidate.actor === nickname);
+      expect(task).toMatchObject({ kind: "post_eval", mentioned: true, postId: "moment_post1" });
+      expect(task?.dueAt).toBe(h.clock.now + 10_000);
+    }
+    const cyreneTask = tasks.find((candidate) => candidate.actor === "cyrene");
+    expect(cyreneTask).toMatchObject({ kind: "post_eval", postId: "moment_post1" });
+    expect(cyreneTask?.mentioned).toBeUndefined();
+  });
+
+  it("切换热闹档位：已入队任务不重抽，新发帖立即用新档位", async () => {
+    const h = createHarness({
+      random: scriptedRandom([
+        0.5, 0.5,   // 第一条：昔涟表态延迟
+        0.05,       // 第一条：冷清档抽签 → 0 人冷场
+        0.5, 0.5,   // 第二条：昔涟表态延迟
+        0.05,       // 第二条：热闹档抽签 → 1 人（同一个抽签值，冷清档下是 0）
+        0.5,        // 加权抽人 → 遐蝶
+        0.05,       // 评论骰命中 → 走模型表态
+        0.5, 0.5,   // 角色表态延迟
+      ]),
+      loadPersonas: () => new Map([
+        ["万敌", makePersona()],
+        ["遐蝶", makePersona({ nickname: "遐蝶", assetFileName: "遐蝶.png" })],
+      ]),
+    });
+
+    // 冷清档发第一条：抽签值 0.05 落在冷场区间，只有昔涟自己的任务
+    await h.service.createUserPost({ text: "第一条动态" });
+    const before = readQueueTasks(h.queueFile);
+    expect(before).toHaveLength(1);
+    expect(before[0]).toMatchObject({ actor: "cyrene", postId: "moment_post1" });
+    const cyreneDueAtBefore = before[0].dueAt;
+
+    // 切到热闹档：已入队任务的到期时间与内容原样保留
+    h.settings.momentsLiveliness = "lively";
+    await h.service.createUserPost({ text: "第二条动态" });
+    const after = readQueueTasks(h.queueFile);
+    expect(after).toHaveLength(3);
+
+    // 第一条的任务分毫未动：档位切换不追溯已抽过的签
+    const firstPostTask = after.find((task) => task.postId === "moment_post1");
+    expect(firstPostTask?.dueAt).toBe(cyreneDueAtBefore);
+
+    // 第二条立即用热闹档：同一抽签值下抽中 1 位角色入队
+    const characterTask = after.find((task) => task.actor === "遐蝶");
+    expect(characterTask).toMatchObject({ kind: "post_eval", postId: "moment_post2" });
+  });
+
+  it("点名输出带前后缀文字时宽松提取评论", async () => {
+    const h = createHarness({
+      // 模型没忍住加了寒暄前后缀：宽松提取从中捞出 JSON
+      modelResponse: '好嘞！{"comment":"马上到～"}就这句！',
+      random: scriptedRandom([
+        0.5, 0.5,   // 昔涟秒回延迟 10 秒
+        0.05,       // 角色抽签冷场
+      ]),
+      loadPersonas: () => new Map([["万敌", makePersona()]]),
+    });
+
+    await h.service.createUserPost({ text: "@昔涟 出发了吗", mentions: ["cyrene"] });
+    h.clock.now += 10_000;
+    await h.service.drainReactionQueue();
+
+    expect(h.runModel).toHaveBeenCalledTimes(1);
+    expect(h.fake.state.cyreneComments).toEqual([
+      { postId: "moment_post1", content: "马上到～", replyTo: undefined },
+    ]);
+    expect(h.fake.state.cyreneLikes).toEqual(["moment_post1"]);
   });
 });
 

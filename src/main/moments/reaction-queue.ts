@@ -129,13 +129,29 @@ const CYRENE_REPLY_OFFLINE_BUCKETS: readonly DelayBucket[] = [
   { weight: 5, minMs: 32 * MINUTE_MS, maxMs: 40 * MINUTE_MS },
 ];
 
-/** 被 @ 点名的秒回档：30 秒 ~ 3 分钟——"刚好在看手机"的节奏。
- *  不是 0 秒（那是机器人），用户点名 = 在等回应，来得要比自然刷到快得多。 */
+/** 被 @ 点名的秒回档：5 秒 ~ 1 分钟——"刚好在看手机"的节奏。
+ *  5 秒下限避免比人打字还快的机械感；用户点名 = 在等回应，来得要比自然刷到快得多。 */
 const MENTION_BUCKETS: readonly DelayBucket[] = [
-  { weight: 60, minMs: 30_000, maxMs: 90_000 },
-  { weight: 30, minMs: 90_000, maxMs: 3 * MINUTE_MS },
-  { weight: 10, minMs: 3 * MINUTE_MS, maxMs: 5 * MINUTE_MS },
+  { weight: 60, minMs: 5_000, maxMs: 15_000 },
+  { weight: 30, minMs: 15_000, maxMs: 30_000 },
+  { weight: 10, minMs: 30_000, maxMs: 60_000 },
 ];
+
+/**
+ * 点名兜底文案：模型连续失败（输出非法/供应商退避耗尽）时随机取一条落库，
+ * 兑现"被 @ 必有回应"的产品承诺。中性短句，任何角色口吻都兼容。
+ */
+const MENTION_FALLBACK_COMMENTS: readonly string[] = [
+  "看到啦～",
+  "我在呢。",
+  "怎么啦？",
+  "收到收到！",
+  "嗯嗯，在听～",
+];
+
+function pickMentionFallbackComment(): string {
+  return MENTION_FALLBACK_COMMENTS[Math.floor(Math.random() * MENTION_FALLBACK_COMMENTS.length)];
+}
 
 export function computeCharacterPostDelayMs(random: () => number): number {
   return pickBucketDelay(CHARACTER_POST_BUCKETS, random);
@@ -367,17 +383,33 @@ export function createReactionQueue(deps: ReactionQueueDeps): ReactionQueue {
         return;
       }
       case "invalid": {
-        // 模型成功但输出不可用：决策视作完成，降级 silent 落盘后删任务，不重试
-        task.resolvedDecision = { action: "silent" };
-        persist();
-        removeTask(task.id);
-        log("reaction_decision_invalid", { taskId: task.id, actor: task.actor, reason: outcome.reason });
+        // 模型成功但输出不可用：决策视作完成，不重试。
+        // 点名任务是产品承诺的"必回"：不吃 silent，改用内置兜底文案保证评论不缺席；
+        // 普通任务降级 silent 落盘后删任务。
+        if (task.mentioned) {
+          task.resolvedDecision = { action: "like_comment", comment: pickMentionFallbackComment() };
+          persist();
+          await applyAndRemove(task, task.resolvedDecision);
+        } else {
+          task.resolvedDecision = { action: "silent" };
+          persist();
+          removeTask(task.id);
+        }
+        log("reaction_decision_invalid", { taskId: task.id, actor: task.actor, reason: outcome.reason, fallback: task.mentioned === true });
         return;
       }
       case "retry": {
         task.attempts += 1;
         const backoffIndex = task.attempts - 1;
         if (backoffIndex >= RETRY_BACKOFF_MS.length) {
+          // 退避耗尽放弃调模型：点名任务仍要兑现"必回"，落兜底文案后收尾
+          if (task.mentioned) {
+            task.resolvedDecision = { action: "like_comment", comment: pickMentionFallbackComment() };
+            persist();
+            await applyAndRemove(task, task.resolvedDecision);
+            log("reaction_task_mention_fallback", { taskId: task.id, actor: task.actor, attempts: task.attempts, reason: outcome.reason });
+            return;
+          }
           removeTask(task.id);
           log("reaction_task_abandoned", { taskId: task.id, actor: task.actor, attempts: task.attempts, reason: outcome.reason });
           return;

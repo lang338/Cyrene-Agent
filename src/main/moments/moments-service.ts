@@ -65,6 +65,7 @@ import {
   buildCharacterPostEvalMessages,
   buildCharacterReplyEvalMessages,
   loadCharacterPersonas,
+  parseCharacterMentionDecision,
   parseCharacterPostDecision,
   parseCharacterReplyDecision,
   type CharacterPersona,
@@ -371,8 +372,10 @@ export function createMomentsService(deps: MomentsServiceDeps): MomentsService {
    * 角色模型调用预算闸门：到达日上限时返回作废结果，有余量则先记账再放行。
    * 记账在调用前完成——请求本身可能失败重试，重试也是真实调用，同样占预算；
    * 随机点赞零模型成本，不经过这里。
+   * 点名任务豁免：用户主动 @ 的回应不占自然配额，也不能因配额用尽而"叫不应"。
    */
-  function spendCharacterModelCall(): ReactionDecideOutcome | null {
+  function spendCharacterModelCall(mentioned: boolean): ReactionDecideOutcome | null {
+    if (mentioned) return null;
     const state = loadPolicyState();
     if (!canCharacterModelCall(state, now(), currentLiveliness())) {
       return { type: "stale", reason: "character_daily_model_limit" };
@@ -383,7 +386,8 @@ export function createMomentsService(deps: MomentsServiceDeps): MomentsService {
 
   /**
    * 角色表态决策：组装角色卡 + 朋友圈记忆 + 评论区上下文调模型，
-   * 解析为队列统一决策形态；输出非法按 invalid 降级 silent 处理（由队列统一执行）。
+   * 解析为队列统一决策形态。普通任务输出非法按 invalid 降级 silent；
+   * 点名任务解析失败按 retry 退避重问，耗尽后由队列落兜底文案保证必回。
    */
   async function characterDecide(task: ReactionTask): Promise<ReactionDecideOutcome> {
     const check = characterWorldCheck(task);
@@ -407,12 +411,23 @@ export function createMomentsService(deps: MomentsServiceDeps): MomentsService {
     };
 
     if (task.kind === "post_eval") {
-      const gated = spendCharacterModelCall();
+      const gated = spendCharacterModelCall(task.mentioned === true);
       if (gated) return gated;
-      const output = await deps.runModel(buildCharacterPostEvalMessages(baseInput));
+      const output = await deps.runModel(buildCharacterPostEvalMessages({
+        ...baseInput,
+        mentioned: task.mentioned === true,
+      }));
       if (output.kind !== "text") return { type: "retry", reason: output.reason };
-      const decision = parseCharacterPostDecision(output.text);
-      if (decision.action === "invalid") return { type: "invalid", reason: decision.reason };
+      // 点名任务只接受带评论的输出（点赞由落库层强制），普通任务保留完整决策。
+      // 点名解析失败按 retry 退避重问，重试耗尽由队列落兜底文案，保证"必回"。
+      const decision = task.mentioned === true
+        ? parseCharacterMentionDecision(output.text)
+        : parseCharacterPostDecision(output.text);
+      if (decision.action === "invalid") {
+        return task.mentioned === true
+          ? { type: "retry", reason: decision.reason }
+          : { type: "invalid", reason: decision.reason };
+      }
       return { type: "decided", decision };
     }
 
@@ -426,7 +441,7 @@ export function createMomentsService(deps: MomentsServiceDeps): MomentsService {
       if (!withinReplyDepthLimit(feed.comments, task.triggerCommentId)) {
         return { type: "stale", reason: "reply_depth_exceeded" };
       }
-      const gated = spendCharacterModelCall();
+      const gated = spendCharacterModelCall(false);
       if (gated) return gated;
       const output = await deps.runModel(buildCharacterReplyEvalMessages({
         ...baseInput,

@@ -421,12 +421,30 @@ export interface CharacterReactionMessagesInput {
   /** 动态带图时转 base64 直发多模态模型 */
   postImages?: readonly MomentPostImage[];
   comments: readonly MomentComment[];
+  /** 点名任务：被 @ 的角色必须回应，提示词与输出格式随之切换 */
+  mentioned?: boolean;
   localNow: Date;
 }
 
 /** 角色对动态表态（post_eval）的消息组装 */
 export function buildCharacterPostEvalMessages(input: CharacterReactionMessagesInput): ChatMessage[] {
   const { persona } = input;
+  // 点名场景：不再提供 silent/like 选项，被 @ 必须评论（点赞由代码强制落库）
+  const instruction = input.mentioned
+    ? `以${persona.nickname}的身份回应这条点名。点赞由系统自动完成，你只需要写评论内容。
+
+请只返回以下 JSON，不要使用 Markdown 代码块，也不要添加解释：
+{"action":"like_comment","comment":"要留下的评论"}`
+    : `以${persona.nickname}的身份判断你的反应，按规定格式输出。
+
+请只返回以下一种 JSON，不要使用 Markdown 代码块，也不要添加解释：
+{"action":"silent"}
+或
+{"action":"like"}
+或
+{"action":"comment","comment":"要留下的评论"}
+或
+{"action":"like_comment","comment":"要留下的评论"}`;
   const user = [
     buildMemorySection(input.timeline),
     [
@@ -437,16 +455,7 @@ export function buildCharacterPostEvalMessages(input: CharacterReactionMessagesI
       buildPostEvalCommentBlock(input.comments),
       `当前时间：${formatNow(input.localNow)}`,
       "",
-      `以${persona.nickname}的身份判断你的反应，按规定格式输出。`,
-      "",
-      `请只返回以下一种 JSON，不要使用 Markdown 代码块，也不要添加解释：
-{"action":"silent"}
-或
-{"action":"like"}
-或
-{"action":"comment","comment":"要留下的评论"}
-或
-{"action":"like_comment","comment":"要留下的评论"}`,
+      instruction,
     ].join("\n"),
   ].join("\n\n");
   return [
@@ -566,6 +575,31 @@ export function parseCharacterPostDecision(text: string): CharacterPostDecisionR
     default:
       return { action: "invalid", reason: "invalid_action" };
   }
+}
+
+/**
+ * 点名决策解析：只接受带评论的输出，点赞由代码强制（被 @ 必回必赞）。
+ * 严格 JSON 失败后宽松提取：模型输出带前后缀文字时从中捞出 like_comment JSON 片段。
+ */
+export function parseCharacterMentionDecision(text: string): CharacterPostDecisionResult {
+  const strict = parseCharacterMentionObject(text);
+  if (strict) return strict;
+  const looseMatch = text.match(/\{\s*"action"\s*:\s*"like_comment"\s*,\s*"comment"\s*:\s*"(?:[^"\\]|\\.)*"\s*\}/);
+  if (looseMatch) {
+    const loose = parseCharacterMentionObject(looseMatch[0]);
+    if (loose) return loose;
+  }
+  return { action: "invalid", reason: "invalid_mention_comment" };
+}
+
+/** 从 JSON 文本中提取点名评论；只认 like_comment + 合法评论文本，其余返回 null */
+function parseCharacterMentionObject(text: string): CharacterPostDecision | null {
+  const parsed = parseDecisionObject(text);
+  if (!parsed.ok) return null;
+  if (parsed.value.action !== "like_comment") return null;
+  const comment = validateCommentText(parsed.value.comment);
+  if (!comment.ok) return null;
+  return { action: "like_comment", comment: comment.comment };
 }
 
 export function parseCharacterReplyDecision(text: string): CharacterReplyDecisionResult {

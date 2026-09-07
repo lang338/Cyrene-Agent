@@ -71,6 +71,13 @@ const MOMENTS_REPLY_SYSTEM = `[moments_reply_system]
 回复应当简短自然，延续评论区的语气，不要每次都以反问结尾。
 不要提及系统、规则、评分或决策机制，不要声称自己看到了评论区以外的信息。`;
 
+const MOMENTS_MENTION_REACT_SYSTEM = `[moments_mention_react_system]
+用户在朋友圈动态里 @ 了你，这是点名跟你说话。
+你必须回应：写一条针对这条动态的评论。点赞由系统自动完成，你只需要想好评论内容。
+评论应当简短自然，像最亲近的朋友被点名后马上冒出来回复，一两句话即可。
+不要说教，不要复述动态原文，不要提及系统、规则、评分或决策机制。
+不要声称自己看到了动态内容以外的信息。`;
+
 const MOMENTS_POST_SYSTEM = `[moments_post_system]
 你和用户刚结束一段对话，现在考虑要不要把此刻的心情发到你自己的朋友圈。
 不是每段对话都值得发：只有真正有纪念意义、有情绪价值或值得记录的时刻才发，例如完成了一件折腾很久的事、一次开心的闲聊、一个约定。
@@ -165,7 +172,9 @@ export interface BuildReactionMessagesInput {
 }
 
 export function buildReactionMessages(input: BuildReactionMessagesInput): ChatMessage[] {
-  const system = [input.persona.trim(), input.worldbook?.trim(), MOMENTS_REACT_SYSTEM].filter(Boolean).join("\n\n---\n\n");
+  // 点名场景走专用 system：被 @ 是"必须回应"的产品承诺，不再给模型"只点赞不评论"的选项
+  const reactSystem = input.post.mentioned ? MOMENTS_MENTION_REACT_SYSTEM : MOMENTS_REACT_SYSTEM;
+  const system = [input.persona.trim(), input.worldbook?.trim(), reactSystem].filter(Boolean).join("\n\n---\n\n");
 
   const lines = ["[用户发布的朋友圈动态]"];
   if (input.post.title?.trim()) lines.push(`标题：${input.post.title.trim()}`);
@@ -175,12 +184,18 @@ export function buildReactionMessages(input: BuildReactionMessagesInput): ChatMe
   if (input.post.mentioned) lines.push("（用户在这条动态里 @ 了你）");
   lines.push(`当前时间：${formatNow(input.localNow)}`);
 
-  const user = `${lines.join("\n")}
-
-请只返回以下一种 JSON，不要使用 Markdown 代码块，也不要添加解释：
+  // 点名场景只要求输出评论内容（点赞由代码强制落库），普通场景保留完整决策格式
+  const instruction = input.post.mentioned
+    ? `请只返回以下 JSON，不要使用 Markdown 代码块，也不要添加解释：
+{"comment":"要留下的评论"}`
+    : `请只返回以下一种 JSON，不要使用 Markdown 代码块，也不要添加解释：
 {"like":true,"comment":{"shouldComment":true,"text":"要留下的评论"}}
 或
 {"like":true,"comment":{"shouldComment":false}}`;
+
+  const user = `${lines.join("\n")}
+
+${instruction}`;
 
   return [
     { role: "system", content: system },
@@ -318,6 +333,38 @@ export function parseReactionDecision(text: string): MomentReactionDecision {
 
   if (!value.like && commentText === null) return { kind: "ignore" };
   return { kind: "react", like: value.like, commentText };
+}
+
+/**
+ * 点名决策解析：只提取评论内容（点赞由代码强制）。
+ * 三级降级的前两级：严格 JSON → 宽松提取（模型输出带前后缀文字时从中捞出 comment 字段）。
+ */
+export function parseMentionReactionDecision(text: string): MomentReactionDecision {
+  const strict = parseMentionComment(text);
+  if (strict) return { kind: "react", like: true, commentText: strict };
+  // 宽松提取：匹配输出中第一个 {"comment":"..."} 形态的 JSON 片段
+  const looseMatch = text.match(/\{\s*"comment"\s*:\s*"(?:[^"\\]|\\.)*"\s*\}/);
+  if (looseMatch) {
+    const loose = parseMentionComment(looseMatch[0]);
+    if (loose) return { kind: "react", like: true, commentText: loose };
+  }
+  return { kind: "invalid", reason: "invalid_mention_comment" };
+}
+
+/** 从 JSON 文本中提取合法评论内容；非法或超长返回 null */
+function parseMentionComment(text: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text.trim());
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const value = parsed as { comment?: unknown };
+  if (typeof value.comment !== "string" || !value.comment.trim()) return null;
+  const cleaned = value.comment.trim();
+  if (cleaned.length > MOMENT_MAX_COMMENT_TEXT_LENGTH) return null;
+  return cleaned;
 }
 
 export function parseReplyDecision(text: string): MomentReplyDecision {
@@ -502,6 +549,18 @@ export function createMomentsAgent(deps: MomentsAgentDeps): MomentsAgent {
       localNow: new Date(),
     }));
     if (output.kind !== "text") return { type: "retry", reason: output.reason };
+
+    // 点名场景：只解析评论内容，点赞由代码强制（被 @ 必回必赞是产品承诺）。
+    // 解析失败按 retry 处理：退避后重问模型，重试耗尽再由队列落兜底文案——
+    // "必回"的最后一道保险在队列侧，不在解析侧。
+    if (mentioned) {
+      const mentionDecision = parseMentionReactionDecision(output.text);
+      if (mentionDecision.kind === "invalid") {
+        deps.log?.("mention_reaction_decision_invalid", mentionDecision.reason);
+        return { type: "retry", reason: mentionDecision.reason };
+      }
+      return { type: "decided", decision: toPostReactionDecision(mentionDecision) };
+    }
 
     const decision = parseReactionDecision(output.text);
     if (decision.kind === "invalid") {
