@@ -50,7 +50,11 @@ export function createSchedulerRunner(deps: RunnerDeps) {
   async function runScheduledTask(task: ScheduledTask, _scheduledFireAt: Date, manual: boolean): Promise<ScheduledRunResult> {
     // 新建任务时已预生成播报内容：到点不再调用模型，直接记录历史并弹窗+播放缓存语音。
     // 预生成失败（alertContent 为空）或预生成仍在进行中时走下方原有的实时执行路径兜底。
-    const pregenContent = !task.alertPregenerating && typeof task.alertContent === "string"
+    // 插件任务（ownerPluginId）不走快路径：必须经 buildOptions/工具过滤/agent 实时执行，
+    // 预生成文案不能替代插件任务的授权工具执行。
+    const pregenContent = !task.ownerPluginId
+      && !task.alertPregenerating
+      && typeof task.alertContent === "string"
       ? task.alertContent.trim()
       : "";
     if (pregenContent) {

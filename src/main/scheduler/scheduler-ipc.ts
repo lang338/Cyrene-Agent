@@ -88,6 +88,9 @@ export function registerSchedulerIpc(
   const triggerPregen = (task: unknown): void => {
     if (!generateContent || !task) return;
     const scheduled = task as ScheduledTask;
+    // 插件任务不做预生成：alertContent 快路径会跳过 buildOptions/工具过滤/agent 执行，
+    // 插件任务的授权工具必须在实时路径中执行。
+    if (scheduled.ownerPluginId) return;
     const token = (pregenTokens.get(scheduled.id) ?? 0) + 1;
     pregenTokens.set(scheduled.id, token);
     // 立即标记「预生成中」并清掉旧的 alertContent，防止 fireNow 在预生成完成前

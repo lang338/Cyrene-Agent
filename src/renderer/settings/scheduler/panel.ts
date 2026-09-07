@@ -22,15 +22,29 @@ import {
 import { showModal } from "../shared/modal";
 
 /** 卡片内按钮右侧轻量提示：放在 scheduler-card__action-hint 里，2.5s 后自动消失 */
+// 每张卡片的提示定时器：新提示先作废旧定时器，避免上一次提示的隐藏回调把新提示提前藏掉
+const cardHintTimers = new WeakMap<HTMLElement, { outer: number; inner?: number }>();
+
 function showCardHint(card: HTMLElement, message: string, durationMs = 2500): void {
   const hint = card.querySelector(".scheduler-card__action-hint") as HTMLDivElement | null;
   if (!hint) return;
+  const prev = cardHintTimers.get(card);
+  if (prev) {
+    window.clearTimeout(prev.outer);
+    if (prev.inner !== undefined) window.clearTimeout(prev.inner);
+  }
   hint.textContent = message;
   hint.classList.add("is-visible");
-  setTimeout(() => {
-    hint.classList.remove("is-visible");
-    setTimeout(() => { if (hint.textContent === message) hint.textContent = ""; }, 300);
-  }, durationMs);
+  const timers: { outer: number; inner?: number } = {
+    outer: window.setTimeout(() => {
+      hint.classList.remove("is-visible");
+      timers.inner = window.setTimeout(() => {
+        if (hint.textContent === message) hint.textContent = "";
+        cardHintTimers.delete(card);
+      }, 300);
+    }, durationMs),
+  };
+  cardHintTimers.set(card, timers);
 }
 
 /** 插件列表最小视图：只取运行状态，供任务卡片判断"等待插件启用"。 */

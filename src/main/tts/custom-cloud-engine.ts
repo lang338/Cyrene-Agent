@@ -93,6 +93,9 @@ export async function synthesize(opts: CustomCloudSynthesizeOptions): Promise<Cu
         format,
       }),
       signal: controller.signal,
+      // 不跟随重定向：307/308 会把请求体（含播报文本）重放到目标地址，
+      // 若目标降级为 http 则明文外泄（Authorization 会被 fetch 剥离，但 body 不会）。
+      redirect: "error",
     });
   } catch (err) {
     clearTimeout(timer);

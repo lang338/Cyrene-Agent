@@ -246,6 +246,20 @@ describe("createSchedulerRunner task-alert 快慢路径", () => {
     });
   });
 
+  it("插件任务（ownerPluginId）不走快路径：即使有预生成内容也走实时执行", async () => {
+    const deps = makeRunnerDeps();
+    const runner = createSchedulerRunner(deps as never);
+    const result = await runner.runScheduledTask(
+      makeTask({ ownerPluginId: "some-plugin", alertContent: "预生成内容", alertPregenerating: false }),
+      new Date(),
+      false,
+    );
+
+    // 插件任务的授权工具必须经 buildOptions/工具过滤/agent 实时执行
+    expect(deps.buildOptions).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ ok: true, reply: "调度回复" });
+  });
+
   it("预生成快路径补齐事件序列：播报内容经 TEXT_MESSAGE_* 落入消息体并以 RUN_FINISHED 收尾", async () => {
     const sent: Array<Record<string, unknown>> = [];
     const deps = makeRunnerDeps({

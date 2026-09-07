@@ -92,6 +92,20 @@ describe("scheduler IPC 预生成链路", () => {
     expect(pregenState.calls).toBe(2);
   });
 
+  it("插件任务（ownerPluginId）不做预生成：新增与编辑都不触发", async () => {
+    const mod = await loadModule();
+    const h = makeHarness();
+    mod.registerSchedulerIpc(h.store as never, h.engine as never, () => [], h.ipc, async () => "生成内容");
+
+    // 插件任务的授权工具必须走实时执行路径，预生成/快路径都会跳过工具执行
+    const input = { ...addInput, ownerPluginId: "some-plugin" } as never;
+    const added = call<{ ok: true; value: { id: string } }>(h.handlers, IPC.SCHEDULER_ADD, input);
+    expect(pregenState.calls).toBe(0);
+
+    call(h.handlers, IPC.SCHEDULER_UPDATE, added.value.id as never, { title: "改名" } as never);
+    expect(pregenState.calls).toBe(0);
+  });
+
   it("旧预生成完成不覆盖新内容：乱序完成只保留最新一次（令牌守卫）", async () => {
     const mod = await loadModule();
     const h = makeHarness();

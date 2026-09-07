@@ -50,6 +50,20 @@ describe("custom-cloud-engine synthesize", () => {
     })).rejects.toThrow(/降级/);
   });
 
+  it("passes redirect: \"error\" so redirects are rejected before the body can be replayed", async () => {
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) =>
+      new Response(Buffer.from("ID3fake"), { status: 200, headers: { "Content-Type": "audio/mpeg" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await synthesize({ endpointUrl: "https://tts.example.com", apiKey: "secret-key", text: "hi" });
+
+    // 307/308 会把请求体（播报文本）重放到重定向目标；必须让运行时拒绝跟随重定向
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://tts.example.com",
+      expect.objectContaining({ redirect: "error" }),
+    );
+  });
+
   it("parses binary audio responses", async () => {
     const audio = Buffer.from("ID3fake");
     vi.stubGlobal("fetch", vi.fn(async () => new Response(audio, {
