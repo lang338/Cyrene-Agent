@@ -50,7 +50,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "24"
-          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: npm ci --foreground-scripts
@@ -58,14 +57,8 @@ jobs:
       - name: Build SDK
         run: npm run build:plugin-sdk
 
-      # 发布凭据属于仓库外配置：npm 侧已绑定 Trusted Publishing 时直接
-      # publish --provenance；否则使用仓库 secret 中的 NPM_TOKEN
+      # npm Trusted Publishing 通过 GitHub OIDC 交换短期发布凭据。
+      # 不配置 registry-url / NODE_AUTH_TOKEN，避免 setup-node 生成空的
+      # _authToken 并使 npm 错走传统令牌鉴权。
       - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -n "$NODE_AUTH_TOKEN" ]; then
-            npm publish ./packages/plugin-sdk --access public
-          else
-            npm publish ./packages/plugin-sdk --access public --provenance
-          fi
+        run: npm publish ./packages/plugin-sdk --access public
