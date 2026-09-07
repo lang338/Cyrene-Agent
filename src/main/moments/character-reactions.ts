@@ -13,20 +13,38 @@ import type { CharacterPersona } from "./character-personas";
 // ── 抽签：冷场判定 + 候选人数 ────────────────────────────────────
 // 固定候选数（永远 2~3 人）会形成可察觉的模式，时间久了用户能看穿；
 // 分布抽签才有"有时热闹有时冷清"的真实感，零反应的冷场是合法结果。
+// 热闹程度三档由用户设置控制：冷清保持原始分布，热闹档上限开到 5 人。
 
-/** 候选人数分布：0 人（冷场）/ 1 人 / 2 人 / 3 人的概率 */
-const CANDIDATE_COUNT_WEIGHTS = [0.1, 0.2, 0.45, 0.25] as const;
+/** 朋友圈热闹程度档位 */
+export type MomentsLiveliness = "quiet" | "natural" | "lively";
+
+/**
+ * 各档位的候选人数分布（下标 = 人数，值 = 概率权重）。
+ * quiet 保持历史原值：老用户升级后行为不变。
+ */
+const CANDIDATE_COUNT_WEIGHTS_BY_LIVELINESS: Record<
+  MomentsLiveliness,
+  readonly number[]
+> = {
+  quiet: [0.1, 0.2, 0.45, 0.25],
+  natural: [0.05, 0.1, 0.3, 0.35, 0.2],
+  lively: [0.05, 0.05, 0.15, 0.28, 0.27, 0.2],
+};
 
 /** 抽签第一掷：本次动态有几位角色刷到（0 = 无人刷到，动态零反应） */
-export function pickCandidateCount(random: () => number): number {
-  const total = CANDIDATE_COUNT_WEIGHTS.reduce((sum, weight) => sum + weight, 0);
+export function pickCandidateCount(
+  liveliness: MomentsLiveliness,
+  random: () => number,
+): number {
+  const weights = CANDIDATE_COUNT_WEIGHTS_BY_LIVELINESS[liveliness];
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
   const roll = random() * total;
   let cumulative = 0;
-  for (let count = 0; count < CANDIDATE_COUNT_WEIGHTS.length; count++) {
-    cumulative += CANDIDATE_COUNT_WEIGHTS[count];
+  for (let count = 0; count < weights.length; count++) {
+    cumulative += weights[count];
     if (roll < cumulative) return count;
   }
-  return CANDIDATE_COUNT_WEIGHTS.length - 1;
+  return weights.length - 1;
 }
 
 /**

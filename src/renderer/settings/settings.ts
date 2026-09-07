@@ -71,7 +71,7 @@ import { apiState, type SavedProfileLite } from "./api/state";
 import { apiForm, apiRuntimeForm, presetCards, profileList, profileListCount, profileEditorTitle, deleteProfileBtn, presetWebsiteLink, displayNameInput, baseUrlInput, baseUrlResetBtn, modelInput, modelInputSuggestions, contextWindowInput, apiKeyInput, apiKeyLabel, apiKeyHint, testConnectionBtn, transportSelect, transportHint, endpointPreview, customEndpointControls, customEndpointOverrides, customEndpointSummary, customEndpointGuideBtn, workFlowAdaptBtn, apiNoteText, multimodalToggle, embeddingDimensionsInput, toggleEnableThinking, toggleDisableThinking, toggleDisableMaxToken } from "./api/dom";
 import { visionBaseUrlInput, visionApiKeyInput, visionModelInput, visionFieldsWrap, testVisionBtn, visionTestStatus } from "./vision/dom";
 import { appearanceForm, appearanceSaveStatus, runtimeSyncSelect, runtimeSyncNote, windowCornerRadiusInput, windowCornerRadiusVal, petAlwaysOnTopInput, petVisibleInput, petZoomInput, petZoomVal, chatLineHeightInput, chatLineHeightVal, assistantBubbleEnabledInput, chatParaSpacingInput, chatParaSpacingVal, launchAtLoginInput, uiFontCurrent, uiFontImportButton, uiFontResetButton, uiIconSelect, screenshotHotkeyInput, openChromeGpu, disableGpuInput, sidebarVisibleInput, tasksVisibleInput } from "./appearance/dom";
-import { generalForm, generalSaveStatus, languageSelect, defaultChatModeSelect, segmentedOutputSelect, mobileMessageSegmentationSelect, proactiveChatSelect, proactiveDeliveryRow, proactiveDeliverySelect, chatSocialContextEnabledInput, momentsEnabledInput, cyreneMomentsPostingEnabledInput, cyreneMomentsReactionsEnabledInput, momentsCharacterReactionsEnabledInput, momentsPostingRow, momentsReactionsRow, momentsCharacterRow, citaEnabledInput, citaEngineSelect, clearChatHistoryBtn, customStyleSamplingBtn, customStylePromptBtn } from "./general/dom";
+import { generalForm, generalSaveStatus, languageSelect, defaultChatModeSelect, segmentedOutputSelect, mobileMessageSegmentationSelect, proactiveChatSelect, proactiveDeliveryRow, proactiveDeliverySelect, chatSocialContextEnabledInput, momentsEnabledInput, cyreneMomentsPostingEnabledInput, cyreneMomentsReactionsEnabledInput, momentsCharacterReactionsEnabledInput, momentsLivelinessSelect, momentsPostingRow, momentsReactionsRow, momentsCharacterRow, momentsLivelinessRow, citaEnabledInput, citaEngineSelect, clearChatHistoryBtn, customStyleSamplingBtn, customStylePromptBtn } from "./general/dom";
 import { minBtn, closeBtn, preferencesForm, sectionTitle, sectionHint, placeholderPanel, cyrenePanel, disclaimerPanel, pluginsPanel, placeholderIcon, placeholderTitle, placeholderCopy, saveStatus, runtimeSaveStatus, preferencesSaveStatus, cyreneSaveStatus, openStickerManagerBtn, addStickerBtn } from "./shared/shell";
 import { pluginAddBtn, neteaseDetailView, permissionBlocksWrap, permissionNote } from "./plugins/dom";
 import { preferencesState } from "./preferences/state";
@@ -213,6 +213,7 @@ if (!window.settings) {
       cyreneMomentsPostingEnabled: false,
       cyreneMomentsReactionsEnabled: true,
       momentsCharacterReactionsEnabled: true,
+      momentsLiveliness: "quiet",
       screenshotHotkey: "Alt+Shift+S",
     }),
     saveGeneral: (c) => Promise.resolve(c as GeneralSettings),
@@ -425,6 +426,16 @@ function getProactiveChatValue(): ProactiveChatMode {
   return normalizeProactiveChatMode(getOptionGroupValue(proactiveChatSelect, "off"));
 }
 
+// 朋友圈热闹程度：非法值回落冷清档（与主进程归一化逻辑一致）
+function applyMomentsLivelinessSelection(liveliness: string): void {
+  applyOptionGroupValue(momentsLivelinessSelect, liveliness === "natural" || liveliness === "lively" ? liveliness : "quiet");
+}
+
+function getMomentsLivelinessValue(): "quiet" | "natural" | "lively" {
+  const value = getOptionGroupValue(momentsLivelinessSelect, "quiet");
+  return value === "natural" || value === "lively" ? value : "quiet";
+}
+
 function applyProactiveDeliverySelection(target: ProactiveDeliveryTarget): void {
   applyOptionGroupValue(proactiveDeliverySelect, target);
 }
@@ -558,6 +569,7 @@ function renderMomentsSubRowsVisibility(): void {
   momentsPostingRow.hidden = !momentsEnabledInput.checked;
   momentsReactionsRow.hidden = !momentsEnabledInput.checked;
   momentsCharacterRow.hidden = !momentsEnabledInput.checked;
+  momentsLivelinessRow.hidden = !momentsEnabledInput.checked;
 }
 
 
@@ -1026,6 +1038,7 @@ async function loadGeneralSettings(): Promise<void> {
     cyreneMomentsPostingEnabledInput.checked = cfg.cyreneMomentsPostingEnabled ?? false;
     cyreneMomentsReactionsEnabledInput.checked = cfg.cyreneMomentsReactionsEnabled ?? true;
     momentsCharacterReactionsEnabledInput.checked = cfg.momentsCharacterReactionsEnabled ?? true;
+    applyMomentsLivelinessSelection(cfg.momentsLiveliness ?? "quiet");
     renderMomentsSubRowsVisibility();
     citaEngineSelect.querySelectorAll<HTMLButtonElement>(".option-block").forEach((button) => {
       const selected = button.dataset.value === cita.selectedEngine;
@@ -1257,6 +1270,13 @@ proactiveChatSelect.querySelectorAll<HTMLButtonElement>(".option-block").forEach
   button.addEventListener("click", () => {
     applyProactiveChatSelection(normalizeProactiveChatMode(button.dataset.value));
     renderProactiveDeliveryVisibility();
+    setPreferencesSaveStatus("有未保存的更改");
+  });
+});
+
+momentsLivelinessSelect.querySelectorAll<HTMLButtonElement>(".option-block").forEach((button) => {
+  button.addEventListener("click", () => {
+    applyMomentsLivelinessSelection(button.dataset.value ?? "quiet");
     setPreferencesSaveStatus("有未保存的更改");
   });
 });
@@ -1920,6 +1940,7 @@ preferencesForm.addEventListener("submit", async (e) => {
       cyreneMomentsPostingEnabled: cyreneMomentsPostingEnabledInput.checked,
       cyreneMomentsReactionsEnabled: cyreneMomentsReactionsEnabledInput.checked,
       momentsCharacterReactionsEnabled: momentsCharacterReactionsEnabledInput.checked,
+      momentsLiveliness: getMomentsLivelinessValue(),
       defaultChatMode: "chat",
       segmentedOutputMode: "off",
       mobileMessageSegmentation: getMobileMessageSegmentationValue(),

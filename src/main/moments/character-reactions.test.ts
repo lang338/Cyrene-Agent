@@ -48,12 +48,33 @@ function makeComment(overrides: Partial<MomentComment> = {}): MomentComment {
 // ── 抽签 ────────────────────────────────────────────────────────
 
 describe("pickCandidateCount 冷场分布", () => {
-  it("按累计概率落桶：边界值映射到 0/1/2/3 人", () => {
-    expect(pickCandidateCount(() => 0.05)).toBe(0); // 一成冷场
-    expect(pickCandidateCount(() => 0.15)).toBe(1);
-    expect(pickCandidateCount(() => 0.5)).toBe(2);
-    expect(pickCandidateCount(() => 0.9)).toBe(3);
-    expect(pickCandidateCount(() => 0.999)).toBe(3);
+  it("冷清档保持历史分布：边界值映射到 0/1/2/3 人", () => {
+    expect(pickCandidateCount("quiet", () => 0.05)).toBe(0); // 一成冷场
+    expect(pickCandidateCount("quiet", () => 0.15)).toBe(1);
+    expect(pickCandidateCount("quiet", () => 0.5)).toBe(2);
+    expect(pickCandidateCount("quiet", () => 0.9)).toBe(3);
+    expect(pickCandidateCount("quiet", () => 0.999)).toBe(3);
+  });
+
+  it("自然档上限开到 4 人，冷场概率减半", () => {
+    // 累计边界：0.05 / 0.15 / 0.45 / 0.80 / 1.0
+    expect(pickCandidateCount("natural", () => 0.04)).toBe(0); // 5% 冷场
+    expect(pickCandidateCount("natural", () => 0.06)).toBe(1);
+    expect(pickCandidateCount("natural", () => 0.4)).toBe(2);
+    expect(pickCandidateCount("natural", () => 0.79)).toBe(3);
+    expect(pickCandidateCount("natural", () => 0.95)).toBe(4);
+    expect(pickCandidateCount("natural", () => 0.999)).toBe(4);
+  });
+
+  it("热闹档上限开到 5 人", () => {
+    // 累计边界：0.05 / 0.10 / 0.25 / 0.53 / 0.80 / 1.0
+    expect(pickCandidateCount("lively", () => 0.04)).toBe(0); // 5% 冷场
+    expect(pickCandidateCount("lively", () => 0.06)).toBe(1);
+    expect(pickCandidateCount("lively", () => 0.15)).toBe(2);
+    expect(pickCandidateCount("lively", () => 0.5)).toBe(3);
+    expect(pickCandidateCount("lively", () => 0.79)).toBe(4);
+    expect(pickCandidateCount("lively", () => 0.95)).toBe(5);
+    expect(pickCandidateCount("lively", () => 0.999)).toBe(5);
   });
 });
 
@@ -192,7 +213,7 @@ describe("抽签 + 双骰大样本模拟（10 万条动态）", () => {
     let autoLikes = 0;
 
     for (let i = 0; i < totalPosts; i++) {
-      const candidateCount = pickCandidateCount(Math.random);
+      const candidateCount = pickCandidateCount("quiet", Math.random);
       countDist[candidateCount]++;
       if (candidateCount === 0) continue;
       for (const persona of pickWeightedCandidates(personas, candidateCount, Math.random)) {

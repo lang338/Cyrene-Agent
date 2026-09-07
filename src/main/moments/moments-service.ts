@@ -59,6 +59,7 @@ import {
   pickWeightedCandidates,
   rollReactionDice,
   withinReplyDepthLimit,
+  type MomentsLiveliness,
 } from "./character-reactions";
 import {
   buildCharacterPostEvalMessages,
@@ -154,6 +155,8 @@ export interface MomentsServiceDeps {
     cyreneMomentsReactionsEnabled: boolean;
     cyreneMomentsPostingEnabled: boolean;
     momentsCharacterReactionsEnabled: boolean;
+    /** 朋友圈热闹程度档位：缺省回落冷清档 */
+    momentsLiveliness?: "quiet" | "natural" | "lively";
   };
   /** 返回 null 表示模型未配置（缺 API key 等），反应调度直接跳过 */
   loadVendorConfig: () => VendorConfig | null;
@@ -236,6 +239,11 @@ export function createMomentsService(deps: MomentsServiceDeps): MomentsService {
   function characterReactionsEnabled(): boolean {
     const settings = deps.loadGeneralSettings();
     return settings.momentsEnabled && settings.momentsCharacterReactionsEnabled;
+  }
+
+  /** 热闹程度档位：抽签分布与日调用上限共用，每次现读保证切换即时生效。 */
+  function currentLiveliness(): MomentsLiveliness {
+    return deps.loadGeneralSettings().momentsLiveliness ?? "quiet";
   }
 
   /**
@@ -366,7 +374,7 @@ export function createMomentsService(deps: MomentsServiceDeps): MomentsService {
    */
   function spendCharacterModelCall(): ReactionDecideOutcome | null {
     const state = loadPolicyState();
-    if (!canCharacterModelCall(state, now())) {
+    if (!canCharacterModelCall(state, now(), currentLiveliness())) {
       return { type: "stale", reason: "character_daily_model_limit" };
     }
     savePolicyState(recordCharacterModelCall(state, now()));
@@ -557,7 +565,7 @@ export function createMomentsService(deps: MomentsServiceDeps): MomentsService {
       : [];
     const rest = personas.filter((persona) => !spotlit.includes(persona));
 
-    const candidateCount = pickCandidateCount(random);
+    const candidateCount = pickCandidateCount(currentLiveliness(), random);
     const candidates = candidateCount === 0 && spotlit.length === 0
       ? []
       : [...spotlit, ...pickWeightedCandidates(rest, candidateCount, random)];

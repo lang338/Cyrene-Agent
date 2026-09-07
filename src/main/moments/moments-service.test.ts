@@ -325,6 +325,8 @@ interface HarnessOptions {
   cyreneMomentsReactionsEnabled?: boolean;
   cyreneMomentsPostingEnabled?: boolean;
   momentsCharacterReactionsEnabled?: boolean;
+  /** 朋友圈热闹程度档位（缺省冷清档：行为与历史分布一致） */
+  momentsLiveliness?: "quiet" | "natural" | "lively";
   /** null 表示模型未配置；缺省为已配置 */
   vendorConfig?: VendorConfig | null;
   /** 模型响应：单值恒返回；数组按调用顺序依次消耗（驱动多段对话链） */
@@ -384,6 +386,7 @@ function createHarness(options: HarnessOptions = {}) {
     cyreneMomentsReactionsEnabled: options.cyreneMomentsReactionsEnabled ?? true,
     cyreneMomentsPostingEnabled: options.cyreneMomentsPostingEnabled ?? false,
     momentsCharacterReactionsEnabled: options.momentsCharacterReactionsEnabled ?? true,
+    momentsLiveliness: options.momentsLiveliness ?? "quiet",
   };
   // 策略状态用内存版，测试不落盘也不碰 electron
   const policy: { current: MomentsPolicyState } = { current: defaultMomentsPolicyState() };

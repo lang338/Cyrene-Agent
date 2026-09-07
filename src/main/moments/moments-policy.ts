@@ -12,6 +12,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { createHash } from "crypto";
 import { app } from "electron";
+import type { MomentsLiveliness } from "./character-reactions";
 
 // ── 常量 ────────────────────────────────────────────────────────
 
@@ -20,10 +21,17 @@ export const MIN_POST_INTERVAL_MS = 6 * 60 * 60 * 1000;
 /** 每日发帖上限（是上限不是配额，允许 0/1/2 条） */
 export const MAX_POSTS_PER_DAY = 2;
 /**
- * 角色每日模型调用上限（post_eval + reply_eval 合计）。
+ * 角色每日模型调用上限（post_eval + reply_eval 合计），按热闹程度分档。
  * 随机点赞零模型成本不计入；昔涟不计入，沿用她自己的频率设计。
+ * 热闹档抽中人数更多，配额同步放宽才不会下午就集体沉默。
  */
-export const MAX_CHARACTER_MODEL_CALLS_PER_DAY = 40;
+export const MAX_CHARACTER_MODEL_CALLS_PER_DAY_BY_LIVELINESS: Record<MomentsLiveliness, number> = {
+  quiet: 40,
+  natural: 50,
+  lively: 60,
+};
+/** 兼容旧引用的默认上限：冷清档即历史原值。 */
+export const MAX_CHARACTER_MODEL_CALLS_PER_DAY = MAX_CHARACTER_MODEL_CALLS_PER_DAY_BY_LIVELINESS.quiet;
 /** 昔涟生成动态的文案长度上限（用户输入的 2000 上限是另一层，不混用） */
 export const MOMENTS_CYRENE_POST_TEXT_MAX = 300;
 /** 去重键 FIFO 容量 */
@@ -116,11 +124,18 @@ export function recordPost(state: MomentsPolicyState, now: number): MomentsPolic
 
 // ── 角色模型调用预算 ────────────────────────────────────────────
 
-/** 当日角色模型调用是否还有余量（上限只拦模型类任务，随机点赞不查这里）。 */
-export function canCharacterModelCall(state: MomentsPolicyState, now: number): boolean {
+/**
+ * 当日角色模型调用是否还有余量（上限只拦模型类任务，随机点赞不查这里）。
+ * 上限随热闹程度档位走：切换即时生效，当日已计数不重置。
+ */
+export function canCharacterModelCall(
+  state: MomentsPolicyState,
+  now: number,
+  liveliness: MomentsLiveliness = "quiet",
+): boolean {
   const today = localDateKey(now);
   const count = state.characterModelCalls.date === today ? state.characterModelCalls.count : 0;
-  return count < MAX_CHARACTER_MODEL_CALLS_PER_DAY;
+  return count < MAX_CHARACTER_MODEL_CALLS_PER_DAY_BY_LIVELINESS[liveliness];
 }
 
 /** 角色模型调用记账：日期滚动，当日 +1。 */

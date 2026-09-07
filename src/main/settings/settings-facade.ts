@@ -46,6 +46,7 @@ const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   cyreneMomentsPostingEnabled: false,
   cyreneMomentsReactionsEnabled: true,
   momentsCharacterReactionsEnabled: true,
+  momentsLiveliness: "quiet",
   petAlwaysOnTop: true,
   petVisible: true,
   petZoom: 1,
@@ -201,6 +202,10 @@ export function normalizeGeneralSettings(
     momentsCharacterReactionsEnabled: input?.momentsCharacterReactionsEnabled === undefined
       ? DEFAULT_GENERAL_SETTINGS.momentsCharacterReactionsEnabled
       : Boolean(input.momentsCharacterReactionsEnabled),
+    // 热闹程度只认三个合法档位，非法值回落默认档（旧配置无此字段也走默认）
+    momentsLiveliness: ["quiet", "natural", "lively"].includes(input?.momentsLiveliness as string)
+      ? (input?.momentsLiveliness as GeneralSettings["momentsLiveliness"])
+      : DEFAULT_GENERAL_SETTINGS.momentsLiveliness,
     petAlwaysOnTop: input?.petAlwaysOnTop === undefined
       ? DEFAULT_GENERAL_SETTINGS.petAlwaysOnTop
       : Boolean(input.petAlwaysOnTop),
