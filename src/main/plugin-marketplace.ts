@@ -227,6 +227,9 @@ export function createPluginMarketplaceService(deps: PluginMarketplaceDeps) {
       if (!response.body) throw new Error("下载插件包失败（响应无内容）");
       const reader = response.body.getReader();
       const file = createWriteStream(tempPath);
+      // 提前挂好关闭信号：超时/超限提前 destroy 时，流要等延迟的 open 完成后才真正关闭 fd，
+      // 不等 close 就清理临时文件会赶在文件创建之前执行，留下一个空文件
+      const fileClosed = new Promise<void>((resolve) => file.once("close", resolve));
       let received = 0;
       try {
         for (;;) {
@@ -245,8 +248,10 @@ export function createPluginMarketplaceService(deps: PluginMarketplaceDeps) {
             else resolve();
           });
         });
+        await fileClosed;
       } catch (streamError) {
         file.destroy();
+        await fileClosed;
         throw streamError;
       } finally {
         // 中断或读完后都释放读取器，避免挂死的流占着连接
