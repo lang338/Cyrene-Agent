@@ -8,9 +8,9 @@ This feature lives in the scheduler (main process) because it completes the task
 
 ## Scope
 
-- Pre-generate announcement content via an independent LLM call when a task is created or edited (`pregenerateTaskAlert`), storing it on the task as `alertContent` / `alertContentError` / `alertPregeneratedAt` / `alertPregenerating`.
+- Pre-generate announcement content via an independent LLM call when a task is created or edited (`pregenerateTaskAlert`), storing it on the task as `alertContent` / `alertContentError` / `alertPregeneratedAt` / `alertPregenerating`. The pre-generation prompt builds the always-on context in a side-effect-free mode (`buildAlwaysOnContext` with `mutateActivation: false`): worldbook entries are injected via keyword lookup only, never mutating the shared WorldbookManager activation state with the task prompt.
 - Warm the TTS cache right after pre-generation so the fire-time playback needs no synthesis.
-- At fire time, if trusted pre-generated content exists, run the fast path: record history (`reason: "预生成播报"`), emit `scheduler.started` with `pregenerated: true`, and show the popup directly — no model call.
+- At fire time, if trusted pre-generated content exists, run the fast path: record history (`reason: "预生成播报"`), emit `scheduler.started` with `pregenerated: true`, publish the host lifecycle events (`turn:started` / `turn:finished` / `scheduler:finished` with a success status, matching the real-time path), and show the popup directly — no model call.
 - Fall back to the original real-time execution path when pre-generation failed, is still in flight (`alertPregenerating`), or the content is blank. Both outcomes still pop up (success shows the reply, failure shows the error with `isError: true`).
 - Single non-framed always-on-top popup window at the bottom-right corner, manually closed by the user.
 - TTS text is truncated at 1000 characters. Failed tasks do not synthesize voice.
@@ -26,7 +26,7 @@ This feature lives in the scheduler (main process) because it completes the task
 
 - Task fields (persisted by `scheduler-store`): `alertContent`, `alertContentError`, `alertPregeneratedAt`, `alertPregenerating`. The in-flight flag exists so the runner never trusts a possibly-stale `alertContent` while regeneration is running. It is an in-process transient: `alertPregenerating` is never trusted from disk and is normalized away on load, so an app exit mid-generation cannot permanently block the fast path or `fireNow`.
 - Dedicated IPC channels (`IPC.TASK_ALERT_DATA` / `IPC.TASK_ALERT_AUDIO` / `IPC.TASK_ALERT_*` control channels) between the main process and the popup page; the popup renderer talks only through the `taskAlert` preload API with context isolation enabled.
-- TTS requests are built by `buildTaskAlertTtsRequest(settings, text)` — a pure function mapping `GeneralSettings` to the engine payload and cache key, shared by both pre-generation warm-up and fire-time synthesis. Its format semantics differ from the channel TTS path: the engine default format is used, not a channel-imposed one.
+- TTS requests are built by `buildTaskAlertTtsRequest(settings, text)` — a pure function mapping `GeneralSettings` to the engine payload and cache key, shared by both pre-generation warm-up and fire-time synthesis. Its format semantics differ from the channel TTS path: the format follows engine settings (e.g. `ttsMosslandFormat` for Mossland, so mp3/wav settings produce distinct cache keys and never cross-hit stale audio), not a channel-imposed one.
 - Synthesized audio is written to `cyrene-tts-cache` keyed by engine settings + text, so the fire-time synthesis of the same text is an instant cache hit.
 
 ## Lifecycle

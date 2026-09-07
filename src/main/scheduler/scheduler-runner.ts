@@ -57,13 +57,14 @@ export function createSchedulerRunner(deps: RunnerDeps) {
       const historyId = deps.id();
       const startedAt = deps.now();
       const finishedAt = deps.now();
+      const durationMs = finishedAt.getTime() - startedAt.getTime();
       deps.recordHistory({
         id: historyId,
         taskId: task.id,
         taskTitle: task.title,
         firedAt: startedAt.toISOString(),
         finishedAt: finishedAt.toISOString(),
-        durationMs: finishedAt.getTime() - startedAt.getTime(),
+        durationMs,
         status: "success",
         reason: "预生成播报",
         outputPreview: pregenContent.slice(0, 160),
@@ -85,6 +86,30 @@ export function createSchedulerRunner(deps: RunnerDeps) {
         wc.send(IPC.SCHEDULER_EVENT, { type: "TEXT_MESSAGE_END", schedulerRunId: historyId, schedulerTaskId: task.id });
         wc.send(IPC.SCHEDULER_EVENT, { type: "RUN_FINISHED", schedulerRunId: historyId, schedulerTaskId: task.id });
       }
+      // 与实时执行路径对齐：预生成运行也发布宿主生命周期事件（成功终态），
+      // 保证 turn:started / turn:finished / scheduler:finished 的消费者不漏事件。
+      deps.publishLifecycle?.publishTurnStarted({
+        source: "scheduler",
+        runId: historyId,
+        mode: task.mode ?? "work",
+        taskId: task.id,
+        schedulerRunId: historyId,
+      });
+      deps.publishLifecycle?.publishTurnFinished({
+        source: "scheduler",
+        runId: historyId,
+        mode: task.mode ?? "work",
+        taskId: task.id,
+        schedulerRunId: historyId,
+        status: "success",
+        durationMs,
+      });
+      deps.publishLifecycle?.publishSchedulerFinished({
+        taskId: task.id,
+        schedulerRunId: historyId,
+        status: "success",
+        durationMs,
+      });
       void deps.showTaskAlert?.({
         historyId,
         taskId: task.id,

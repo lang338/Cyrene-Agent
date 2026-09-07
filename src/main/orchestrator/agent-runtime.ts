@@ -275,8 +275,14 @@ export function createAgentRuntime(rawDeps: AgentRuntimeDeps): AgentRuntime {
     };
   }
 
-  /** 与聊天路径一致的 scheduler prompt 构建：解析默认模型档案 + 按任务模式的 system 内容。 */
-  const buildSchedulerPrompt = async (task: ScheduledTask, mode: PluginPromptMode = "work") => {
+  /** 与聊天路径一致的 scheduler prompt 构建：解析默认模型档案 + 按任务模式的 system 内容。
+   *  opts.sideEffectFreeWorldbook: 后台场景（预生成）置 true——世界书走只读注入，
+   *  不改写共享激活状态，避免任务提示词污染后续聊天轮次的条目激活。 */
+  const buildSchedulerPrompt = async (
+    task: ScheduledTask,
+    mode: PluginPromptMode = "work",
+    opts?: { sideEffectFreeWorldbook?: boolean },
+  ) => {
     // 与聊天路径一致：解析默认模型档案。否则定时任务会拿到未解析的顶层设置，
     // 在使用模型档案的场景下调用到过期/无余额的端点（表现为"模型服务请求失败"）。
     const settings = resolveModelSettingsProfile(rawDeps.loadModelSettings());
@@ -292,7 +298,11 @@ export function createAgentRuntime(rawDeps: AgentRuntimeDeps): AgentRuntime {
       buildModePrompt(mode),
       buildEnvironmentContext({ provider: settings.provider, model: settings.model }, profile),
       buildSkillCatalog(scheduledSkills),
-      await buildAlwaysOnContext(task.prompt, messages),
+      await buildAlwaysOnContext(
+        task.prompt,
+        messages,
+        opts?.sideEffectFreeWorldbook ? { mutateActivation: false } : undefined,
+      ),
       await rawDeps.buildPluginPromptContext({
         source: "scheduler",
         mode,
@@ -368,7 +378,8 @@ export function createAgentRuntime(rawDeps: AgentRuntimeDeps): AgentRuntime {
     },
 
     pregenerateTaskAlert: async (task) => {
-      const { settings, systemContent } = await buildSchedulerPrompt(task, task.mode ?? "work");
+      // 预生成是无人值守的后台调用：世界书走只读注入，不改写共享激活状态
+      const { settings, systemContent } = await buildSchedulerPrompt(task, task.mode ?? "work", { sideEffectFreeWorldbook: true });
       const userMessage = [
         `用户刚刚创建了一个定时任务，现在需要你预生成它到点触发时要展示的提醒内容。`,
         `任务标题：${task.title}`,

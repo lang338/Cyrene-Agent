@@ -8,6 +8,7 @@ const ragMock = vi.hoisted(() => ({
   getPermanentWorldbookEntries: vi.fn(),
   getActiveWorldbookEntries: vi.fn(),
   getCascadeWorldbookEntries: vi.fn(),
+  getKeywordMatchedWorldbookEntries: vi.fn(),
   INJECTION_HEADER: "HEADER",
   INJECTION_PREAMBLE: "PREAMBLE",
 }))
@@ -118,5 +119,20 @@ describe("buildAlwaysOnContext", () => {
     )
 
     expect(ragMock.updateWorldbookActivation).toHaveBeenCalledWith("请总结这个文档", "")
+  })
+
+  it("mutateActivation: false 走只读路径：不更新激活状态，改注入关键词直查条目", async () => {
+    const { buildAlwaysOnContext } = await import("./index")
+    ragMock.getKeywordMatchedWorldbookEntries.mockReturnValue(["【睡觉】\n到点该休息了"])
+
+    const context = await buildAlwaysOnContext("提醒睡觉", [], { mutateActivation: false })
+
+    // 不推进 DMAE 状态机（后台场景不得污染共享激活状态）
+    expect(ragMock.updateWorldbookActivation).not.toHaveBeenCalled()
+    expect(ragMock.getActiveWorldbookEntries).not.toHaveBeenCalled()
+    expect(ragMock.getCascadeWorldbookEntries).not.toHaveBeenCalled()
+    expect(ragMock.getKeywordMatchedWorldbookEntries).toHaveBeenCalledWith("提醒睡觉")
+    expect(context).toContain("HEADER")
+    expect(context).toContain("到点该休息了")
   })
 })

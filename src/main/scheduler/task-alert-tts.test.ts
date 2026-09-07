@@ -181,6 +181,23 @@ describe("buildTaskAlertTtsRequest（纯函数契约）", () => {
     );
   });
 
+  it("mossland：format 跟随 ttsMosslandFormat，mp3 与 wav 缓存键不同", () => {
+    const mp3 = buildTaskAlertTtsRequest(
+      makeSettings({ ttsEngine: "mossland", ttsMosslandFormat: "mp3" }),
+      "文本",
+    );
+    const wav = buildTaskAlertTtsRequest(
+      makeSettings({ ttsEngine: "mossland", ttsMosslandFormat: "wav" }),
+      "文本",
+    );
+    if ("error" in mp3 || "error" in wav) throw new Error("不应返回 error");
+    expect(mp3.payload.format).toBe("mp3");
+    expect(wav.payload.format).toBe("wav");
+    expect(wav.payload.mosslandFormat).toBe("wav");
+    // 缓存键必须区分格式：否则切换格式后同键串缓存（读到旧格式的音频）
+    expect(mp3.cacheKey).not.toBe(wav.cacheKey);
+  });
+
   it(`超过 ${TASK_ALERT_MAX_TTS_TEXT} 字截断并追加省略号`, () => {
     const longText = "啊".repeat(TASK_ALERT_MAX_TTS_TEXT + 50);
     const request = buildTaskAlertTtsRequest(makeSettings(), longText);

@@ -14,6 +14,42 @@ describe("custom-cloud-engine synthesize", () => {
     await expect(synthesize({ endpointUrl: "https://tts.example.com", text: "" })).rejects.toThrow(/合成文本/);
   });
 
+  it("rejects non-https endpointUrl before any request is made", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(synthesize({
+      endpointUrl: "http://tts.example.com/api",
+      apiKey: "secret-key",
+      text: "hi",
+    })).rejects.toThrow(/https/);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid endpointUrl", async () => {
+    await expect(synthesize({
+      endpointUrl: "not-a-valid-url",
+      text: "hi",
+    })).rejects.toThrow(/地址无效/);
+  });
+
+  it("aborts when the final response URL downgraded to http", async () => {
+    // 模拟 fetch 自动跟随重定向后的终态：响应本身 200，但最终 URL 已降级为 http
+    const response = new Response(Buffer.from("ID3fake"), {
+      status: 200,
+      headers: { "Content-Type": "audio/mpeg" },
+    });
+    Object.defineProperty(response, "url", { value: "http://cdn.example.com/audio.mp3" });
+    vi.stubGlobal("fetch", vi.fn(async () => response));
+
+    await expect(synthesize({
+      endpointUrl: "https://tts.example.com",
+      apiKey: "secret-key",
+      text: "hi",
+    })).rejects.toThrow(/降级/);
+  });
+
   it("parses binary audio responses", async () => {
     const audio = Buffer.from("ID3fake");
     vi.stubGlobal("fetch", vi.fn(async () => new Response(audio, {

@@ -269,6 +269,46 @@ describe("createSchedulerRunner task-alert 快慢路径", () => {
     for (const event of sent) expect(event.schedulerRunId).toBe("hist-1");
   });
 
+  it("预生成快路径同样发布宿主生命周期事件（success 终态与任务模式）", async () => {
+    const publishLifecycle = {
+      publishTurnStarted: vi.fn(),
+      publishTurnFinished: vi.fn(),
+      publishSchedulerFinished: vi.fn(),
+    };
+    const deps = makeRunnerDeps({ publishLifecycle });
+    const runner = createSchedulerRunner(deps as never);
+    await runner.runScheduledTask(
+      makeTask({ alertContent: "预生成的播报", alertPregenerating: false, mode: "chat" }),
+      new Date(),
+      false,
+    );
+
+    expect(publishLifecycle.publishTurnStarted).toHaveBeenCalledTimes(1);
+    expect(publishLifecycle.publishTurnStarted).toHaveBeenCalledWith({
+      source: "scheduler",
+      runId: "hist-1",
+      mode: "chat",
+      taskId: "task-1",
+      schedulerRunId: "hist-1",
+    });
+    expect(publishLifecycle.publishTurnFinished).toHaveBeenCalledTimes(1);
+    expect(publishLifecycle.publishTurnFinished).toHaveBeenCalledWith({
+      source: "scheduler",
+      runId: "hist-1",
+      mode: "chat",
+      taskId: "task-1",
+      schedulerRunId: "hist-1",
+      status: "success",
+      durationMs: 1000,
+    });
+    expect(publishLifecycle.publishSchedulerFinished).toHaveBeenCalledWith({
+      taskId: "task-1",
+      schedulerRunId: "hist-1",
+      status: "success",
+      durationMs: 1000,
+    });
+  });
+
   it("agent 终态非 success 时弹窗按失败处理（不播 TTS）", async () => {
     runnerMocks.agentResult = { reply: "部分回复", terminal: { status: "timeout" } };
     const showTaskAlert = vi.fn();

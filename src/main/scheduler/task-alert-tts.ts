@@ -123,7 +123,9 @@ export function buildTaskAlertTtsRequest(
       },
     };
   }
-  const format = "mp3" as const;
+  // mossland：format 跟随 ttsMosslandFormat（dispatcher 实际用 payload.mosslandFormat
+  // 决定合成格式），缓存键必须与真实音频格式一致——否则 mp3/wav 切换后同键串缓存。
+  const format = settings.ttsMosslandFormat;
   return {
     cacheKey: buildMosslandCacheKey({
       voiceId: settings.ttsMosslandVoiceId,
