@@ -270,15 +270,17 @@ export function PluginModePanel({ api: providedApi }: PluginModePanelProps) {
                   </div>
                 </div>
                 <div className="plugin-card-ui__actions">
-                  <button
-                    type="button"
-                    className="plugin-card-ui__button"
-                    onClick={() => void openPlugin(plugin)}
-                    disabled={!canOpen || cardBusy}
-                    title={!plugin.canOpen ? t("pluginPanel.openUnsupported") : !canOpen ? t("pluginPanel.openRequiresRunning") : t("pluginPanel.open")}
-                  >
-                    {t("pluginPanel.open")}
-                  </button>
+                  {plugin.canOpen && (
+                    <button
+                      type="button"
+                      className="plugin-card-ui__button"
+                      onClick={() => void openPlugin(plugin)}
+                      disabled={!canOpen || cardBusy}
+                      title={!canOpen ? t("pluginPanel.openRequiresRunning") : t("pluginPanel.open")}
+                    >
+                      {t("pluginPanel.open")}
+                    </button>
+                  )}
                   <button
                     type="button"
                     className={`plugin-card-ui__button${plugin.status === "running" ? " is-enabled" : ""}`}

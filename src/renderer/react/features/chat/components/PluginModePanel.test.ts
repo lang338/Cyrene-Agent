@@ -103,6 +103,16 @@ describe("PluginModePanel", () => {
     expect(cardButtons.map((button) => button.textContent)).toEqual(["打开", "停用", "删除"]);
   });
 
+  it("hides the open action when the plugin has no interface", async () => {
+    const api = apiFor([plugin({ canOpen: false })]);
+    await act(async () => {
+      root.render(createElement(PluginModePanel, { api }));
+    });
+
+    const cardButtons = [...container.querySelectorAll<HTMLButtonElement>(".plugin-card-ui__actions button")];
+    expect(cardButtons.map((button) => button.textContent)).toEqual(["停用", "删除"]);
+  });
+
   it("enables a disabled plugin and refreshes its state", async () => {
     const disabledPlugin = plugin({ configuredEnabled: false, enabled: false, status: "disabled" });
     const api = apiFor([disabledPlugin]);
