@@ -98,6 +98,17 @@ describe("MODEL_REASONING_RULES — 规则匹配优先级", () => {
 // ── B. 9 家全部存在性 ──────────────────────────────────────
 
 describe("MODEL_REASONING_RULES — 9 家全部存在性", () => {
+  test("chatgpt gpt-6-astra → effort 五档 + supportsDisable=false + supportsProMode（2026-09-03 新旗舰）", () => {
+    const cap = resolveReasoningCapability("chatgpt", "gpt-6-astra");
+    expect(cap.control).toBe("effort");
+    expect(cap.requestStyle).toBe("openai-effort");
+    expect(cap.supportedEfforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    // 官方迁移说明：不支持 none 档 → UI 不显示"关闭"，off 折叠为 on 落 defaultEffort
+    expect(cap.supportsDisable).toBe(false);
+    // 官方迁移指南：pro mode 与 5.6 一致继续支持
+    expect(cap.supportsProMode).toBe(true);
+  });
+
   test("chatgpt gpt-5.6 → effort + openai-effort + supportedEfforts 含 max + supportsProMode", () => {
     const cap = resolveReasoningCapability("chatgpt", "gpt-5.6");
     expect(cap.control).toBe("effort");
