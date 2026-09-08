@@ -314,6 +314,8 @@ function startPlanReviewFlow(params: {
   })().catch((err) => {
     console.warn("[AgUiBridge][Plan] review flow failed:", err);
     supplementPlan(sessionId);
+    // 注意力提醒：流程异常终止，同样要清理（幂等，与既有结算清理重合无副作用）
+    toastEvents.publishPlanReviewEnded({ sessionId, runId });
   });
 }
 

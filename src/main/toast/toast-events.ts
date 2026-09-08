@@ -50,6 +50,12 @@ export interface PlanApprovedEvent {
   runId: string;
 }
 
+/** 计划流终止但未走批准路径（拉回讨论态且不再出补充卡，或流程异常） */
+export interface PlanReviewEndedEvent {
+  sessionId: string;
+  runId: string;
+}
+
 /** 抽查出题：卡片已发布，等待用户作答 */
 export interface QuizPendingEvent {
   quizId: string;
@@ -115,6 +121,8 @@ export interface ToastEventBus {
   publishPlanReview(event: PlanReviewEvent): void;
   onPlanApproved(listener: (event: PlanApprovedEvent) => void): () => void;
   publishPlanApproved(event: PlanApprovedEvent): void;
+  onPlanReviewEnded(listener: (event: PlanReviewEndedEvent) => void): () => void;
+  publishPlanReviewEnded(event: PlanReviewEndedEvent): void;
   onQuizPending(listener: (event: QuizPendingEvent) => void): () => void;
   publishQuizPending(event: QuizPendingEvent): void;
   onQuizSettled(listener: (event: QuizSettledEvent) => void): () => void;
@@ -130,6 +138,7 @@ export function createToastEventBus(): ToastEventBus {
   const choiceDismiss = createTopic<ChoiceDismissEvent>("choice-dismiss");
   const planReview = createTopic<PlanReviewEvent>("plan-review");
   const planApproved = createTopic<PlanApprovedEvent>("plan-approved");
+  const planReviewEnded = createTopic<PlanReviewEndedEvent>("plan-review-ended");
   const quizPending = createTopic<QuizPendingEvent>("quiz-pending");
   const quizSettled = createTopic<QuizSettledEvent>("quiz-settled");
   const schedulerFinished = createTopic<SchedulerFinishedEvent>("scheduler-finished");
@@ -147,6 +156,8 @@ export function createToastEventBus(): ToastEventBus {
     publishPlanReview: planReview.publish,
     onPlanApproved: planApproved.subscribe,
     publishPlanApproved: planApproved.publish,
+    onPlanReviewEnded: planReviewEnded.subscribe,
+    publishPlanReviewEnded: planReviewEnded.publish,
     onQuizPending: quizPending.subscribe,
     publishQuizPending: quizPending.publish,
     onQuizSettled: quizSettled.subscribe,

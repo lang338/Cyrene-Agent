@@ -186,6 +186,29 @@ describe("createToastService · plan/ask 分类互斥", () => {
     expect(service.hasPendingSeen("plan-review", "run-1")).toBe(false);
     expect(service.getActiveToasts()).toHaveLength(0);
   });
+
+  it("revision 1 非批准非补充后计划流终止事件全量清理，不留陈旧条目", () => {
+    const { bus, service } = setup();
+    bus.publishPlanReview({ sessionId: "s1", runId: "run-1" });
+    // revision 1 超时（空答案）：保留记忆等可能的补充卡
+    bus.publishChoiceDismiss({ cardId: "choice-1", runId: "run-1", revision: 1, reason: "timeout" });
+    expect(service.hasPendingSeen("plan-review", "run-1")).toBe(true);
+    // agui-bridge 不再出补充卡，发布计划流终止
+    bus.publishPlanReviewEnded({ sessionId: "s1", runId: "run-1" });
+    expect(service.hasPendingSeen("plan-review", "run-1")).toBe(false);
+    expect(service.getActiveToasts()).toHaveLength(0);
+    // 清理后互斥登记一并解除：同 runId 再来的卡走普通 ask-choice 路径
+    bus.publishChoiceCard({ cardId: "choice-2", intro: "普通问题", runId: "run-1", revision: 1 });
+    expect(service.getActiveToasts()[0]).toMatchObject({ kind: "ask-choice", sourceId: "choice-2" });
+  });
+
+  it("计划流终止事件幂等：已由 cancelled 清理后再发无副作用", () => {
+    const { bus, service } = setup();
+    bus.publishPlanReview({ sessionId: "s1", runId: "run-1" });
+    bus.publishChoiceDismiss({ cardId: "choice-1", runId: "run-1", revision: 1, reason: "cancelled" });
+    expect(() => bus.publishPlanReviewEnded({ sessionId: "s1", runId: "run-1" })).not.toThrow();
+    expect(service.hasPendingSeen("plan-review", "run-1")).toBe(false);
+  });
 });
 
 describe("createToastService · 点击跳转与 IPC 安全", () => {

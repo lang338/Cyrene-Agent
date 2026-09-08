@@ -201,6 +201,15 @@ export function createToastService(deps: ToastServiceDeps) {
     planRunIds.delete(event.runId);
   }
 
+  /**
+   * 计划流终止但未走批准（拉回讨论态且不再出补充卡，或流程异常）：
+   * 全量清理。幂等——与 revision 2 结算 / cancelled 等既有清理路径重合时无副作用。
+   */
+  function handlePlanReviewEnded(event: { runId: string }): void {
+    settleActionToast("plan-review", event.runId);
+    planRunIds.delete(event.runId);
+  }
+
   function handleQuizPending(event: { quizId: string; runId: string; firstQuestion: string }): void {
     popActionToast({
       id: newId(),
@@ -282,6 +291,7 @@ export function createToastService(deps: ToastServiceDeps) {
     deps.bus.onChoiceDismiss(handleChoiceDismiss),
     deps.bus.onPlanReview(handlePlanReview),
     deps.bus.onPlanApproved(handlePlanApproved),
+    deps.bus.onPlanReviewEnded(handlePlanReviewEnded),
     deps.bus.onQuizPending(handleQuizPending),
     deps.bus.onQuizSettled(handleQuizSettled),
     deps.bus.onSchedulerFinished(handleSchedulerFinished),
