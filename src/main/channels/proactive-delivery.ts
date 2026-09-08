@@ -1,6 +1,10 @@
 import { normalizeMobileMessageSegmentationMode, type MobileMessageSegmentationMode } from "../../shared/preferences";
 import { splitTextBySentenceBreaks } from "../../shared/message-segmentation";
 import type { ChannelManager } from "./manager";
+import {
+  createChannelDeliveryService,
+  type ChannelDeliveryService,
+} from "./delivery-service";
 import { appendHistory as appendChannelHistory } from "./history-log";
 import { appendLog as appendChannelLog, type LogEntry } from "./message-log";
 import type { ChannelId, IncomingMessage, OutgoingMessage } from "./types";
@@ -63,6 +67,7 @@ interface ProactiveChannelDeliveryInput {
   text: string;
   mobileMessageSegmentation: MobileMessageSegmentationMode;
   manager: Pick<ChannelManager, "getAdapter">;
+  delivery?: ChannelDeliveryService;
   recipientRegistry?: ProactiveChannelRecipientRegistry;
   appendHistory?: typeof appendChannelHistory;
   appendLog?: (entry: Omit<LogEntry, "at">) => void;
@@ -79,6 +84,7 @@ export async function sendProactiveChannelMessage(
 
   const recipient = (input.recipientRegistry ?? defaultRecipientRegistry).get(input.channel);
   if (!recipient) return { kind: "cancelled", reason: "recipient_unavailable" };
+  const delivery = input.delivery ?? createChannelDeliveryService(input.manager);
 
   const mode = normalizeMobileMessageSegmentationMode(input.mobileMessageSegmentation);
   const texts = mode === "on" ? splitTextBySentenceBreaks(input.text) : [input.text.trim()].filter(Boolean);
@@ -94,13 +100,9 @@ export async function sendProactiveChannelMessage(
       ...(recipient.threadId ? { threadId: recipient.threadId } : {}),
       parts: [{ kind: "text", text }],
     };
-    try {
-      const result = await adapter.send(message);
-      if (!result.ok) break;
-      deliveredTexts.push(text);
-    } catch {
-      break;
-    }
+    const result = await delivery.send(message);
+    if (!result.ok) break;
+    deliveredTexts.push(text);
   }
 
   if (deliveredTexts.length === 0) return { kind: "cancelled", reason: "send_failed" };

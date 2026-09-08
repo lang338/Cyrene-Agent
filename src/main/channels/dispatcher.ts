@@ -37,6 +37,10 @@ import {
 import { rememberProactiveChannelRecipient } from "./proactive-delivery";
 import { createChannelRateLimiter, type ChannelRateLimiter } from "./rate-limiter";
 import { createKeyedQueue, type KeyedQueue } from "./keyed-queue";
+import {
+  createChannelDeliveryService,
+  type ChannelDeliveryService,
+} from "./delivery-service";
 
 /** 用于拼接历史对话的轻量 ChatMessage 形状（与 orchestrator ChatMessage 兼容）。 */
 interface ChatMessage {
@@ -153,6 +157,8 @@ export interface DispatcherDeps {
   manager: ChannelManager;
   /** 按外部会话和绑定桌面会话串行执行；未注入时使用进程内队列。 */
   queue?: KeyedQueue;
+  /** 统一渠道发送边界；未注入时基于当前渠道管理器创建。 */
+  delivery?: ChannelDeliveryService;
   /** 渲染端 chatWindow 用于镜像显示（可选） */
   getChatWindow?: () => { webContents: { isDestroyed(): boolean; send: (channel: string, ...args: unknown[]) => void }; isDestroyed(): boolean } | null;
   /** 完整 agent 调用。未注入时返回纯 echo（仅供联调）。
@@ -213,11 +219,13 @@ export class ChannelDispatcher {
   private settingsCache: ChannelsSettings | null = null;
   private limiterCache: ChannelRateLimiter | null = null;
   private readonly queue: KeyedQueue;
+  private readonly delivery: ChannelDeliveryService;
   deps: DispatcherDeps;
 
   constructor(deps: DispatcherDeps) {
     this.deps = deps;
     this.queue = deps.queue ?? createKeyedQueue({ maxPendingPerKey: 20 });
+    this.delivery = deps.delivery ?? createChannelDeliveryService(deps.manager);
     reloadLogFromDisk();
   }
 
@@ -480,19 +488,9 @@ export class ChannelDispatcher {
       parts,
     }, adapterCap);
 
-    let deliveryError: string | null = null;
-    if (!adapter) {
-      deliveryError = "找不到渠道适配器";
-    } else {
-      try {
-        const result = await adapter.send(outgoing);
-        if (!result.ok) deliveryError = result.error || "渠道适配器返回发送失败";
-      } catch (err) {
-        deliveryError = err instanceof Error ? err.message : String(err);
-      }
-    }
-    if (deliveryError) {
-      console.warn(LOG, `发送失败 [${msg.channel}]:`, deliveryError);
+    const deliveryResult = await this.delivery.send(outgoing);
+    if (!deliveryResult.ok) {
+      console.warn(LOG, `发送失败 [${msg.channel}]:`, deliveryResult.error);
       try {
         appendLog({
           dir: "error",
@@ -500,7 +498,7 @@ export class ChannelDispatcher {
           senderId: msg.senderId,
           senderName: msg.senderName,
           chatId: msg.chatId,
-          text: `[发送失败] ${deliveryError}`,
+          text: `[发送失败] ${deliveryResult.error}`,
         });
       } catch (err) {
         console.warn(LOG, "appendLog (delivery error) 失败:", err);

@@ -169,6 +169,36 @@ describe("proactive channel delivery", () => {
     expect(appendLog).toHaveBeenCalledWith(expect.objectContaining({ text: "第一句。" }));
   });
 
+  it("通过统一传输服务发送并只提交实际送达的片段", async () => {
+    const adapter = fakeAdapter();
+    registry.remember(incoming("wechat", "wx-1"), "session-wx-1");
+    let attempts = 0;
+    let committedText = "";
+
+    const result = await sendProactiveChannelMessage({
+      channel: "wechat",
+      text: "第一句。第二句？",
+      mobileMessageSegmentation: "on",
+      manager: { getAdapter: () => adapter },
+      delivery: {
+        send: async () => {
+          attempts += 1;
+          return attempts === 1
+            ? { ok: true }
+            : { ok: false, error: "send_failed" };
+        },
+      },
+      recipientRegistry: registry,
+      appendHistory: (_sessionId, _role, text) => {
+        committedText = text;
+      },
+      appendLog: vi.fn(),
+    });
+
+    expect(result).toEqual({ kind: "committed", deliveredParts: 1, totalParts: 2 });
+    expect(committedText).toBe("第一句。");
+  });
+
   it("stops before the next segment when the proactive generation becomes invalid", async () => {
     const adapter = fakeAdapter();
     registry.remember(incoming("wechat", "wx-1"), "session-wx-1");

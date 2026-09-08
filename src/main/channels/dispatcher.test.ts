@@ -307,6 +307,26 @@ describe("channels/dispatcher", () => {
     );
   });
 
+  it("通过注入的传输服务发送并在确认成功后提交", async () => {
+    vi.mocked(appendHistory).mockClear();
+    const dispatcher = new ChannelDispatcher({
+      manager: { getAdapter: () => undefined } as any,
+      delivery: {
+        send: vi.fn(async () => ({ ok: true })),
+      },
+      buildAndRunAgent: vi.fn(async () => ({ text: "传输成功", sticker: null })),
+    });
+
+    const result = await dispatcher.handleIncoming(makeIncoming());
+
+    expect(result?.parts).toEqual([{ kind: "text", text: "传输成功" }]);
+    expect(appendHistory).toHaveBeenCalledWith(
+      makeSessionId("qq", "chat-1"),
+      "assistant",
+      "传输成功",
+    );
+  });
+
   it("同一个外部会话的消息必须串行执行完整处理链", async () => {
     const events: string[] = [];
     let releaseFirst!: () => void;
