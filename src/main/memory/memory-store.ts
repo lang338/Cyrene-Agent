@@ -336,6 +336,8 @@ class MemoryStoreManager {
   /**
    * 仅更新某条 L2 的正文 content（用于 Obsidian 回流）。
    * 不触碰 status / weight / createdAt 等运行时字段。
+   * 正文变化时同步重算 keywords（DMAE 命中检测依赖），并置 pending_sync：
+   * 向量重建完成前该记忆不可被语义召回，防止检索命中旧向量里的旧文本。
    * 返回更新后的记忆；若 id 不存在或内容未变化则跳过保存（返回原记忆或 null）。
    */
   async updateL2Content(id: string, content: string): Promise<L2Memory | null> {
@@ -344,6 +346,8 @@ class MemoryStoreManager {
     if (!mem) return null
     if (mem.content === content) return mem
     mem.content = content
+    mem.keywords = extractMemoryKeywords(`${content} ${mem.triggerText}`)
+    mem.syncStatus = "pending_sync"
     await this.save(store)
     appendMemoryTrace({
       op: "l2.import-content",

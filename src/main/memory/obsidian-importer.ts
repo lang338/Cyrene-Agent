@@ -12,6 +12,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { memoryStore } from "./memory-store";
 import { setImportingMemory } from "./obsidian-sync-flag";
+import { addL2MemoryVector, deleteUserMemoryVectors } from "../rag/index";
 import { logger, LogTag } from "../logger";
 import type { L2Memory } from "./memory-types";
 
@@ -135,6 +136,8 @@ export interface ImportResult {
 
 /**
  * 解析一段 md 并回写到 PMRS。设置 isImporting 标志以跳过反向同步。
+ * 回流标志只包住 memory-store 的快速写入；向量重建（embedding 耗时）在标志外进行，
+ * 避免期间其他对话产生的记忆写入被误判为回流而跳过 vault 自动导出。
  * @param md 文件全文
  */
 export async function importL2Markdown(md: string): Promise<ImportResult> {
@@ -142,21 +145,52 @@ export async function importL2Markdown(md: string): Promise<ImportResult> {
   if (!id) return { id: null, ok: false, reason: "no-frontmatter-id", changed: false };
   if (content === null) return { id, ok: false, reason: "no-content", changed: false };
 
+  let existing: L2Memory | undefined;
   setImportingMemory(true);
   try {
     const before = await memoryStore.getAllL2();
-    const existing = before.find((m: L2Memory) => m.id === id);
+    existing = before.find((m: L2Memory) => m.id === id);
     if (!existing) {
       return { id, ok: false, reason: "not-found", changed: false };
     }
     if (existing.content === content) {
       return { id, ok: true, changed: false }; // 内容未变，不写
     }
+    // 正文落库并置 pending_sync：向量重建完成前旧向量不可被语义召回
     await memoryStore.updateL2Content(id, content);
-    return { id, ok: true, changed: true };
   } finally {
     setImportingMemory(false);
   }
+
+  // 向量重建（标志外）：成功后切换 ragId 并标记 synced
+  const oldRagId = existing.ragId;
+  try {
+    const newRagId = await addL2MemoryVector(content, id, {
+      triggerText: existing.triggerText,
+    });
+    await memoryStore.markL2SyncStatus(id, "synced", newRagId);
+    // 尽力清理旧向量：失败不影响回流结果，残留旧向量已被 ragId 过滤屏蔽，
+    // 启动一致性检查还会兜底清理
+    if (oldRagId && oldRagId !== newRagId) {
+      try {
+        deleteUserMemoryVectors([oldRagId]);
+      } catch (err) {
+        logger.warn(
+          LogTag.Cyrene,
+          `[obsidian-import] failed to delete stale vector for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  } catch (err) {
+    // 向量重建失败：标记 sync_failed 让该记忆暂时不可召回（与 writeL2 失败路径一致），
+    // 启动一致性检查会发现"映射正确但正文不同"并重试重建
+    await memoryStore.markL2SyncStatus(id, "sync_failed", undefined, err);
+    logger.warn(
+      LogTag.Cyrene,
+      `[obsidian-import] vector rebuild failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return { id, ok: true, changed: true };
 }
 
 /** 读取单个 vault md 文件并回流。文件不存在（被删除）时静默跳过。 */

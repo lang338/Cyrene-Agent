@@ -88,6 +88,21 @@ describe("memory/RAG reconciliation", () => {
     expect(deps.deleteVectors).not.toHaveBeenCalled();
   });
 
+  it("rebuilds when vector mapping is correct but text diverges from memory content", async () => {
+    // 历史存量脏数据：Obsidian 回流改了正文但向量未重建，映射和状态看起来都正常
+    const memories = [memory({ id: "l2_stale", content: "用户改成了每周游泳三次", ragId: "rag_stale", syncStatus: "synced" })];
+    const vectors = [{ id: "rag_stale", text: "用户喜欢跑步", metadata: { l2Id: "l2_stale" } }];
+    const deps = createDeps(memories, vectors);
+
+    const report = await reconcileMemoryRag(deps);
+
+    // 按新正文重建向量并切换 ragId，旧向量作为 stale 被清理
+    expect(deps.addVector).toHaveBeenCalledWith("用户改成了每周游泳三次", "l2_stale", expect.any(Object));
+    expect(deps.markSynced).toHaveBeenCalledWith("l2_stale", "rag_rebuilt_l2_stale");
+    expect(deps.deleteVectors).toHaveBeenCalledWith(["rag_stale"]);
+    expect(report).toMatchObject({ rebuilt: 1, relinked: 0, deleted: 1, failed: 0, changed: true });
+  });
+
   it("marks a memory sync_failed without blocking other repairs", async () => {
     const memories = [
       memory({ id: "l2_fail", content: "fail", ragId: "rag_gone" }),

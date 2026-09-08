@@ -65,7 +65,9 @@ export async function reconcileMemoryRag(
     if (!isSemanticallyRecallable(memory)) continue;
     const vector = memory.ragId ? vectorsById.get(memory.ragId) : undefined;
     const mappingMatches = vector?.metadata?.l2Id === memory.id;
-    if (vector && mappingMatches) {
+    // 映射正确但正文与向量文本不一致（如历史 Obsidian 回流未重建向量），同样需要重建
+    const contentMatches = vector?.text === memory.content;
+    if (vector && mappingMatches && contentMatches) {
       validVectorIds.add(vector.id);
       if (memory.syncStatus !== "synced") relink.push({ l2Id: memory.id, ragId: vector.id });
     } else {
