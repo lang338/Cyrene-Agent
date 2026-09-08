@@ -421,7 +421,8 @@ export class ChannelDispatcher {
 
     // TTS 音频自动追加（如果启用且适配器支持 audio）
     console.log(LOG, `TTS 决策: ttsEnabled=${this.settings.ttsEnabled} hasFn=${!!this.deps.synthesizeTts}`);
-    const adapterCap = this.deps.manager.getAdapter(msg.channel)?.capability;
+    const adapter = this.deps.manager.getAdapter(msg.channel);
+    const adapterCap = adapter?.capability;
     console.log(LOG, `TTS 决策: adapterCap.audio=${adapterCap?.audio}`);
     if (shouldAppendChannelTtsAudio(msg.channel, this.settings.ttsEnabled, !!this.deps.synthesizeTts, adapterCap?.audio)) {
       if (this.deps.synthesizeTts) {
@@ -459,6 +460,49 @@ export class ChannelDispatcher {
       } else {
         console.warn(LOG, `sticker 解析失败（跳过）: id=${sticker}`);
       }
+    }
+
+    // 先完成渠道能力降级，再交给适配器发送；只有明确发送成功后才提交助手侧状态。
+    const outgoing = this.downgradeToCapability({
+      channel: msg.channel,
+      chatType: msg.chatType ?? "private",
+      targetId: msg.chatId,
+      threadId: msg.threadId,
+      ...(msg.chatType === "group" && msg.messageId ? {
+        replyContext: {
+          messageId: msg.messageId,
+          mentionUserId: msg.senderId,
+        },
+      } : {}),
+      parts,
+    }, adapterCap);
+
+    let deliveryError: string | null = null;
+    if (!adapter) {
+      deliveryError = "找不到渠道适配器";
+    } else {
+      try {
+        const result = await adapter.send(outgoing);
+        if (!result.ok) deliveryError = result.error || "渠道适配器返回发送失败";
+      } catch (err) {
+        deliveryError = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (deliveryError) {
+      console.warn(LOG, `发送失败 [${msg.channel}]:`, deliveryError);
+      try {
+        appendLog({
+          dir: "error",
+          channel: msg.channel,
+          senderId: msg.senderId,
+          senderName: msg.senderName,
+          chatId: msg.chatId,
+          text: `[发送失败] ${deliveryError}`,
+        });
+      } catch (err) {
+        console.warn(LOG, "appendLog (delivery error) 失败:", err);
+      }
+      return null;
     }
 
     // 出站消息广播到桌面端
@@ -513,21 +557,7 @@ export class ChannelDispatcher {
       }
     }
 
-    // 构造 OutgoingMessage，capability 降级
-    const outgoing: OutgoingMessage = {
-      channel: msg.channel,
-      chatType: msg.chatType ?? "private",
-      targetId: msg.chatId,
-      threadId: msg.threadId,
-      ...(msg.chatType === "group" && msg.messageId ? {
-        replyContext: {
-          messageId: msg.messageId,
-          mentionUserId: msg.senderId,
-        },
-      } : {}),
-      parts,
-    };
-    return this.downgradeToCapability(outgoing, this.deps.manager.getAdapter(msg.channel)?.capability);
+    return outgoing;
   }
 
   /** 按目标渠道 cap 做降级。返回新对象不修改原对象。 */

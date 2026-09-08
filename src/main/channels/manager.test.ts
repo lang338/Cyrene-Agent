@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ChannelManager } from "./manager";
 import type { ChannelAdapter } from "./adapters/base";
 
@@ -76,5 +76,28 @@ describe("ChannelManager", () => {
     await mgr.startOne("qq" as never);
     await mgr.startOne("qq" as never);
     expect(starts).toBe(1);
+  });
+
+  it("只委托入站处理，不重复发送 dispatcher 返回的消息", async () => {
+    const mgr = new ChannelManager();
+    const adapter = fakeAdapter("qq");
+    const send = vi.spyOn(adapter, "send");
+    mgr.register(adapter);
+    mgr.setDispatcher(async () => ({
+      channel: "qq",
+      targetId: "chat-1",
+      parts: [{ kind: "text", text: "已由 dispatcher 发送" }],
+    }));
+    await mgr.startOne("qq" as never);
+
+    await adapter.onMessage?.({
+      channel: "qq",
+      chatId: "chat-1",
+      senderId: "user-1",
+      text: "你好",
+      at: new Date(0),
+    });
+
+    expect(send).not.toHaveBeenCalled();
   });
 });

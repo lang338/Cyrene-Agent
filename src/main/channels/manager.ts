@@ -129,31 +129,12 @@ export class ChannelManager {
         console.warn(LOG, `收到入站消息但 dispatcher 未注册 [${channel}]`);
         return null;
       }
-      let outgoing: OutgoingMessage | null = null;
       try {
-        outgoing = await this.dispatchFn(msg);
+        return await this.dispatchFn(msg);
       } catch (err) {
         console.error(LOG, `dispatcher 处理失败 [${channel}]:`, err);
         return null;
       }
-      // dispatcher 已经算好了回复，现在调 adapter.send() 真发出去
-      // （之前漏了这一步，导致回复算出来但不发，agent 静默无响应）
-      if (outgoing) {
-        const adapter = this.adapters.get(channel);
-        if (adapter && adapter.send) {
-          try {
-            const result = await adapter.send(outgoing);
-            if (!result.ok) {
-              console.warn(LOG, `adapter.send 失败 [${channel}]:`, result.error);
-            }
-          } catch (err) {
-            console.error(LOG, `adapter.send 抛错 [${channel}]:`, err);
-          }
-        } else {
-          console.warn(LOG, `找不到 adapter 或 adapter 不支持 send [${channel}]`);
-        }
-      }
-      return outgoing;
     };
   }
 }

@@ -2,6 +2,8 @@
 import * as os from "node:os";
 import { describe, it, expect, vi } from "vitest";
 import { ChannelDispatcher, formatChannelUserText, makeSessionId, lookupOriginalSender } from "./dispatcher";
+import { appendHistory } from "./history-log";
+import { appendLog } from "./message-log";
 import type { IncomingMessage } from "./types";
 
 vi.mock("electron", () => ({
@@ -84,8 +86,13 @@ describe("channels/dispatcher", () => {
     };
   }
 
-  function makeManager() {
-    return { getAdapter: () => ({ capability: { text: true, image: true, audio: false, file: false, video: false, markdown: false, card: false, sticker: false, maxTextLength: 4000 } }) } as any;
+  function makeManager(send = vi.fn(async () => ({ ok: true }))) {
+    return {
+      getAdapter: () => ({
+        capability: { text: true, image: true, audio: false, file: false, video: false, markdown: false, card: false, sticker: false, maxTextLength: 4000 },
+        send,
+      }),
+    } as any;
   }
 
   it("uses channel history and channel session when the chat is unbound", async () => {
@@ -177,7 +184,12 @@ describe("channels/dispatcher", () => {
   it("persists the same selected built-in sticker in the bound desktop reply", async () => {
     const appendBoundConversationMessage = vi.fn();
     const dispatcher = new ChannelDispatcher({
-      manager: { getAdapter: () => ({ capability: { text: true, image: true, audio: false, file: false, video: false, markdown: false, card: false, sticker: true, maxTextLength: 2048 } }) } as any,
+      manager: {
+        getAdapter: () => ({
+          capability: { text: true, image: true, audio: false, file: false, video: false, markdown: false, card: false, sticker: true, maxTextLength: 2048 },
+          send: vi.fn(async () => ({ ok: true })),
+        }),
+      } as any,
       resolveBoundConversationId: () => "conversation-sticker",
       loadBoundConversationHistory: vi.fn(async () => []),
       appendBoundConversationMessage,
@@ -248,5 +260,44 @@ describe("channels/dispatcher", () => {
 
     expect(result?.targetId).toBe("chat-1");
     expect(loadRecentChannelHistory).toHaveBeenCalledWith(makeSessionId("qq", "chat-1"), 16);
+  });
+
+  it("适配器明确发送失败时不提交助手状态", async () => {
+    vi.mocked(appendHistory).mockClear();
+    vi.mocked(appendLog).mockClear();
+    const appendBoundConversationMessage = vi.fn();
+    const broadcastChat = vi.fn();
+    const send = vi.fn(async () => ({ ok: false, error: "offline" }));
+    const dispatcher = new ChannelDispatcher({
+      manager: makeManager(send),
+      resolveBoundConversationId: () => "conversation-1",
+      loadBoundConversationHistory: vi.fn(async () => []),
+      appendBoundConversationMessage,
+      broadcastChat,
+      buildAndRunAgent: vi.fn(async () => ({ text: "回复", sticker: null })),
+    });
+
+    const result = await dispatcher.handleIncoming(makeIncoming());
+
+    expect(result).toBeNull();
+    expect(send).toHaveBeenCalledOnce();
+    expect(appendBoundConversationMessage).toHaveBeenCalledTimes(1);
+    expect(appendBoundConversationMessage).toHaveBeenCalledWith(
+      "conversation-1",
+      "user",
+      "你好",
+      expect.anything(),
+    );
+    expect(appendHistory).not.toHaveBeenCalledWith(
+      makeSessionId("qq", "chat-1"),
+      "assistant",
+      expect.any(String),
+    );
+    expect(appendLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ dir: "outgoing" }),
+    );
+    expect(broadcastChat).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "bot:outgoing" }),
+    );
   });
 });
