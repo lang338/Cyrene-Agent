@@ -74,6 +74,17 @@ export const IPC = {
   HARNESS_GET_INTERRUPTED_RUN: "harness:get-interrupted-run",
   SCHEDULER_EVENT: "scheduler:event",
 
+  // 注意力 Toast 中心（右下角提醒弹窗；main 为生命周期唯一权威，渲染页纯表现层）
+  // main → toast 窗口：推送/更新条目（同 id 覆盖）、移除条目（关闭回执/点击消隐/通知档超时/结算清退）
+  TOAST_PUSH: "toast:push",
+  TOAST_REMOVE: "toast:remove",
+  // toast 窗口 → main：页面加载/重载后恢复当前显示列表；用户点击与关闭只带 toast id，
+  // 跳转目标由主进程查权威状态解析；resize 上报内容区实际高度（高度协议）
+  TOAST_GET_ALL: "toast:get-all",
+  TOAST_CLICKED: "toast:clicked",
+  TOAST_DISMISSED: "toast:dismissed",
+  TOAST_RESIZE: "toast:resize",
+
   // Code 模式 Git 工作台（renderer 只能读取结构化状态）
   CODE_GIT_STATUS: "code-git:status",
   CODE_GIT_CHANGED: "code-git:changed",
