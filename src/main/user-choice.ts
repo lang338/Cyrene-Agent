@@ -25,6 +25,7 @@ import {
 } from "./orchestrator/ask-card";
 import { getTimeoutSettings } from "./timeout-manager";
 import { createAbortError } from "./abort-utils";
+import { toastEvents } from "./toast/toast-events";
 
 const LOG_PREFIX = "[UserChoice]";
 // 卡片等待超时统一取 timeout-settings 的 userChoiceTimeout（设置页「询问等待时间」可调，默认 60s）。
@@ -86,6 +87,14 @@ export function setChoiceDismissSender(sender: (settlement: ChoiceSettlement) =>
   choiceDismissSender = sender;
 }
 
+/** 从两种卡片载荷里抽取统一身份：id 与单行摘要 */
+function extractCardIdentity(card: ChoiceCardData): { cardId: string; intro: string } {
+  if ("interactionId" in card) {
+    return { cardId: card.interactionId, intro: card.intro };
+  }
+  return { cardId: card.id, intro: card.question };
+}
+
 /**
  * 发起一次用户选择请求，阻塞等待用户在聊天卡片里选一个选项。
  * 超时（userChoiceTimeout，默认 60s）返回 defaultValue 或空串，并广播 dismiss 让渲染端清卡。
@@ -104,12 +113,16 @@ export function requestUserChoice(
       console.warn(LOG_PREFIX, "选择超时（" + choiceTimeout + "ms），使用默认值:", defaultValue ?? "(空)");
       // 通知渲染端清卡：超时已用默认值结算，卡片再点也只会得到 ok:false
       choiceDismissSender?.({ id, revision: 1, reason: "timeout" });
+      // 注意力提醒：超时结算通知 ToastService 清 toast
+      toastEvents.publishChoiceDismiss({ cardId: id, revision: 1, reason: "timeout" });
       resolve(defaultValue ?? "");
     }, choiceTimeout);
 
     pendingChoices.set(id, {
       resolve: (value) => {
         resolve(typeof value === "string" ? value : defaultValue ?? "");
+        // 注意力提醒：用户作答即结算，通知 ToastService 清 toast
+        toastEvents.publishChoiceDismiss({ cardId: id, revision: 1, reason: "answered" });
         return true;
       },
       timer,
@@ -122,6 +135,8 @@ export function requestUserChoice(
 
     if (choiceCardSender) {
       choiceCardSender(payload);
+      // 注意力提醒：选择卡发布通知 ToastService
+      toastEvents.publishChoiceCard({ ...extractCardIdentity(payload), revision: 1 });
     } else {
       // 没注入回调（理论上不会发生），直接返回默认值
       clearTimeout(timer);
@@ -143,12 +158,22 @@ export function requestUserClarification(
     const emptyAnswer: AskUserAnswer = { requestId: id, answers: [] };
     const timeout = getTimeoutSettings().userChoiceTimeout;
     const publication = publishAskCard(card, { interactionId: id, ...identity });
+    // 结算统一出口：先通知调用方（渲染端清卡），再通知 ToastService 清 toast
+    const notifySettled = (settlement: ChoiceSettlement): void => {
+      onSettled?.(settlement);
+      toastEvents.publishChoiceDismiss({
+        cardId: settlement.id,
+        runId: settlement.runId,
+        revision: settlement.revision,
+        reason: settlement.reason,
+      });
+    };
     const timer = setTimeout(() => {
       const pending = pendingChoices.get(id);
       if (!pending || pending.status !== "open") return;
       pendingChoices.delete(id);
       console.warn(LOG_PREFIX, "澄清超时（" + timeout + "ms）");
-      onSettled?.({ id, ...identity, reason: "timeout" });
+      notifySettled({ id, ...identity, reason: "timeout" });
       resolve(emptyAnswer);
     }, timeout);
     pendingChoices.set(id, {
@@ -159,14 +184,14 @@ export function requestUserClarification(
             ? resolveAskCardSubmission(publication, value as AskCardSubmission)
             : validateAskUserAnswer(card, id, value as AskUserAnswer);
           resolve(answer);
-          onSettled?.({ id, ...identity, reason: "answered" });
+          notifySettled({ id, ...identity, reason: "answered" });
           return true;
         } catch {
           return false;
         }
       },
       reject,
-      onSettled,
+      onSettled: notifySettled,
       revision: identity.revision,
       timer,
       status: "open",
@@ -176,11 +201,17 @@ export function requestUserClarification(
     const cardSender = sender ?? choiceCardSender;
     if (cardSender) {
       cardSender(publication.payload);
+      // 注意力提醒：结构化卡片发布通知 ToastService（计划流的去重互斥由其内部处理）
+      toastEvents.publishChoiceCard({
+        ...extractCardIdentity(publication.payload),
+        runId: identity.runId,
+        revision: identity.revision,
+      });
     } else {
       clearTimeout(timer);
       pendingChoices.delete(id);
       console.warn(LOG_PREFIX, "未注入卡片回调，返回空澄清");
-      onSettled?.({ id, ...identity, reason: "unavailable" });
+      notifySettled({ id, ...identity, reason: "unavailable" });
       resolve(emptyAnswer);
     }
   });

@@ -132,6 +132,12 @@ export function createToastWindowController(deps: ToastWindowDeps) {
       return !!window && !window.isDestroyed() && window.isVisible();
     },
 
+    /** IPC sender 校验：只有 toast 窗口的 webContents 才被允许上报点击/关闭/高度 */
+    owns(webContents: { id: number }): boolean {
+      const win = window;
+      return !!win && !win.isDestroyed() && win.webContents.id === webContents.id;
+    },
+
     dispose(): void {
       if (window && !window.isDestroyed()) {
         window.destroy();

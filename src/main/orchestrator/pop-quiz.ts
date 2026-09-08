@@ -17,6 +17,7 @@ import { BrowserWindow } from "electron";
 import { createIpcScope, type IpcScope } from "../application/ipc-scope";
 import { IPC } from "../../shared/ipc-channels";
 import { createAbortError } from "../abort-utils";
+import { toastEvents } from "../toast/toast-events";
 import { toolRegistry, type ToolDefinition } from "./tools/registry/tool-registry";
 import type { ToolContext } from "./tools/registry/tool-context";
 import type {
@@ -408,6 +409,12 @@ export function requestPopQuiz(
     console.log(LOG_PREFIX, "发送抽查卡片:", quizId, "题数:", questions.length);
     // 首次广播给所有窗口（渲染端同 quizId 覆盖，重播无副作用）
     broadcastToAllWindows(IPC.POP_QUIZ_REQUEST, publication.card);
+    // 注意力提醒：抽查 pending 通知 ToastService（只发一次，重播不重弹由其去重）
+    toastEvents.publishQuizPending({
+      quizId,
+      runId: identity.runId,
+      firstQuestion: publication.card.questions[0]?.question ?? publication.card.intro,
+    });
   });
 }
 

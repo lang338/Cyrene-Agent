@@ -15,6 +15,7 @@ import {
   type AgentFileAccessLevel,
   type ToolRiskLevel,
 } from "./permission-policy";
+import { toastEvents } from "./toast/toast-events";
 
 export { policyFor };
 export type { AgentFileAccessLevel, ToolRiskLevel };
@@ -179,6 +180,13 @@ export function requestApproval(request: Omit<ApprovalRequest, "id">): Promise<b
 
     // 首次广播给所有窗口（chat 窗口会优先显示卡片）
     broadcastToAllWindows(IPC.PERMISSION_APPROVAL_REQUEST, payload);
+    // 注意力提醒：审批 pending 通知 ToastService（只发一次，重播不重弹由其去重）
+    toastEvents.publishApprovalPending({
+      id,
+      toolId: request.toolId,
+      toolName: request.toolName,
+      runId: request.runId,
+    });
   });
 }
 

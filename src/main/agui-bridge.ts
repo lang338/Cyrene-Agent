@@ -21,6 +21,7 @@ import {
   type CyreneRunResult,
 } from "./orchestrator/cyrene-agent";
 import { RunSettlementGate } from "./orchestrator/run-settlement";
+import { toastEvents } from "./toast/toast-events";
 import type { AguiRunAck, CyreneRunTerminalResult } from "../shared/run-terminal";
 import { indexConversationTurn } from "./orchestrator/tools/history-tools";
 import type { RelationshipChannel } from "./relationship/relationship-log";
@@ -278,6 +279,8 @@ function startPlanReviewFlow(params: {
       console.log("[AgUiBridge][Plan] plan approved, entering EXECUTING");
       // 渲染端对此事件做持久监听（run 订阅此时已解除），按 sessionId 匹配后自动发送执行消息。
       send({ type: "CUSTOM", name: "cyrene.plan.approved", value: { planPath, sessionId }, threadId, runId });
+      // 注意力提醒：计划已批准，ToastService 清去重记忆与残留 toast
+      toastEvents.publishPlanApproved({ sessionId, runId });
       return;
     }
     // 非批准（含超时空答案）：统一拉回讨论态
