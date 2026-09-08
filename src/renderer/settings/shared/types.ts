@@ -118,6 +118,8 @@ export interface GeneralSettings extends ChatAppearanceSettings {
   disableGpuElectron?: boolean;
   sidebarVisible: boolean;
   tasksVisible: boolean;
+  /** 提醒中心音效总开关：关闭后所有 toast 静音 */
+  toastSoundEnabled: boolean;
   launchAtLogin: boolean;
   language: "zh-CN";
   uiTheme: UiTheme;

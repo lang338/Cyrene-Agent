@@ -6,7 +6,7 @@
  * 本文件内的闭包只做构造与委托；任何长期任务都必须由对应启动阶段显式启动。
  */
 
-import { app, BrowserWindow, dialog } from "electron";
+import { app, BrowserWindow, dialog, screen } from "electron";
 import * as path from "path";
 import { autoUpdater } from "electron-updater";
 
@@ -81,7 +81,11 @@ import { memoryStore } from "../memory/memory-store";
 import { backupMemoryRagFiles, reconcileMemoryRag } from "../memory/memory-rag-reconciliation";
 import { registerChatsIpc } from "../chats/chats-ipc";
 import { registerMomentsIpc } from "../moments/moments-ipc";
-import { registerChatUiIpc } from "../chats/chat-ui-ipc";
+import { registerChatUiIpc, getActiveChatSessionId } from "../chats/chat-ui-ipc";
+import { createToastWindowController } from "../toast/toast-window";
+import { createToastService } from "../toast/toast-service";
+import { toastEvents } from "../toast/toast-events";
+import { createToastWindowShell } from "../windows/create-toast-window";
 import * as chatsStore from "../chats/chats-store";
 import { flush as flushTokenUsage } from "../token-usage-store";
 import { TtsSessionService } from "../tts/tts-session-service";
@@ -549,6 +553,42 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         proactiveLifecycle: services.proactive,
         broadcastToAuxWindows,
       }),
+      wireToastCenter: ({ ipc, windowManager }) => {
+        // 提醒中心组合根：窗口控制器 + 生命周期权威服务 + 事件总线订阅
+        const toastWindowController = createToastWindowController({
+          createWindow: createToastWindowShell,
+          getChatWindow: () => reactChatWindow,
+          getDisplayMatching: (bounds) => screen.getDisplayMatching(bounds),
+          getCursorScreenPoint: () => screen.getCursorScreenPoint(),
+        });
+        const toastService = createToastService({
+          bus: toastEvents,
+          window: toastWindowController,
+          activate: (request) => { activation.request(request); },
+          openTasksWindow: () => { windowManager.createTasksWindow(); },
+          // 音效总开关：设置页可关；每次弹窗时读取，改动即时生效
+          isSoundEnabled: () => loadGeneralSettings().toastSoundEnabled,
+          shouldSuppressNotify: (event) => {
+            // 焦点抑制三条件：事件带会话 + 聊天窗口聚焦 + 激活会话一致。
+            // 调度任务结果落在任务历史（无会话落点），恒不抑制。
+            if (!event.sessionId) return false;
+            const chat = reactChatWindow;
+            if (!chat || chat.isDestroyed() || !chat.isFocused()) return false;
+            return getActiveChatSessionId() === event.sessionId;
+          },
+        });
+        toastService.registerIpc(ipc);
+        // 预创建隐藏窗口，提前加载渲染页，首次弹出零延迟
+        toastWindowController.preload();
+        shutdown.register({
+          id: "toast-center",
+          phase: "stopLocalResources",
+          dispose: async () => {
+            toastService.dispose();
+            toastWindowController.dispose();
+          },
+        });
+      },
       revealStartupWindows,
     }),
 

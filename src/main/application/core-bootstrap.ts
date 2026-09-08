@@ -30,6 +30,7 @@ import type { SocialContextService } from "../services/social-context/social-con
 import type { ChannelsSubsystem } from "../channels/bootstrap";
 import type { SchedulerSubsystem } from "../scheduler/bootstrap";
 import type { GeneralSettings } from "../settings/general-settings";
+import type { WindowManager } from "../windows/window-manager";
 import type { PluginManager } from "../../plugins/manager";
 
 export interface CoreServices {
@@ -83,6 +84,8 @@ export interface CoreDependencies {
   startPlugins(services: CoreServices, scheduler: SchedulerSubsystem): Promise<PluginManager>;
   createScheduler(runtime: AgentRuntime, services: CoreServices): SchedulerSubsystem;
   registerCoreIpc(input: RegisterCoreIpcInput): void;
+  /** 组合根装配提醒中心：注册 toast IPC、订阅事件总线、预创建隐藏窗口。 */
+  wireToastCenter(input: { ipc: IpcScope; windowManager: WindowManager }): void;
   loadGeneralSettings(): GeneralSettings;
   /** 启动期一次性应用通用设置（登录项同步、桌宠偏好等）。 */
   applyGeneralSettings(settings: GeneralSettings, services: CoreServices): void;
@@ -163,6 +166,9 @@ export async function startCore(deps: CoreDependencies): Promise<CoreResult> {
 
   // 注册聊天渲染进程可能调用的全部 IPC 处理器 —— 必须先于 chat.load()
   deps.registerCoreIpc({ ipc: shell.ipc, runtime, services, channels, scheduler });
+
+  // 提醒中心装配：IPC 注册先于 toast 窗口预加载（渲染页加载即可能 invoke getAll）
+  deps.wireToastCenter({ ipc: shell.ipc, windowManager: shell.windowManager });
 
   // 全部处理器就绪后才加载聊天页面；页面加载失败属于致命错误（向上抛出）
   await timedStep("chat-load", () => shell.chat.load());

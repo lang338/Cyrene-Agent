@@ -71,6 +71,8 @@ export interface SchedulerFinishedEvent {
   taskTitle: string;
   status: string;
   outputPreview?: string;
+  /** 事件所属会话：焦点抑制判定用；调度执行没有桌面会话，当前恒缺省 */
+  sessionId?: string;
 }
 
 interface Topic<T> {

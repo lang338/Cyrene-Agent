@@ -81,6 +81,7 @@ function makeCoreDeps(calls: string[], overrides: Partial<CoreDependencies> = {}
     },
     createScheduler: () => ({ initialize: () => { calls.push("scheduler-initialize"); }, start: vi.fn(() => { calls.push("scheduler-start"); }), stop: vi.fn() } as never),
     registerCoreIpc: () => { calls.push("register-core-ipc"); },
+    wireToastCenter: () => { calls.push("wire-toast-center"); },
     loadGeneralSettings: () => ({ petVisible: true, sidebarVisible: false, tasksVisible: false }) as never,
     applyGeneralSettings: () => { calls.push("apply-settings"); },
     revealStartupWindows: async () => { calls.push("reveal"); },
@@ -105,6 +106,9 @@ describe("startCore", () => {
     const calls: string[] = [];
     await startCore(makeCoreDeps(calls));
     expect(calls.indexOf("register-core-ipc")).toBeLessThan(calls.indexOf("chat-load"));
+    // 提醒中心装配必须晚于 IPC 注册、早于任何渲染页加载（toast 窗口预加载会 invoke getAll）
+    expect(calls.indexOf("wire-toast-center")).toBeGreaterThan(calls.indexOf("register-core-ipc"));
+    expect(calls.indexOf("wire-toast-center")).toBeLessThan(calls.indexOf("chat-load"));
     expect(calls.indexOf("channels-initialize")).toBeLessThan(calls.indexOf("chat-load"));
     expect(calls.indexOf("channels-initialize")).toBeLessThan(calls.indexOf("plugins-start"));
     // scheduler store 必须先于插件初始化：插件调度服务写入的是已加载的 store

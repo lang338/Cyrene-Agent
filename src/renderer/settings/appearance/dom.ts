@@ -26,3 +26,4 @@ export const openChromeGpu = document.getElementById("open-chrome-gpu") as HTMLE
 export const disableGpuInput = document.getElementById("disable-gpu-electron") as HTMLInputElement;
 export const sidebarVisibleInput = document.getElementById("sidebar-visible") as HTMLInputElement;
 export const tasksVisibleInput = document.getElementById("tasks-visible") as HTMLInputElement;
+export const toastSoundEnabledInput = document.getElementById("toast-sound-enabled") as HTMLInputElement;

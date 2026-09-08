@@ -52,6 +52,7 @@ const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   petZoom: 1,
   sidebarVisible: true,
   tasksVisible: true,
+  toastSoundEnabled: true,
   launchAtLogin: false,
   language: "zh-CN",
   uiTheme: "pearl-white",
@@ -224,6 +225,9 @@ export function normalizeGeneralSettings(
     disableGpuElectron: input?.disableGpuElectron,
     sidebarVisible: windowVisibility.sidebarVisible,
     tasksVisible: windowVisibility.tasksVisible,
+    toastSoundEnabled: input?.toastSoundEnabled === undefined
+      ? DEFAULT_GENERAL_SETTINGS.toastSoundEnabled
+      : Boolean(input.toastSoundEnabled),
     launchAtLogin: Boolean(input?.launchAtLogin),
     language: "zh-CN",
     uiTheme: normalizeUiTheme(input?.uiTheme),
