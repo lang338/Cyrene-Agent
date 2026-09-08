@@ -11,29 +11,16 @@
 // capability 降级：
 //   把 OutgoingMessage 按目标渠道的 cap 翻译 —— image→text 描述 / card→markdown / sticker 跳过。
 import { createHash } from "crypto";
-import * as fs from "fs";
-import * as path from "path";
-import { app } from "electron";
 import type {
-  ChannelCapability,
   ChannelId,
   IncomingMessage,
   OutgoingMessage,
-  OutgoingPart,
 } from "./types";
 import { channelManager, type ChannelManager } from "./manager";
 import { loadChannelsSettings, type ChannelsSettings } from "./settings-store";
 import { appendLog, reloadLogFromDisk } from "./message-log";
 import { appendHistory as appendChannelHistory, migrateHistory } from "./history-log";
-import { resolveLocalStickerPath } from "../sticker-protocol";
-import { getStickersDir, loadUserStickerManifest } from "../sticker-storage";
-import { BUILT_IN_STICKER_FILES } from "../sticker-descriptions";
-import { BUILT_IN_STICKER_IDS } from "../../shared/sticker-types";
-import { splitTextBySentenceBreaks } from "../../shared/message-segmentation";
-import {
-  normalizeMobileMessageSegmentationMode,
-  type MobileMessageSegmentationMode,
-} from "../../shared/preferences";
+import type { MobileMessageSegmentationMode } from "../../shared/preferences";
 import { rememberProactiveChannelRecipient } from "./proactive-delivery";
 import { createChannelRateLimiter, type ChannelRateLimiter } from "./rate-limiter";
 import { createKeyedQueue, type KeyedQueue } from "./keyed-queue";
@@ -41,24 +28,16 @@ import {
   createChannelDeliveryService,
   type ChannelDeliveryService,
 } from "./delivery-service";
+import {
+  createOutgoingComposer,
+  type OutgoingComposer,
+  type SynthesizeChannelTts,
+} from "./outgoing-composer";
 
 /** 用于拼接历史对话的轻量 ChatMessage 形状（与 orchestrator ChatMessage 兼容）。 */
 interface ChatMessage {
   role: "user" | "assistant" | "system" | "tool";
   content?: string;
-}
-
-type TtsAudioFormat = "mp3" | "wav" | "pcm" | "opus";
-
-interface DispatcherTtsContext {
-  channel: ChannelId;
-}
-
-interface DispatcherTtsResult {
-  audio: Buffer;
-  format: TtsAudioFormat;
-  mime: string;
-  extension: ".mp3" | ".wav" | ".pcm" | ".opus";
 }
 
 export interface DispatchContext {
@@ -106,43 +85,6 @@ export function lookupOriginalSender(sessionId: string): { channel: ChannelId; s
   return entry ? { channel: entry.channel, senderId: entry.senderId } : null;
 }
 
-/**
- * 把 sticker id 解析成本地绝对路径（用于 OutgoingPart sticker.imagePath）。
- *
- * - 内置 sticker（BUILT_IN_STICKER_IDS）：从 app.getAppPath() 下找 public/stickers/<file>
- *   - dev 模式：<appPath>/src/renderer/public/stickers
- *   - built 模式：<appPath>/dist/renderer/stickers
- *   两个路径都尝试，第一个命中即返回。
- * - 用户 sticker：从 userData/stickers/<file>（通过 manifest 拿到 file 字段）。
- * - 解析失败（文件不存在、路径穿越、未知 id）→ 返回 null，调用方跳过此 part。
- */
-export function resolveStickerImagePath(stickerId: string): string | null {
-  if (!stickerId) return null;
-
-  // 内置 sticker：直接用 BUILT_IN_STICKER_FILES 映射到 public 目录
-  if ((BUILT_IN_STICKER_IDS as readonly string[]).includes(stickerId)) {
-    const file = BUILT_IN_STICKER_FILES[stickerId];
-    if (!file) return null;
-    const appPath = app.getAppPath();
-    // 优先 built 路径（生产），其次 dev 路径（开发模式）
-    const candidates = [
-      path.join(appPath, "dist", "renderer", "stickers", file),
-      path.join(appPath, "src", "renderer", "public", "stickers", file),
-    ];
-    for (const candidate of candidates) {
-      if (fs.existsSync(candidate)) return candidate;
-    }
-    return null;
-  }
-
-  // 用户 sticker：从 manifest 拿 file 字段，再走 sticker-protocol 的安全解析
-  // （resolveLocalStickerPath 已做路径穿越防护）
-  const manifest = loadUserStickerManifest();
-  const meta = manifest[stickerId];
-  if (!meta) return null;
-  return resolveLocalStickerPath(getStickersDir(), meta.file);
-}
-
 /** Dispatcher 配置（依赖注入）。 */
 export interface BoundConversationMessageMetadata {
   channel: ChannelId;
@@ -159,6 +101,8 @@ export interface DispatcherDeps {
   queue?: KeyedQueue;
   /** 统一渠道发送边界；未注入时基于当前渠道管理器创建。 */
   delivery?: ChannelDeliveryService;
+  /** 出站消息组装器；未注入时按当前语音依赖创建。 */
+  composer?: OutgoingComposer;
   /** 渲染端 chatWindow 用于镜像显示（可选） */
   getChatWindow?: () => { webContents: { isDestroyed(): boolean; send: (channel: string, ...args: unknown[]) => void }; isDestroyed(): boolean } | null;
   /** 完整 agent 调用。未注入时返回纯 echo（仅供联调）。
@@ -181,7 +125,7 @@ export interface DispatcherDeps {
     metadata: BoundConversationMessageMetadata,
   ) => void | Promise<void>;
   /** 可选 — 把文本合成成音频。失败返回 null，dispatcher 会跳过 audio。 */
-  synthesizeTts?: (text: string, context: DispatcherTtsContext) => Promise<Buffer | DispatcherTtsResult | null>;
+  synthesizeTts?: SynthesizeChannelTts;
   /** 可选 — 桌面端镜像广播：bot 入站/出站消息通知给 chatWindow。 */
   broadcastChat?: (event: {
     type: "bot:incoming" | "bot:outgoing";
@@ -194,25 +138,6 @@ export interface DispatcherDeps {
   }) => void;
   /** 读取通用设置中与渠道发送有关的偏好。 */
   loadGeneralSettings?: () => { mobileMessageSegmentation?: MobileMessageSegmentationMode };
-}
-
-export function buildTextOutgoingParts(
-  replyText: string,
-  mobileMessageSegmentation: MobileMessageSegmentationMode,
-): OutgoingPart[] {
-  const mode = normalizeMobileMessageSegmentationMode(mobileMessageSegmentation);
-  const texts = mode === "on" ? splitTextBySentenceBreaks(replyText) : [replyText];
-  return texts.map((text) => ({ kind: "text", text }));
-}
-
-export function shouldAppendChannelTtsAudio(
-  channel: ChannelId,
-  ttsEnabled: boolean,
-  hasSynthesizeTts: boolean,
-  adapterSupportsAudio: boolean | undefined,
-): boolean {
-  if (channel === "wechat") return false;
-  return ttsEnabled && hasSynthesizeTts && adapterSupportsAudio === true;
 }
 
 export class ChannelDispatcher {
@@ -424,193 +349,107 @@ export class ChannelDispatcher {
       console.log(LOG, "echo (无 buildAndRunAgent):", replyText);
     }
 
-    // 构造 OutgoingMessage parts
-    const mobileMessageSegmentation = normalizeMobileMessageSegmentationMode(
-      this.deps.loadGeneralSettings?.().mobileMessageSegmentation,
-    );
-    const parts: OutgoingPart[] = buildTextOutgoingParts(replyText, mobileMessageSegmentation);
+    const capability = this.deps.manager.getAdapter(msg.channel)?.capability;
+    const composer = this.deps.composer ?? createOutgoingComposer({
+      synthesizeTts: this.deps.synthesizeTts,
+    });
+    const prepared = await composer.compose({
+      incoming: msg,
+      replyText,
+      sticker,
+      capability,
+      settings: {
+        ttsEnabled: this.settings.ttsEnabled,
+        stickerEnabled: this.settings.stickerEnabled,
+      },
+      mobileMessageSegmentation: this.deps.loadGeneralSettings?.().mobileMessageSegmentation,
+    });
 
-    // TTS 音频自动追加（如果启用且适配器支持 audio）
-    console.log(LOG, `TTS 决策: ttsEnabled=${this.settings.ttsEnabled} hasFn=${!!this.deps.synthesizeTts}`);
-    const adapter = this.deps.manager.getAdapter(msg.channel);
-    const adapterCap = adapter?.capability;
-    console.log(LOG, `TTS 决策: adapterCap.audio=${adapterCap?.audio}`);
-    if (shouldAppendChannelTtsAudio(msg.channel, this.settings.ttsEnabled, !!this.deps.synthesizeTts, adapterCap?.audio)) {
-      if (this.deps.synthesizeTts) {
+    try {
+      const deliveryResult = await this.delivery.send(prepared.message);
+      if (!deliveryResult.ok) {
+        console.warn(LOG, `发送失败 [${msg.channel}]:`, deliveryResult.error);
         try {
-          const audioResult = normalizeTtsResult(await this.deps.synthesizeTts(replyText, { channel: msg.channel }));
-          console.log(LOG, `TTS 决策: 合成结果 length=${audioResult?.audio.length ?? "null"} format=${audioResult?.format ?? "null"}`);
-          if (audioResult && audioResult.audio.length > 0) {
-            // 写到 userData/channels/audio/<messageId>.<ext> 缓存
-            const audioDir = path.join(app.getPath("userData"), "channels", "audio");
-            fs.mkdirSync(audioDir, { recursive: true });
-            const audioPath = path.join(audioDir, `${msg.channel}-${Date.now()}${audioResult.extension}`);
-            fs.writeFileSync(audioPath, audioResult.audio);
-            console.log(LOG, `TTS verify: written path=${audioPath} ext=${audioResult.extension} mime=${audioResult.mime}`);
-            parts.push({ kind: "audio", filePath: audioPath, mime: audioResult.mime });
-            console.log(LOG, `TTS 合成完成: ${audioResult.audio.length} bytes → ${audioPath}`);
-          }
+          appendLog({
+            dir: "error",
+            channel: msg.channel,
+            senderId: msg.senderId,
+            senderName: msg.senderName,
+            chatId: msg.chatId,
+            text: `[发送失败] ${deliveryResult.error}`,
+          });
         } catch (err) {
-          console.warn(LOG, "TTS 合成失败（跳过音频）:", err instanceof Error ? err.message : err);
+          console.warn(LOG, "appendLog (delivery error) 失败:", err);
+        }
+        return null;
+      }
+
+      // 出站消息广播到桌面端
+      if (this.settings.mirrorToDesktop) {
+        try {
+          this.deps.broadcastChat?.({
+            type: "bot:outgoing",
+            channel: msg.channel,
+            senderId: msg.senderId,
+            senderName: msg.senderName,
+            chatId: msg.chatId,
+            text: prepared.assistantText,
+            at: Date.now(),
+          });
+        } catch (err) {
+          console.warn(LOG, "broadcastChat (outgoing) 失败:", err);
         }
       }
-    }
 
-    // sticker 决定纳入 OutgoingMessage.parts（统一消息模型）。
-    // 由 onAgentRunFinished 计算（同一个 embedding 匹配结果，避免重复计算），
-    // dispatcher 只负责解析本地路径 + 按 cap 降级。
-    // 普通桌面 AG-UI 会话由 onAgentRunFinished 的 IPC 展示；渠道绑定会话则在下方
-    // 与 replyText 一起持久化选中的 stickerId，两条路径不会重复经过同一会话。
-    let resolvedStickerId: string | undefined;
-    if (sticker && this.settings.stickerEnabled) {
-      const stickerPath = resolveStickerImagePath(sticker);
-      if (stickerPath) {
-        parts.push({ kind: "sticker", stickerId: sticker, imagePath: stickerPath });
-        resolvedStickerId = sticker;
-        console.log(LOG, `sticker 决定: id=${sticker} → ${stickerPath}`);
-      } else {
-        console.warn(LOG, `sticker 解析失败（跳过）: id=${sticker}`);
-      }
-    }
-
-    // 先完成渠道能力降级，再交给适配器发送；只有明确发送成功后才提交助手侧状态。
-    const outgoing = this.downgradeToCapability({
-      channel: msg.channel,
-      chatType: msg.chatType ?? "private",
-      targetId: msg.chatId,
-      threadId: msg.threadId,
-      ...(msg.chatType === "group" && msg.messageId ? {
-        replyContext: {
-          messageId: msg.messageId,
-          mentionUserId: msg.senderId,
-        },
-      } : {}),
-      parts,
-    }, adapterCap);
-
-    const deliveryResult = await this.delivery.send(outgoing);
-    if (!deliveryResult.ok) {
-      console.warn(LOG, `发送失败 [${msg.channel}]:`, deliveryResult.error);
+      // 出站消息写日志（仅文本片段，附件路径不写入日志）
       try {
         appendLog({
-          dir: "error",
+          dir: "outgoing",
           channel: msg.channel,
           senderId: msg.senderId,
           senderName: msg.senderName,
           chatId: msg.chatId,
-          text: `[发送失败] ${deliveryResult.error}`,
+          text: prepared.assistantText,
+          hasAttachments: prepared.message.parts.some((part) => part.kind === "audio"),
         });
       } catch (err) {
-        console.warn(LOG, "appendLog (delivery error) 失败:", err);
+        console.warn(LOG, "appendLog (outgoing) 失败:", err);
       }
-      return null;
-    }
 
-    // 出站消息广播到桌面端
-    if (this.settings.mirrorToDesktop) {
+      // 出站消息落对话历史（assistant 角色）
       try {
-        this.deps.broadcastChat?.({
-          type: "bot:outgoing",
-          channel: msg.channel,
-          senderId: msg.senderId,
-          senderName: msg.senderName,
-          chatId: msg.chatId,
-          text: replyText,
-          at: Date.now(),
-        });
+        appendChannelHistory(sessionId, "assistant", prepared.assistantText);
       } catch (err) {
-        console.warn(LOG, "broadcastChat (outgoing) 失败:", err);
-    }
-    }
+        console.warn(LOG, "appendHistory (outgoing) 失败:", err);
+      }
+      if (boundConversationId && this.deps.appendBoundConversationMessage) {
+        try {
+          await this.deps.appendBoundConversationMessage(
+            boundConversationId,
+            "assistant",
+            prepared.assistantText,
+            {
+              channel: msg.channel,
+              chatType: msg.chatType ?? "private",
+              senderName: msg.senderName,
+              modelContext: undefined,
+              ...(prepared.stickerId ? { sticker: prepared.stickerId } : {}),
+            },
+          );
+        } catch (err) {
+          console.warn(LOG, "appendBoundConversationMessage (outgoing) 失败:", err);
+        }
+      }
 
-    // 出站消息写日志（仅文本 part，附件路径不写进 JSONL）
-    try {
-      appendLog({
-        dir: "outgoing",
-        channel: msg.channel,
-        senderId: msg.senderId,
-        senderName: msg.senderName,
-        chatId: msg.chatId,
-        text: replyText,
-        hasAttachments: parts.some((p) => p.kind === "audio"),
-      });
-    } catch (err) {
-      console.warn(LOG, "appendLog (outgoing) 失败:", err);
-    }
-
-    // 出站消息落对话历史（assistant 角色）
-    try {
-      appendChannelHistory(sessionId, "assistant", replyText);
-    } catch (err) {
-      console.warn(LOG, "appendHistory (outgoing) 失败:", err);
-    }
-    if (boundConversationId && this.deps.appendBoundConversationMessage) {
+      return prepared.message;
+    } finally {
       try {
-        await this.deps.appendBoundConversationMessage(boundConversationId, "assistant", replyText, {
-          channel: msg.channel,
-          chatType: msg.chatType ?? "private",
-          senderName: msg.senderName,
-          modelContext: undefined,
-          ...(resolvedStickerId && adapterCap?.sticker !== false ? { sticker: resolvedStickerId } : {}),
-        });
+        await composer.cleanupTransientFiles(prepared.transientFiles);
       } catch (err) {
-        console.warn(LOG, "appendBoundConversationMessage (outgoing) 失败:", err);
+        console.warn(LOG, "清理出站临时文件失败:", err);
       }
     }
-
-    return outgoing;
   }
-
-  /** 按目标渠道 cap 做降级。返回新对象不修改原对象。 */
-  downgradeToCapability(msg: OutgoingMessage, cap: ChannelCapability | undefined): OutgoingMessage {
-    if (!cap) return msg;
-    const parts: OutgoingPart[] = [];
-    for (const p of msg.parts) {
-      if (p.kind === "text") {
-        if (cap.maxTextLength > 0 && p.text.length > cap.maxTextLength) {
-          parts.push({
-            kind: "text",
-            text: p.text.slice(0, Math.max(0, cap.maxTextLength - 20)) + "\n...(过长已截断)",
-          });
-        } else {
-          parts.push(p);
-        }
-      } else if (p.kind === "image" && !cap.image) {
-        parts.push({ kind: "text", text: `[图片] ${p.caption ?? p.url ?? p.filePath ?? ""}` });
-      } else if (p.kind === "audio" && !cap.audio) {
-        parts.push({ kind: "text", text: `[语音消息 ${p.mime}, 见桌面端]` });
-      } else if (p.kind === "file" && !cap.file) {
-        parts.push({ kind: "text", text: `[文件] ${p.name ?? p.filePath}` });
-      } else if (p.kind === "video" && !cap.video) {
-        parts.push({ kind: "text", text: `[视频] ${p.name ?? p.filePath}` });
-      } else if (p.kind === "card" && !cap.card) {
-        const lines: string[] = [p.title];
-        if (p.markdown) lines.push(p.markdown);
-        if (p.fields && p.fields.length > 0) {
-          lines.push(...p.fields.map((f) => `${f.key}: ${f.value}`));
-        }
-        parts.push({ kind: "text", text: lines.join(cap.markdown ? "\n" : "\n") });
-      } else if (p.kind === "sticker" && !cap.sticker) {
-        // skip
-      } else {
-        parts.push(p);
-      }
-    }
-    return { ...msg, parts };
-  }
-}
-
-function normalizeTtsResult(result: Buffer | DispatcherTtsResult | null): DispatcherTtsResult | null {
-  if (!result) return null;
-  if (Buffer.isBuffer(result)) {
-    return {
-      audio: result,
-      format: "mp3",
-      mime: "audio/mpeg",
-      extension: ".mp3",
-    };
-  }
-  return result;
 }
 
 /** 进程级单例 —— 注入 buildAndRunAgent 后才会真正干活。 */
@@ -628,7 +467,7 @@ export function setDispatcherBuildAndRunAgent(
 
 /** 注入 TTS 合成（返回音频或 null） */
 export function setDispatcherSynthesizeTts(
-  fn: (text: string, context: DispatcherTtsContext) => Promise<Buffer | DispatcherTtsResult | null>,
+  fn: SynthesizeChannelTts,
 ): void {
   channelDispatcher.deps.synthesizeTts = fn;
 }

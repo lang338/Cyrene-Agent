@@ -91,10 +91,18 @@ export function createToastWindowController(deps: ToastWindowDeps) {
   }
 
   return {
-    /** 渲染页上报内容高度（TOAST_RESIZE）；窗口隐藏期间也要记账，显示前统一应用 */
+    /**
+     * 渲染页上报内容高度（TOAST_RESIZE）。
+     * 高度变化必须立即应用：渲染页首帧测量发生在窗口尚小时，若等下一次
+     * syncVisibility 才应用，首条 toast 会以旧高度显示（甚至卡在 1px 死锁）。
+     * 隐藏期间同样记账并更新 bounds，显示前无需再补算。
+     */
     updateHeight(height: number): void {
       if (!Number.isFinite(height) || height <= 0) return;
-      contentHeight = Math.round(height);
+      const rounded = Math.round(height);
+      if (rounded === contentHeight) return;
+      contentHeight = rounded;
+      applyBounds();
     },
 
     /** 当前是否有 toast 决定整窗显隐；显示前重算位置（屏幕/高度可能已变化） */

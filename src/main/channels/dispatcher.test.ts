@@ -4,6 +4,7 @@ import { describe, it, expect, vi } from "vitest";
 import { ChannelDispatcher, formatChannelUserText, makeSessionId, lookupOriginalSender } from "./dispatcher";
 import { appendHistory } from "./history-log";
 import { appendLog } from "./message-log";
+import { createOutgoingComposer } from "./outgoing-composer";
 import type { IncomingMessage } from "./types";
 
 vi.mock("electron", () => ({
@@ -325,6 +326,61 @@ describe("channels/dispatcher", () => {
       "assistant",
       "传输成功",
     );
+  });
+
+  it.each([
+    ["发送成功", { ok: true } as const, false],
+    ["发送失败", { ok: false, error: "offline" } as const, true],
+  ])("%s后清理本轮生成的临时音频", async (_name, deliveryResult, expectsNull) => {
+    const files = new Map<string, Buffer>();
+    let filePresentDuringSend = false;
+    const composer = createOutgoingComposer({
+      audioDirectory: "C:/virtual/channels/audio",
+      createId: () => "reply-audio",
+      writeFile: async (filePath, data) => {
+        files.set(filePath, data);
+      },
+      removeFile: async (filePath) => {
+        files.delete(filePath);
+      },
+      synthesizeTts: async () => Buffer.from("audio"),
+      resolveStickerImagePath: () => null,
+    });
+    const manager = {
+      getAdapter: () => ({
+        capability: {
+          text: true,
+          image: true,
+          audio: true,
+          file: true,
+          video: true,
+          markdown: true,
+          card: true,
+          sticker: true,
+          maxTextLength: 4000,
+        },
+      }),
+    } as any;
+    const dispatcher = new ChannelDispatcher({
+      manager,
+      composer,
+      delivery: {
+        send: async (message) => {
+          const audio = message.parts.find((part) => part.kind === "audio");
+          filePresentDuringSend = Boolean(
+            audio?.kind === "audio" && files.has(audio.filePath),
+          );
+          return deliveryResult;
+        },
+      },
+      buildAndRunAgent: vi.fn(async () => ({ text: "语音回复", sticker: null })),
+    });
+
+    const result = await dispatcher.handleIncoming(makeIncoming({ channel: "feishu" }));
+
+    expect(filePresentDuringSend).toBe(true);
+    expect(files.size).toBe(0);
+    expect(result === null).toBe(expectsNull);
   });
 
   it("同一个外部会话的消息必须串行执行完整处理链", async () => {

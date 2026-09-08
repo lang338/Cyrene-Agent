@@ -137,10 +137,16 @@ function orderedEntries(): CardEntry[] {
 
 let lastReportedHeight = 0;
 
-/** 高度协议：上报堆叠容器的实际高度；只在变化时发送，避免 ResizeObserver 回环 */
+/**
+ * 高度协议：上报堆叠容器的内容需求高度；只在变化时发送，避免 ResizeObserver 回调。
+ * 必须测 scrollHeight 而不是 offsetHeight：CSS 里容器有 max-height: 100%，
+ * 参照的是窗口当前高度——窗口尚小（或初始 1px）时 offsetHeight 会被压成窗口高，
+ * 主进程永远等不到真实高度，形成"窗口小 → 测不准 → 窗口放不大"的死锁；
+ * scrollHeight 反映内容真实需求，不受裁剪影响。
+ */
 function reportHeight(): void {
   if (!stack) return;
-  const height = stack.offsetHeight;
+  const height = stack.scrollHeight;
   if (height === lastReportedHeight) return;
   lastReportedHeight = height;
   api?.reportHeight(height);
