@@ -35,6 +35,7 @@ import {
   type MobileMessageSegmentationMode,
 } from "../../shared/preferences";
 import { rememberProactiveChannelRecipient } from "./proactive-delivery";
+import { createChannelRateLimiter, type ChannelRateLimiter } from "./rate-limiter";
 
 /** 用于拼接历史对话的轻量 ChatMessage 形状（与 orchestrator ChatMessage 兼容）。 */
 interface ChatMessage {
@@ -59,45 +60,6 @@ const LOG = "[ChannelDispatcher]";
 
 /** sessionId 缓存（用于查重 / 调试 / 上限管理） */
 const sessionIndex = new Map<string, { channel: ChannelId; senderId: string; lastAt: number }>();
-
-/** 限速：单用户每分钟最多 N 条 */
-class RateLimiter {
-  private buckets = new Map<string, number[]>(); // key = channel:senderId → timestamp[]
-  constructor(private settings: ChannelsSettings) {}
-
-  /** 检查并记录一次命中。返回 true = 通过；false = 超限。 */
-  hit(channel: ChannelId, senderId: string): boolean {
-    const key = `${channel}:${senderId}`;
-    const now = Date.now();
-    const arr = this.buckets.get(key) ?? [];
-    // 砍掉 60s 之外的
-    const fresh = arr.filter((t) => now - t < 60_000);
-    if (fresh.length >= this.settings.rateLimitPerUser) {
-      this.buckets.set(key, fresh);
-      return false;
-    }
-    fresh.push(now);
-    this.buckets.set(key, fresh);
-
-    // 渠道级全局限速
-    const chKey = `__channel__:${channel}`;
-    const chArr = this.buckets.get(chKey) ?? [];
-    const chFresh = chArr.filter((t) => now - t < 60_000);
-    if (chFresh.length >= this.settings.rateLimitPerChannel) {
-      this.buckets.set(chKey, chFresh);
-      return false;
-    }
-    chFresh.push(now);
-    this.buckets.set(chKey, chFresh);
-
-    return true;
-  }
-
-  /** 测试用：重置所有桶 */
-  reset(): void {
-    this.buckets.clear();
-  }
-}
 
 /** 计算一个稳定、匿名的 sessionId。 */
 export function makeSessionId(channel: ChannelId, chatId: string): string {
@@ -241,7 +203,7 @@ export function shouldAppendChannelTtsAudio(
 
 export class ChannelDispatcher {
   private settingsCache: ChannelsSettings | null = null;
-  private limiterCache: RateLimiter | null = null;
+  private limiterCache: ChannelRateLimiter | null = null;
   deps: DispatcherDeps;
 
   constructor(deps: DispatcherDeps) {
@@ -257,15 +219,27 @@ export class ChannelDispatcher {
     return this.settingsCache;
   }
 
-  private get limiter(): RateLimiter {
-    if (!this.limiterCache) this.limiterCache = new RateLimiter(this.settings);
+  private get limiter(): ChannelRateLimiter {
+    if (!this.limiterCache) {
+      this.limiterCache = createChannelRateLimiter({
+        limits: {
+          perUser: this.settings.rateLimitPerUser,
+          perChannel: this.settings.rateLimitPerChannel,
+        },
+      });
+    }
     return this.limiterCache;
   }
 
   /** 重新加载 settings（UI 改了限速配置时调） */
   reloadSettings(): void {
     this.settingsCache = null;
-    this.limiterCache = null;
+    if (this.limiterCache) {
+      this.limiterCache.reconfigure({
+        perUser: this.settings.rateLimitPerUser,
+        perChannel: this.settings.rateLimitPerChannel,
+      });
+    }
   }
 
   /**
@@ -275,7 +249,7 @@ export class ChannelDispatcher {
    * 构造 OutgoingMessage。如果没注入 buildAndRunAgent，返回 echo 作为占位（仅供联调）。
    */
   async handleIncoming(msg: IncomingMessage): Promise<OutgoingMessage | null> {
-    if (!this.limiter.hit(msg.channel, msg.senderId)) {
+    if (!this.limiter.tryConsume(msg.channel, msg.senderId)) {
       console.warn(LOG, `限速: ${msg.channel}:${msg.senderId}`);
       return null;
     }
