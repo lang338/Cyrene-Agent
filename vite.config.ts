@@ -47,6 +47,7 @@ export default defineConfig({
         call: resolve(__dirname, "src/renderer/call/index.html"),
         "chat-react": resolve(__dirname, "src/renderer/react/index.html"),
         music: resolve(__dirname, "src/renderer/music/index.html"),
+        toast: resolve(__dirname, "src/renderer/toast/index.html"),
       },
     },
   },

@@ -9,6 +9,10 @@ declare module "*.md?raw" {
 }
 
 // Vite 静态资源导入：返回解析后的 URL 字符串
+declare module "*.mp3" {
+  const src: string;
+  export default src;
+}
 declare module "*.png" {
   const src: string;
   export default src;

@@ -17,6 +17,7 @@ import { exposeMusicApi } from "./music";
 import { normalizeChatAppearance, type ChatAppearanceSettings } from "../shared/chat-appearance";
 import type { AppUpdateApi, AppUpdateState } from "../shared/app-update";
 import type { ConversationMode } from "../shared/chat-types";
+import type { ToastItem, ToastPushPayload } from "../shared/toast-types";
 
 // 渲染目标标识：preload 每次加载（即每次页面初始化/重新加载）生成一次，
 // 随活动会话一并上报主进程；同一页面内切换会话不改变该标识。
@@ -217,6 +218,26 @@ const tasksApi = {
 
 contextBridge.exposeInMainWorld("sidebar", sidebarApi);
 contextBridge.exposeInMainWorld("tasks", tasksApi);
+
+// 注意力 Toast 中心 API：渲染页纯表现层。
+// 点击/关闭只上报 toast id，跳转目标由主进程查权威状态解析；高度上报服务于高度协议。
+const toastApi: import("../shared/toast-types").ToastRendererApi = {
+  getAll: () => ipcRenderer.invoke(IPC.TOAST_GET_ALL) as Promise<ToastItem[]>,
+  clicked: (id: string) => ipcRenderer.send(IPC.TOAST_CLICKED, id),
+  dismissed: (id: string) => ipcRenderer.send(IPC.TOAST_DISMISSED, id),
+  reportHeight: (height: number) => ipcRenderer.send(IPC.TOAST_RESIZE, height),
+  onPush: (callback: (payload: ToastPushPayload) => void) => {
+    const handler = (_e: unknown, payload: ToastPushPayload) => callback(payload);
+    ipcRenderer.on(IPC.TOAST_PUSH, handler);
+    return () => ipcRenderer.removeListener(IPC.TOAST_PUSH, handler);
+  },
+  onRemove: (callback: (id: string) => void) => {
+    const handler = (_e: unknown, id: string) => callback(id);
+    ipcRenderer.on(IPC.TOAST_REMOVE, handler);
+    return () => ipcRenderer.removeListener(IPC.TOAST_REMOVE, handler);
+  },
+};
+contextBridge.exposeInMainWorld("toast", toastApi);
 
 // Moments（动态 / 朋友圈）API：renderer 只能提交内容字段，author/id/createdAt 由主进程强制生成
 const momentsApi: import("../shared/moments-types").MomentsApi = {

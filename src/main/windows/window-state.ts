@@ -20,9 +20,14 @@ export let settingsWindow: BrowserWindow | null = null;
 export let stickerManagerWindow: BrowserWindow | null = null;
 export let callWindow: BrowserWindow | null = null;
 export let musicPlayerWindow: BrowserWindow | null = null;
+export let toastWindow: BrowserWindow | null = null;
 
 export function setReactChatWindow(win: BrowserWindow | null): void {
   reactChatWindow = win;
+}
+
+export function setToastWindow(win: BrowserWindow | null): void {
+  toastWindow = win;
 }
 
 export function setMusicPlayerWindow(win: BrowserWindow | null): void {

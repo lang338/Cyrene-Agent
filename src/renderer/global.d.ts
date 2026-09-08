@@ -22,6 +22,7 @@ declare global {
     appUpdate?: AppUpdateApi;
     plugins?: PluginManagementApi;
     moments?: MomentsApi;
+    toast?: ToastRendererApi;
   }
 }
 
