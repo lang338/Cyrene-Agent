@@ -151,6 +151,8 @@ function settlePendingApproval(
     runId: pending.runId,
     reason,
   } satisfies ApprovalSettledPayload);
+  // 注意力提醒：结算通知 ToastService 清去重记忆与残留 toast
+  toastEvents.publishApprovalSettled({ id, runId: pending.runId, reason });
   settle(pending);
 }
 

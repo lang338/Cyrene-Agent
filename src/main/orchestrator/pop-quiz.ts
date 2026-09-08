@@ -381,6 +381,8 @@ function settlePendingQuiz(
     runId: pending.runId,
     reason,
   } satisfies PopQuizSettledPayload);
+  // 注意力提醒：结算通知 ToastService 清去重记忆与残留 toast
+  toastEvents.publishQuizSettled({ quizId, runId: pending.runId, reason });
   settle(pending);
 }
 

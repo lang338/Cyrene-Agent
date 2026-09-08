@@ -1,8 +1,10 @@
-// ToastService 状态机单测：去重分离、结算清退、plan/ask 分类互斥、点击跳转与 sender 校验。
+// ToastService 状态机单测：去重分离、结算清退、plan/ask 分类互斥、点击跳转、
+// sender 校验、通知档超时/焦点抑制与音效合并。
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createToastEventBus } from "./toast-events";
-import { createToastService } from "./toast-service";
+import { createToastService, type ToastServiceDeps } from "./toast-service";
+import { TOAST_NOTIFY_TIMEOUT_MS, TOAST_SOUND_MERGE_MS } from "./types";
 import type { ToastWindowController } from "./toast-window";
 import type { IpcScope } from "../application/ipc-scope";
 import type { ToastItem } from "../../shared/toast-types";
@@ -55,7 +57,7 @@ function createIpcStub() {
   };
 }
 
-function setup() {
+function setup(overrides: Partial<ToastServiceDeps> = {}) {
   const bus = createToastEventBus();
   const windowStub = createWindowStub();
   const activate = vi.fn();
@@ -67,6 +69,7 @@ function setup() {
     activate,
     openTasksWindow,
     newId: () => `toast-${++counter}`,
+    ...overrides,
   });
   const ipcStub = createIpcStub();
   service.registerIpc(ipcStub.ipc);
@@ -222,9 +225,139 @@ describe("createToastService · 点击跳转与 IPC 安全", () => {
     expect(windowStub.getHeight()).toBe(128);
   });
 
-  it("推送载荷带 sound 字段（C4 接入音效前的占位契约）", () => {
+  it("推送载荷带 sound 字段（首条默认播提示音）", () => {
     const { bus, windowStub } = setup();
     bus.publishApprovalPending({ id: "approve-1", toolId: "t", toolName: "工具" });
+    const items = pushedItems(windowStub.sent) as Array<ToastItem & { sound: boolean }>;
+    expect(items[0].sound).toBe(true);
+  });
+});
+
+describe("createToastService · 通知档（任务完成）", () => {
+  const finishedEvent = {
+    schedulerRunId: "sched-1",
+    taskId: "task-1",
+    taskTitle: "每日简报",
+    status: "success",
+    outputPreview: "简报已生成",
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("任务成功完成弹出通知档 toast，10s 超时后主进程自动消隐", () => {
+    const { bus, service, windowStub } = setup();
+    bus.publishSchedulerFinished(finishedEvent);
+    const item = service.getActiveToasts()[0];
+    expect(item).toMatchObject({ kind: "task-finished", tier: "notify", sourceId: "sched-1" });
+    // 通知档不进去重记忆：schedulerRunId 每次唯一，进集合会无限增长
+    expect(service.hasPendingSeen("task-finished", "sched-1")).toBe(false);
+    vi.advanceTimersByTime(TOAST_NOTIFY_TIMEOUT_MS - 1);
+    expect(service.getActiveToasts()).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(service.getActiveToasts()).toHaveLength(0);
+    expect(windowStub.sent.some((e) => e.channel === "toast:remove" && e.payload === item.id)).toBe(true);
+  });
+
+  it("失败终态不弹提醒", () => {
+    const { bus, service } = setup();
+    bus.publishSchedulerFinished({ ...finishedEvent, status: "runtime_error" });
+    expect(service.getActiveToasts()).toHaveLength(0);
+  });
+
+  it("焦点抑制：用户正看着现场时跳过，不弹也不进任何状态", () => {
+    const { bus, service } = setup({
+      shouldSuppressNotify: () => true,
+    });
+    bus.publishSchedulerFinished(finishedEvent);
+    expect(service.getActiveToasts()).toHaveLength(0);
+    expect(service.hasPendingSeen("task-finished", "sched-1")).toBe(false);
+  });
+
+  it("点击 task-finished：打开任务窗口并结束生命周期，超时定时器一并清理", () => {
+    const { bus, service, ipcStub, openTasksWindow } = setup();
+    bus.publishSchedulerFinished(finishedEvent);
+    const item = service.getActiveToasts()[0];
+    ipcStub.emit("toast:clicked", 42, item.id);
+    expect(openTasksWindow).toHaveBeenCalledTimes(1);
+    expect(service.getActiveToasts()).toHaveLength(0);
+    // 提前结束后定时器不得再把已移除的 toast 复活
+    vi.advanceTimersByTime(TOAST_NOTIFY_TIMEOUT_MS * 2);
+    expect(service.getActiveToasts()).toHaveLength(0);
+  });
+
+  it("手动关闭即终局，与点击等效", () => {
+    const { bus, service, ipcStub } = setup();
+    bus.publishSchedulerFinished(finishedEvent);
+    const item = service.getActiveToasts()[0];
+    ipcStub.emit("toast:dismissed", 42, item.id);
+    expect(service.getActiveToasts()).toHaveLength(0);
+    vi.advanceTimersByTime(TOAST_NOTIFY_TIMEOUT_MS * 2);
+    expect(service.getActiveToasts()).toHaveLength(0);
+  });
+});
+
+describe("createToastService · 音效合并与开关", () => {
+  /** 固定时钟：从 t=1000 起，每次调用推进 step 毫秒 */
+  function createClock(start = 1000, step = 0) {
+    let now = start;
+    return () => {
+      const current = now;
+      now += step;
+      return current;
+    };
+  }
+
+  it("首条播提示音，合并窗口内到达的第二条不播", () => {
+    const { bus, windowStub } = setup({ now: createClock() });
+    bus.publishApprovalPending({ id: "a-1", toolId: "t", toolName: "工具" });
+    bus.publishApprovalPending({ id: "a-2", toolId: "t", toolName: "工具" });
+    const items = pushedItems(windowStub.sent) as Array<ToastItem & { sound: boolean }>;
+    expect(items).toHaveLength(2);
+    expect(items[0].sound).toBe(true);
+    expect(items[1].sound).toBe(false);
+  });
+
+  it("等待操作档在合并窗口内可顶替刚播过的轻提示", () => {
+    let now = 1000;
+    const { bus, windowStub } = setup({ now: () => now });
+    bus.publishSchedulerFinished({
+      schedulerRunId: "s-1",
+      taskId: "t1",
+      taskTitle: "任务",
+      status: "success",
+    });
+    now = 1000 + TOAST_SOUND_MERGE_MS - 1; // 仍在合并窗口内
+    bus.publishApprovalPending({ id: "a-1", toolId: "t", toolName: "工具" });
+    const items = pushedItems(windowStub.sent) as Array<ToastItem & { sound: boolean }>;
+    expect(items[0].sound).toBe(true); // 通知档先播
+    expect(items[1].sound).toBe(true); // 等待操作档顶替，重要提醒优先
+  });
+
+  it("轻提示不能顶替刚播过的等待操作档音效", () => {
+    let now = 1000;
+    const { bus, windowStub } = setup({ now: () => now });
+    bus.publishApprovalPending({ id: "a-1", toolId: "t", toolName: "工具" });
+    now = 1000 + TOAST_SOUND_MERGE_MS - 1;
+    bus.publishSchedulerFinished({
+      schedulerRunId: "s-1",
+      taskId: "t1",
+      taskTitle: "任务",
+      status: "success",
+    });
+    const items = pushedItems(windowStub.sent) as Array<ToastItem & { sound: boolean }>;
+    expect(items[0].sound).toBe(true);
+    expect(items[1].sound).toBe(false);
+  });
+
+  it("音效总开关关闭时不播", () => {
+    const { bus, windowStub } = setup({ isSoundEnabled: () => false });
+    bus.publishApprovalPending({ id: "a-1", toolId: "t", toolName: "工具" });
     const items = pushedItems(windowStub.sent) as Array<ToastItem & { sound: boolean }>;
     expect(items[0].sound).toBe(false);
   });

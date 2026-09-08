@@ -5,6 +5,7 @@ import { AgentRuntimeError } from "../orchestrator/agent-runtime-error";
 import { CyreneAgent, type CyreneRunOptions } from "../orchestrator/cyrene-agent";
 import type { LifecyclePublisher } from "../plugin-host/lifecycle-publisher";
 import { toolRegistry } from "../orchestrator/tools/registry/tool-registry";
+import { toastEvents } from "../toast/toast-events";
 import { filterToolsForTask } from "./tool-filter";
 import type { ScheduledRunResult, ScheduledTask, ScheduledTaskHistoryEntry } from "./types";
 
@@ -156,6 +157,16 @@ export function createSchedulerRunner(deps: RunnerDeps) {
         status,
         durationMs,
       });
+      // 注意力提醒：任务成功完成时通知 ToastService 弹右下角提醒（失败不弹，V1 边界）
+      if (status === "success") {
+        toastEvents.publishSchedulerFinished({
+          schedulerRunId: historyId,
+          taskId: task.id,
+          taskTitle: task.title,
+          status,
+          outputPreview: reply.slice(0, 160),
+        });
+      }
       return { ok: true, historyId, reply, effectiveToolIds };
     } catch (err) {
       const finishedAt = deps.now();

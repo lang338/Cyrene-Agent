@@ -268,6 +268,9 @@ function startPlanReviewFlow(params: {
       threadId,
       runId,
     });
+    // 注意力提醒：计划进入审批，先于审批卡发布（ToastService 据此把同 runId 的
+    // choice 卡归类为 plan-review，避免双弹）
+    toastEvents.publishPlanReview({ sessionId, runId });
     const answer = await requestUserClarification(
       buildPlanReviewCard(planPath),
       sendPlanCard,

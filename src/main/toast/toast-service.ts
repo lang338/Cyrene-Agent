@@ -9,7 +9,8 @@ import type { ToastItem, ToastPushPayload } from "../../shared/toast-types";
 import type { IpcScope } from "../application/ipc-scope";
 import type { WindowActivationRequest } from "../application/window-activation";
 import type { ToastWindowController } from "./toast-window";
-import type { ToastEventBus } from "./toast-events";
+import type { SchedulerFinishedEvent, ToastEventBus } from "./toast-events";
+import { TOAST_NOTIFY_TIMEOUT_MS, TOAST_SOUND_MERGE_MS, type ToastTier } from "./types";
 
 export interface ToastServiceDeps {
   bus: ToastEventBus;
@@ -20,6 +21,16 @@ export interface ToastServiceDeps {
   openTasksWindow(): void;
   /** toast id 生成器；默认递增计数，可注入以便测试 */
   newId?: () => string;
+  /** 时钟注入；默认 Date.now，测试可替换 */
+  now?: () => number;
+  /** 音效总开关查询（设置页）；默认开 */
+  isSoundEnabled?: () => boolean;
+  /**
+   * 通知档焦点抑制查询：事件到达时判断"用户正看着现场"
+   * （聊天窗口存在且聚焦，且当前激活会话 === 事件所属会话）。
+   * 仅通知档使用；等待操作档不受抑制（长输出流里卡片易被滚没）。
+   */
+  shouldSuppressNotify?: (event: SchedulerFinishedEvent) => boolean;
 }
 
 /** 去重键：类别 + 业务身份 */
@@ -29,6 +40,9 @@ function dedupeKey(kind: ToastItem["kind"], sourceId: string): string {
 
 export function createToastService(deps: ToastServiceDeps) {
   const newId = deps.newId ?? (() => `toast-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const nowFn = deps.now ?? (() => Date.now());
+  const soundEnabled = deps.isSoundEnabled ?? (() => true);
+  const shouldSuppressNotify = deps.shouldSuppressNotify ?? (() => false);
 
   /** 当前显示中的 toast（可见状态） */
   const activeToasts = new Map<string, ToastItem>();
@@ -36,17 +50,47 @@ export function createToastService(deps: ToastServiceDeps) {
   const pendingSeen = new Set<string>();
   /** 已登记为计划流的 runId：同 runId 的 choice 卡归 plan-review，不进 ask-choice 路径 */
   const planRunIds = new Set<string>();
+  /** 通知档 10s 自动消隐定时器（主进程为权威） */
+  const notifyTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+
+  // ── 音效合并：300ms 窗口内只播一次，等待操作档可顶替轻提示 ──
+
+  let lastSoundAt = -Infinity;
+  let lastSoundTier: ToastTier | null = null;
+
+  function decideSound(tier: ToastTier): boolean {
+    if (!soundEnabled()) return false;
+    const now = nowFn();
+    if (now - lastSoundAt > TOAST_SOUND_MERGE_MS) {
+      lastSoundAt = now;
+      lastSoundTier = tier;
+      return true;
+    }
+    // 合并窗口内到达：重要提醒（等待操作档）优先，可顶替刚播过的轻提示
+    if (tier === "action-pending" && lastSoundTier === "notify") {
+      lastSoundAt = now;
+      lastSoundTier = tier;
+      return true;
+    }
+    return false;
+  }
 
   // ── 推送与移除（渲染页只被动响应） ─────────────────────
 
   function pushToast(item: ToastItem): void {
     activeToasts.set(item.id, item);
-    const payload: ToastPushPayload = { ...item, sound: false };
+    const payload: ToastPushPayload = { ...item, sound: decideSound(item.tier) };
     deps.window.send(IPC.TOAST_PUSH, payload);
     deps.window.syncVisibility(true);
   }
 
   function removeToast(id: string): void {
+    // 通知档提前结束（点击/关闭）时清掉自动消隐定时器
+    const timer = notifyTimeouts.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      notifyTimeouts.delete(id);
+    }
     if (!activeToasts.delete(id)) return;
     deps.window.send(IPC.TOAST_REMOVE, id);
     deps.window.syncVisibility(activeToasts.size > 0);
@@ -87,7 +131,7 @@ export function createToastService(deps: ToastServiceDeps) {
       summary: event.toolName,
       // 审批事件在主进程侧拿不到所属会话，只能激活聊天窗口
       target: { type: "window", window: "chat" },
-      createdAt: Date.now(),
+      createdAt: nowFn(),
     });
   }
 
@@ -106,7 +150,7 @@ export function createToastService(deps: ToastServiceDeps) {
       title: "昔涟想问你一个问题",
       summary: event.intro,
       target: { type: "window", window: "chat" },
-      createdAt: Date.now(),
+      createdAt: nowFn(),
     });
   }
 
@@ -148,7 +192,7 @@ export function createToastService(deps: ToastServiceDeps) {
       title: "计划已写好，等你批准",
       // 计划审批卡事件自带 sessionId，点击后可直接切到该会话
       target: { type: "session", sessionId: event.sessionId },
-      createdAt: Date.now(),
+      createdAt: nowFn(),
     });
   }
 
@@ -166,12 +210,41 @@ export function createToastService(deps: ToastServiceDeps) {
       title: "昔涟出了道抽查题",
       summary: event.firstQuestion,
       target: { type: "window", window: "chat" },
-      createdAt: Date.now(),
+      createdAt: nowFn(),
     });
   }
 
   function handleQuizSettled(event: { quizId: string }): void {
     settleActionToast("pop-quiz", event.quizId);
+  }
+
+  // ── 通知档：定时任务完成 ─────────────────────────────────
+
+  function handleSchedulerFinished(event: SchedulerFinishedEvent): void {
+    // V1 边界：只有成功完成才提醒，失败不弹
+    if (event.status !== "success") return;
+    // 焦点抑制：用户正看着现场时跳过，不打扰
+    if (shouldSuppressNotify(event)) return;
+    const item: ToastItem = {
+      id: newId(),
+      kind: "task-finished",
+      tier: "notify",
+      sourceId: event.schedulerRunId,
+      title: `「${event.taskTitle}」跑完了`,
+      summary: event.outputPreview,
+      // 任务结果落在任务历史而非聊天流，V1 点击降级为打开任务窗口
+      target: { type: "window", window: "tasks" },
+      createdAt: nowFn(),
+    };
+    pushToast(item);
+    // 通知档 10s 自动消隐：主进程定时器为唯一权威；
+    // 提前结束（点击/手动关闭）时 removeToast 会清掉定时器
+    const timer = setTimeout(() => {
+      notifyTimeouts.delete(item.id);
+      removeToast(item.id);
+    }, TOAST_NOTIFY_TIMEOUT_MS);
+    if (typeof timer.unref === "function") timer.unref();
+    notifyTimeouts.set(item.id, timer);
   }
 
   // ── 用户交互（渲染页只上报 id，跳转由这里查权威状态解析） ──
@@ -211,6 +284,7 @@ export function createToastService(deps: ToastServiceDeps) {
     deps.bus.onPlanApproved(handlePlanApproved),
     deps.bus.onQuizPending(handleQuizPending),
     deps.bus.onQuizSettled(handleQuizSettled),
+    deps.bus.onSchedulerFinished(handleSchedulerFinished),
   ];
 
   function registerIpc(ipc: IpcScope): void {
