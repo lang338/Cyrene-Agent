@@ -95,6 +95,12 @@ describe("channels/dispatcher", () => {
     } as any;
   }
 
+  async function flushMicrotasks(rounds = 12): Promise<void> {
+    for (let index = 0; index < rounds; index += 1) {
+      await Promise.resolve();
+    }
+  }
+
   it("uses channel history and channel session when the chat is unbound", async () => {
     const loadRecentChannelHistory = vi.fn(async () => [{ role: "user" as const, content: "渠道旧消息" }]);
     const buildAndRunAgent = vi.fn(async (_msg: IncomingMessage, sessionId: string, prior?: Array<{ role: string; content?: string }>) => {
@@ -299,5 +305,141 @@ describe("channels/dispatcher", () => {
     expect(broadcastChat).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "bot:outgoing" }),
     );
+  });
+
+  it("同一个外部会话的消息必须串行执行完整处理链", async () => {
+    const events: string[] = [];
+    let releaseFirst!: () => void;
+    let markFirstStarted!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    let runCount = 0;
+    const dispatcher = new ChannelDispatcher({
+      manager: makeManager(vi.fn(async (outgoing) => {
+        events.push(`${outgoing.targetId}:sent`);
+        return { ok: true };
+      })),
+      buildAndRunAgent: vi.fn(async (msg) => {
+        runCount += 1;
+        events.push(`${msg.text}:agent:start`);
+        if (runCount === 1) {
+          markFirstStarted();
+          await firstGate;
+        }
+        events.push(`${msg.text}:agent:end`);
+        return { text: `回复:${msg.text}`, sticker: null };
+      }),
+    });
+
+    const first = dispatcher.handleIncoming(makeIncoming({ text: "第一条" }));
+    await firstStarted;
+    const second = dispatcher.handleIncoming(makeIncoming({ text: "第二条" }));
+    await flushMicrotasks();
+
+    try {
+      expect(events).not.toContain("第二条:agent:start");
+    } finally {
+      releaseFirst();
+      await Promise.all([first, second]);
+    }
+    expect(events.indexOf("第二条:agent:start"))
+      .toBeGreaterThan(events.indexOf("chat-1:sent"));
+  });
+
+  it("不同外部会话绑定到同一桌面会话时必须串行", async () => {
+    const events: string[] = [];
+    let releaseFirst!: () => void;
+    let markFirstStarted!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const dispatcher = new ChannelDispatcher({
+      manager: makeManager(vi.fn(async (outgoing) => {
+        events.push(`${outgoing.targetId}:sent`);
+        return { ok: true };
+      })),
+      resolveBoundConversationId: () => "conversation-shared",
+      loadBoundConversationHistory: vi.fn(async () => []),
+      appendBoundConversationMessage: vi.fn(async (_conversationId, role, content) => {
+        if (role === "assistant") events.push(`${content}:committed`);
+      }),
+      buildAndRunAgent: vi.fn(async (msg) => {
+        events.push(`${msg.chatId}:agent:start`);
+        if (msg.chatId === "chat-a") {
+          markFirstStarted();
+          await firstGate;
+        }
+        events.push(`${msg.chatId}:agent:end`);
+        return { text: `回复:${msg.chatId}`, sticker: null };
+      }),
+    });
+
+    const first = dispatcher.handleIncoming(makeIncoming({
+      senderId: "user-a",
+      chatId: "chat-a",
+    }));
+    await firstStarted;
+    const second = dispatcher.handleIncoming(makeIncoming({
+      senderId: "user-b",
+      chatId: "chat-b",
+    }));
+    await flushMicrotasks();
+
+    try {
+      expect(events).not.toContain("chat-b:agent:start");
+    } finally {
+      releaseFirst();
+      await Promise.all([first, second]);
+    }
+    expect(events.indexOf("chat-b:agent:start"))
+      .toBeGreaterThan(events.indexOf("回复:chat-a:committed"));
+  });
+
+  it("不同桌面会话之间保持并行", async () => {
+    const events: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const sessionA = makeSessionId("qq", "chat-a");
+    const dispatcher = new ChannelDispatcher({
+      manager: makeManager(),
+      resolveBoundConversationId: (sessionId) => (
+        sessionId === sessionA ? "conversation-a" : "conversation-b"
+      ),
+      loadBoundConversationHistory: vi.fn(async () => []),
+      buildAndRunAgent: vi.fn(async (msg) => {
+        events.push(`${msg.chatId}:agent:start`);
+        await gate;
+        return { text: `回复:${msg.chatId}`, sticker: null };
+      }),
+    });
+
+    const first = dispatcher.handleIncoming(makeIncoming({
+      senderId: "user-a",
+      chatId: "chat-a",
+    }));
+    const second = dispatcher.handleIncoming(makeIncoming({
+      senderId: "user-b",
+      chatId: "chat-b",
+    }));
+    await flushMicrotasks();
+
+    try {
+      expect(new Set(events)).toEqual(new Set([
+        "chat-a:agent:start",
+        "chat-b:agent:start",
+      ]));
+    } finally {
+      release();
+      await Promise.all([first, second]);
+    }
   });
 });

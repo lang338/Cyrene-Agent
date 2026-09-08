@@ -36,6 +36,7 @@ import {
 } from "../../shared/preferences";
 import { rememberProactiveChannelRecipient } from "./proactive-delivery";
 import { createChannelRateLimiter, type ChannelRateLimiter } from "./rate-limiter";
+import { createKeyedQueue, type KeyedQueue } from "./keyed-queue";
 
 /** 用于拼接历史对话的轻量 ChatMessage 形状（与 orchestrator ChatMessage 兼容）。 */
 interface ChatMessage {
@@ -54,6 +55,11 @@ interface DispatcherTtsResult {
   format: TtsAudioFormat;
   mime: string;
   extension: ".mp3" | ".wav" | ".pcm" | ".opus";
+}
+
+export interface DispatchContext {
+  sessionId: string;
+  boundConversationId: string | null;
 }
 
 const LOG = "[ChannelDispatcher]";
@@ -145,6 +151,8 @@ export interface BoundConversationMessageMetadata {
 
 export interface DispatcherDeps {
   manager: ChannelManager;
+  /** 按外部会话和绑定桌面会话串行执行；未注入时使用进程内队列。 */
+  queue?: KeyedQueue;
   /** 渲染端 chatWindow 用于镜像显示（可选） */
   getChatWindow?: () => { webContents: { isDestroyed(): boolean; send: (channel: string, ...args: unknown[]) => void }; isDestroyed(): boolean } | null;
   /** 完整 agent 调用。未注入时返回纯 echo（仅供联调）。
@@ -204,10 +212,12 @@ export function shouldAppendChannelTtsAudio(
 export class ChannelDispatcher {
   private settingsCache: ChannelsSettings | null = null;
   private limiterCache: ChannelRateLimiter | null = null;
+  private readonly queue: KeyedQueue;
   deps: DispatcherDeps;
 
   constructor(deps: DispatcherDeps) {
     this.deps = deps;
+    this.queue = deps.queue ?? createKeyedQueue({ maxPendingPerKey: 20 });
     reloadLogFromDisk();
   }
 
@@ -249,17 +259,28 @@ export class ChannelDispatcher {
    * 构造 OutgoingMessage。如果没注入 buildAndRunAgent，返回 echo 作为占位（仅供联调）。
    */
   async handleIncoming(msg: IncomingMessage): Promise<OutgoingMessage | null> {
-    if (!this.limiter.tryConsume(msg.channel, msg.senderId)) {
-      console.warn(LOG, `限速: ${msg.channel}:${msg.senderId}`);
-      return null;
-    }
-
     const sessionId = makeSessionId(msg.channel, msg.chatId);
-    try {
-      this.deps.observeExternalChat?.(sessionId, msg);
-    } catch (err) {
-      console.warn(LOG, "observeExternalChat 失败（继续处理消息）:", err);
-    }
+    return this.queue.run(`external:${sessionId}`, async () => {
+      if (!this.limiter.tryConsume(msg.channel, msg.senderId)) {
+        console.warn(LOG, `限速: ${msg.channel}:${msg.senderId}`);
+        return null;
+      }
+
+      try {
+        this.deps.observeExternalChat?.(sessionId, msg);
+      } catch (err) {
+        console.warn(LOG, "observeExternalChat 失败（继续处理消息）:", err);
+      }
+
+      const context = this.resolveDispatchContext(sessionId);
+      const execute = () => this.processIncoming(msg, context);
+      return context.boundConversationId
+        ? this.queue.run(`conversation:${context.boundConversationId}`, execute)
+        : execute();
+    });
+  }
+
+  private resolveDispatchContext(sessionId: string): DispatchContext {
     let requestedBoundConversationId: string | null = null;
     try {
       requestedBoundConversationId = this.deps.resolveBoundConversationId?.(sessionId) ?? null;
@@ -269,6 +290,14 @@ export class ChannelDispatcher {
     }
     const hasBoundContext = Boolean(requestedBoundConversationId && this.deps.loadBoundConversationHistory);
     const boundConversationId = hasBoundContext ? requestedBoundConversationId : null;
+    return { sessionId, boundConversationId };
+  }
+
+  private async processIncoming(
+    msg: IncomingMessage,
+    context: DispatchContext,
+  ): Promise<OutgoingMessage | null> {
+    const { sessionId, boundConversationId } = context;
     // 绑定只选择历史与消息镜像目标，Agent 运行身份始终属于原渠道。
     // 兼容旧版按 senderId 键控的历史：飞书 p2p 的 chatId(oc_) 与 senderId(ou_) 不同，
     // 升级后迁移旧滑窗文件到新键，避免既有渠道用户上下文一次性丢失（微信两者同值、QQ 为新增渠道，均无影响）
