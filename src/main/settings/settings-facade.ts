@@ -71,6 +71,7 @@ const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   ttsAutoRead: true,
   ttsSpeed: 1,
   ttsVolume: 1,
+  taskTtsEnabled: false,
   ttsEarlyReadSplitEnabled: true,
   ttsEarlyReadSplitMode: "sentence",
   ttsMinimaxKey: "",
@@ -254,6 +255,9 @@ export function normalizeGeneralSettings(
     ttsVolume: typeof input?.ttsVolume === "number"
       ? Math.max(0, Math.min(1, input.ttsVolume))
       : DEFAULT_GENERAL_SETTINGS.ttsVolume,
+    taskTtsEnabled: input?.taskTtsEnabled === undefined
+      ? DEFAULT_GENERAL_SETTINGS.taskTtsEnabled
+      : Boolean(input.taskTtsEnabled),
     ttsEarlyReadSplitEnabled: typeof input?.ttsEarlyReadSplitEnabled === "boolean"
       ? input.ttsEarlyReadSplitEnabled
       : DEFAULT_GENERAL_SETTINGS.ttsEarlyReadSplitEnabled,

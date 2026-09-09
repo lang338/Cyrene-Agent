@@ -231,10 +231,15 @@ const toastApi: import("../shared/toast-types").ToastRendererApi = {
     ipcRenderer.on(IPC.TOAST_PUSH, handler);
     return () => ipcRenderer.removeListener(IPC.TOAST_PUSH, handler);
   },
-  onRemove: (callback: (id: string) => void) => {
-    const handler = (_e: unknown, id: string) => callback(id);
+  onRemove: (callback: (payload: import("../shared/toast-types").ToastRemovePayload) => void) => {
+    const handler = (_e: unknown, payload: import("../shared/toast-types").ToastRemovePayload) => callback(payload);
     ipcRenderer.on(IPC.TOAST_REMOVE, handler);
     return () => ipcRenderer.removeListener(IPC.TOAST_REMOVE, handler);
+  },
+  onTaskTts: (callback: (payload: import("../shared/toast-types").ToastTaskTtsPayload) => void) => {
+    const handler = (_e: unknown, payload: import("../shared/toast-types").ToastTaskTtsPayload) => callback(payload);
+    ipcRenderer.on(IPC.TOAST_TASK_TTS_PLAY, handler);
+    return () => ipcRenderer.removeListener(IPC.TOAST_TASK_TTS_PLAY, handler);
   },
 };
 contextBridge.exposeInMainWorld("toast", toastApi);

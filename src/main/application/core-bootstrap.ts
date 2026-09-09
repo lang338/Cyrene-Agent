@@ -85,7 +85,7 @@ export interface CoreDependencies {
   createScheduler(runtime: AgentRuntime, services: CoreServices): SchedulerSubsystem;
   registerCoreIpc(input: RegisterCoreIpcInput): void;
   /** 组合根装配提醒中心：注册 toast IPC、订阅事件总线、预创建隐藏窗口。 */
-  wireToastCenter(input: { ipc: IpcScope; windowManager: WindowManager }): void;
+  wireToastCenter(input: { ipc: IpcScope; windowManager: WindowManager; services: CoreServices }): void;
   loadGeneralSettings(): GeneralSettings;
   /** 启动期一次性应用通用设置（登录项同步、桌宠偏好等）。 */
   applyGeneralSettings(settings: GeneralSettings, services: CoreServices): void;
@@ -168,7 +168,7 @@ export async function startCore(deps: CoreDependencies): Promise<CoreResult> {
   deps.registerCoreIpc({ ipc: shell.ipc, runtime, services, channels, scheduler });
 
   // 提醒中心装配：IPC 注册先于 toast 窗口预加载（渲染页加载即可能 invoke getAll）
-  deps.wireToastCenter({ ipc: shell.ipc, windowManager: shell.windowManager });
+  deps.wireToastCenter({ ipc: shell.ipc, windowManager: shell.windowManager, services });
 
   // 全部处理器就绪后才加载聊天页面；页面加载失败属于致命错误（向上抛出）
   await timedStep("chat-load", () => shell.chat.load());

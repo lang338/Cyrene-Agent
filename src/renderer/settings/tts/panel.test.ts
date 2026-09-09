@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const REQUIRED_INPUT_IDS = [
   "tts-auto-read",
+  "task-tts-enabled",
   "tts-speed",
   "tts-volume",
   "tts-minimax-key",
