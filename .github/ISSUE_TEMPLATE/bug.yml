@@ -7,7 +7,7 @@ body:
       value: |
         ## ⚠️ 请先确认环境
         从源码构建需要 **Node.js 24 LTS**（`npm install` / `npm run build` 依赖此版本）。
-        Electron runtime 当前为 **Electron 33**（暂不升级）。
+        Electron runtime 当前为 **Electron 43**（暂不升级）。
 
         > 如果是应用运行中的功能异常（不是安装/构建），请返回选择「运行时 Bug 🐛」。
 
