@@ -8,6 +8,8 @@ import {
   TOAST_MAX_VISIBLE,
   type ToastItem,
   type ToastPushPayload,
+  type ToastRemovePayload,
+  type ToastTaskTtsPayload,
   type ToastTier,
 } from "../../shared/toast-types";
 import avatarIconUrl from "./assets/toast-avatar.png";
@@ -43,6 +45,40 @@ function playSound(tier: ToastTier): void {
   void audio.play().catch(() => {
     // 播放失败不影响提醒展示本身
   });
+}
+
+// ── 任务语音播报（task-tts 增强层）：同一时刻只播一路，新播报顶替旧播报 ──
+
+let taskTtsAudio: { el: HTMLAudioElement; toastId: string; url: string | null } | null = null;
+
+function stopTaskTts(): void {
+  const current = taskTtsAudio;
+  if (!current) return;
+  taskTtsAudio = null;
+  current.el.pause();
+  current.el.src = "";
+  if (current.url) URL.revokeObjectURL(current.url);
+}
+
+function playTaskTts(payload: ToastTaskTtsPayload): void {
+  // 新播报到达：无论旧的是否播完都停掉，昔涟不同时说两句话
+  stopTaskTts();
+  try {
+    const bytes = Uint8Array.from(atob(payload.base64), (c) => c.charCodeAt(0));
+    const blob = new Blob([bytes], { type: payload.mime });
+    const url = URL.createObjectURL(blob);
+    const el = new Audio(url);
+    taskTtsAudio = { el, toastId: payload.toastId, url };
+    el.onended = () => {
+      if (taskTtsAudio?.el === el) stopTaskTts();
+    };
+    void el.play().catch(() => {
+      // 播放失败不影响提醒展示本身
+      if (taskTtsAudio?.el === el) stopTaskTts();
+    });
+  } catch {
+    // base64 解码失败：忽略，不影响提醒展示
+  }
 }
 
 const CLOSE_ICON =
@@ -176,11 +212,17 @@ function push(payload: ToastPushPayload): void {
   relayout();
 }
 
-/** 主进程已决定移除：播退出动画后从 DOM 清除 */
-function remove(id: string): void {
+/**
+ * 主进程已决定移除：播退出动画后从 DOM 清除。
+ * reason 供语音播报决策：仅超时消隐不打断播报（昔涟把话说完），
+ * 用户点击/关闭（不想听）与结算清退立即停播。
+ */
+function remove(payload: ToastRemovePayload): void {
+  const { id, reason } = payload;
   if (!stack) return;
   const entry = cards.get(id);
   if (!entry || entry.removalTimer !== null) return;
+  if (taskTtsAudio?.toastId === id && reason !== "timeout") stopTaskTts();
   const el = entry.el;
   // 固定当前高度后再过渡到 0，配合负 margin 折叠间距，实现平滑收起
   el.style.height = `${el.offsetHeight}px`;
@@ -215,6 +257,7 @@ function main(): void {
   if (!stack) return;
   api?.onPush(push);
   api?.onRemove(remove);
+  api?.onTaskTts(playTaskTts);
   // 字体加载等原因导致卡片高度变化时，重算折叠高度并重新上报
   new ResizeObserver(() => relayout()).observe(stack);
   void restore();

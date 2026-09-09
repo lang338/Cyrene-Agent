@@ -284,7 +284,8 @@ describe("createToastService · 通知档（任务完成）", () => {
     expect(service.getActiveToasts()).toHaveLength(1);
     vi.advanceTimersByTime(1);
     expect(service.getActiveToasts()).toHaveLength(0);
-    expect(windowStub.sent.some((e) => e.channel === "toast:remove" && e.payload === item.id)).toBe(true);
+    const removePayload = windowStub.sent.find((e) => e.channel === "toast:remove")?.payload as { id: string; reason: string };
+    expect(removePayload).toEqual({ id: item.id, reason: "timeout" });
   });
 
   it("失败终态不弹提醒", () => {
