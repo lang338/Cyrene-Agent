@@ -9,7 +9,7 @@ export { TOAST_MAX_VISIBLE } from "../../shared/toast-types";
 export const TOAST_NOTIFY_TIMEOUT_MS = 10_000;
 
 /** toast 窗口固定宽度（px） */
-export const TOAST_WINDOW_WIDTH = 360;
+export const TOAST_WINDOW_WIDTH = 440;
 
 /** 窗口高度上限：所在显示器工作区高度的 60%（防止大块透明区遮挡鼠标） */
 export const TOAST_MAX_WORKAREA_RATIO = 0.6;

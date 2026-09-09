@@ -7,10 +7,10 @@
 import {
   TOAST_MAX_VISIBLE,
   type ToastItem,
-  type ToastKind,
   type ToastPushPayload,
   type ToastTier,
 } from "../../shared/toast-types";
+import avatarIconUrl from "./assets/toast-avatar.png";
 import actionSoundUrl from "./assets/toast-action.mp3";
 import notifySoundUrl from "./assets/toast-notify.mp3";
 
@@ -18,8 +18,8 @@ const api = window.toast;
 const stack = document.getElementById("toast-stack");
 
 /** 堆叠容器的上下内边距与卡片间距，须与 toast.css 保持一致（折叠高度计算用） */
-const STACK_PADDING = 24;
-const STACK_GAP = 10;
+const STACK_PADDING = 28;
+const STACK_GAP = 12;
 
 /** 退出动画总时长（与 CSS 过渡时长匹配） */
 const LEAVE_MS = 220;
@@ -45,19 +45,6 @@ function playSound(tier: ToastTier): void {
   });
 }
 
-const KIND_ICONS: Record<ToastKind, string> = {
-  approval:
-    '<svg width="18" height="18" viewBox="0 0 48 48" fill="none" aria-hidden="true"><path d="M24 4L40 10V22C40 32 33 40 24 44C15 40 8 32 8 22V10L24 4Z" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/><path d="M16 24L22 30L32 19" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  "ask-choice":
-    '<svg width="18" height="18" viewBox="0 0 48 48" fill="none" aria-hidden="true"><path d="M42 22C42 32.6 33.9 41 24 41C20.9 41 18 40.2 15.5 38.8L6 41.5L8.9 32.6C7 29.9 6 26.6 6 22C6 12.4 14.1 4 24 4C33.9 4 42 12.4 42 22Z" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/><path d="M17 22H17.02M24 22H24.02M31 22H31.02" stroke="currentColor" stroke-width="5" stroke-linecap="round"/></svg>',
-  "pop-quiz":
-    '<svg width="18" height="18" viewBox="0 0 48 48" fill="none" aria-hidden="true"><path d="M33 6L42 15L18 39H9V30L33 6Z" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/><path d="M28 11L37 20" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg>',
-  "plan-review":
-    '<svg width="18" height="18" viewBox="0 0 48 48" fill="none" aria-hidden="true"><path d="M12 4H28L38 14V40C38 42.2 36.2 44 34 44H12C9.8 44 8 42.2 8 40V8C8 5.8 9.8 4 12 4Z" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/><path d="M28 4V14H38" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/><path d="M17 29L23 35L33 23" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  "task-finished":
-    '<svg width="18" height="18" viewBox="0 0 48 48" fill="none" aria-hidden="true"><circle cx="24" cy="24" r="19" stroke="currentColor" stroke-width="4"/><path d="M15 24L21.5 30.5L33 18" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-};
-
 const CLOSE_ICON =
   '<svg width="9" height="9" viewBox="0 0 9 9" fill="none" aria-hidden="true"><line x1="2" y1="2" x2="7" y2="7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="7" y1="2" x2="2" y2="7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
 
@@ -68,7 +55,11 @@ function buildCard(item: ToastItem): HTMLElement {
 
   const icon = document.createElement("span");
   icon.className = "toast-card__icon";
-  icon.innerHTML = KIND_ICONS[item.kind];
+  const avatar = document.createElement("img");
+  avatar.src = avatarIconUrl;
+  avatar.alt = "";
+  avatar.draggable = false;
+  icon.appendChild(avatar);
 
   const body = document.createElement("div");
   body.className = "toast-card__body";
