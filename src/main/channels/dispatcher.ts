@@ -1,8 +1,8 @@
 // channels/dispatcher —— 入站消息处理核心。
 //
 // 设计原则：
-//   - 不知道任何具体平台。platform 信息只用于查找 adapter / 落日志 / 写 sessionId。
-//   - 完全无副作用：UI 广播、记忆写入、sticker 推断都在外部注入的回调里完成。
+//   - 不知道任何具体平台。平台信息只用于查找适配器、记录日志和生成会话标识。
+//   - 统一编排限速、智能体执行、响应发送与上下文提交，具体能力由外部依赖提供。
 //
 // sessionId 生成规则：
 //   `channel:<channel>:<sha256(channel:senderId).slice(0,16)>`
@@ -108,6 +108,7 @@ export class ChannelDispatcher {
    *
    * 流程：计算会话标识 → 限速 → 加载历史滑窗 → 本条落历史 → 调用智能体 →
    * 组装并发送出站消息 → 确认成功后提交助手状态。
+   * 返回的出站消息仅供调用方观测和测试，不要求适配器再次发送。
    */
   async handleIncoming(msg: IncomingMessage): Promise<OutgoingMessage | null> {
     const sessionId = makeSessionId(msg.channel, msg.chatId);

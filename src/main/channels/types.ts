@@ -123,8 +123,8 @@ export interface ChannelStatus {
   detail?: Record<string, unknown>;
 }
 
-/** ChannelAdapter 内部 onMessage handler 的签名。
- *  返回 null 表示该消息被忽略（权限/限速/不在 allow list），adapter 不会再回信。 */
+/** 渠道适配器入站消息回调的签名。
+ *  回调内部负责完整的智能体执行与响应发送；返回值仅供观测和测试，适配器不得再次发送。 */
 export type MessageHandler = (
   msg: IncomingMessage,
 ) => Promise<OutgoingMessage | null>;

@@ -35,13 +35,7 @@ const CAPABILITY: ChannelCapability = {
 };
 
 const DEDUPE_TTL_MS = 10 * 60_000;
-const MAX_SESSION_QUEUE = 20;
 const TEXT_CHUNK_CODEPOINTS = 1500;
-
-interface QueueState {
-  tail: Promise<void>;
-  pending: number;
-}
 
 export function splitQqText(text: string, maxCodepoints = TEXT_CHUNK_CODEPOINTS): string[] {
   const source = text.trim();
@@ -108,7 +102,6 @@ export class NapCatAdapter implements ChannelAdapter {
   private supportsStream = false;
   private listeningInfo: OneBotListeningInfo | null = null;
   private dedupe = new Map<string, number>();
-  private queues = new Map<string, QueueState>();
 
   constructor(private readonly onStatusChanged?: () => void) {}
 
@@ -174,7 +167,6 @@ export class NapCatAdapter implements ChannelAdapter {
     this.supportsStream = false;
     this.listeningInfo = null;
     this.dedupe.clear();
-    this.queues.clear();
     this.setStatus({ enabled: false, phase: "offline", message: "已停止" });
   }
 
@@ -279,7 +271,7 @@ export class NapCatAdapter implements ChannelAdapter {
     if (this.dedupe.has(dedupeKey)) return;
     this.dedupe.set(dedupeKey, now + DEDUPE_TTL_MS);
 
-    this.enqueue(chatId, async () => {
+    try {
       const incoming = await normalizeOneBotMessage(event, {
         selfId: this.selfId,
         client,
@@ -287,24 +279,9 @@ export class NapCatAdapter implements ChannelAdapter {
         supportsStream: this.supportsStream,
       });
       await this.onMessage?.(incoming);
-    });
-  }
-
-  private enqueue(chatId: string, task: () => Promise<void>): void {
-    const current = this.queues.get(chatId) ?? { tail: Promise.resolve(), pending: 0 };
-    if (current.pending >= MAX_SESSION_QUEUE) return;
-    current.pending++;
-    current.tail = current.tail
-      .catch(() => undefined)
-      .then(task)
-      .catch((error) => {
-        console.warn("[NapCatAdapter] QQ 会话处理失败:", error instanceof Error ? error.message : String(error));
-      })
-      .finally(() => {
-        current.pending--;
-        if (current.pending === 0) this.queues.delete(chatId);
-      });
-    this.queues.set(chatId, current);
+    } catch (error) {
+      console.warn("[NapCatAdapter] QQ 消息处理失败:", error instanceof Error ? error.message : String(error));
+    }
   }
 
   private async partToPayloads(part: OutgoingPart): Promise<OneBotSegment[][]> {

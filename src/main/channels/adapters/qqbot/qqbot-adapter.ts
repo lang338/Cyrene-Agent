@@ -40,17 +40,11 @@ const CAPABILITY: ChannelCapability = {
 };
 
 const DEDUPE_TTL_MS = 10 * 60_000;
-const MAX_SESSION_QUEUE = 20;
 /** 入站附件下载上限：8 MiB（与 OneBot downloadUrl 限流一致） */
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 /** 被动回复窗口：单聊 60 分钟、群聊 5 分钟；次数上限：单聊 4、群 5 */
 const REPLY_WINDOW_MS = { private: 60 * 60_000, group: 5 * 60_000 } as const;
 const REPLY_SEQ_LIMIT = { private: 4, group: 5 } as const;
-
-interface QueueState {
-  tail: Promise<void>;
-  pending: number;
-}
 
 interface InboundReplyContext {
   messageId: string;
@@ -149,7 +143,6 @@ export class QqBotAdapter implements ChannelAdapter {
   private wsReady = false;
   private lastRejected: { openid: string; chatType: "private" | "group"; at: number } | null = null;
   private dedupe = new Map<string, number>();
-  private queues = new Map<string, QueueState>();
   /** chatId → 最近一条入站消息（被动回复窗口跟踪） */
   private lastInbound = new Map<string, InboundReplyContext>();
 
@@ -212,7 +205,6 @@ export class QqBotAdapter implements ChannelAdapter {
     this.botNickname = "";
     this.lastRejected = null;
     this.dedupe.clear();
-    this.queues.clear();
     this.lastInbound.clear();
     this.setStatus({ enabled: false, phase: "offline", message: "已停止" });
   }
@@ -332,27 +324,16 @@ export class QqBotAdapter implements ChannelAdapter {
       });
     }
 
-    this.enqueue(incoming.chatId, async () => {
-      await this.downloadAttachments(incoming);
-      await this.onMessage?.(incoming);
-    });
+    void this.deliverIncoming(incoming);
   }
 
-  private enqueue(chatId: string, task: () => Promise<void>): void {
-    const current = this.queues.get(chatId) ?? { tail: Promise.resolve(), pending: 0 };
-    if (current.pending >= MAX_SESSION_QUEUE) return;
-    current.pending++;
-    current.tail = current.tail
-      .catch(() => undefined)
-      .then(task)
-      .catch((error) => {
-        console.warn("[QqBotAdapter] QQ Bot 会话处理失败:", error instanceof Error ? error.message : String(error));
-      })
-      .finally(() => {
-        current.pending--;
-        if (current.pending === 0) this.queues.delete(chatId);
-      });
-    this.queues.set(chatId, current);
+  private async deliverIncoming(incoming: IncomingMessage): Promise<void> {
+    try {
+      await this.downloadAttachments(incoming);
+      await this.onMessage?.(incoming);
+    } catch (error) {
+      console.warn("[QqBotAdapter] QQ Bot 消息处理失败:", error instanceof Error ? error.message : String(error));
+    }
   }
 
   private partToChunks(part: OutgoingPart): string[] {

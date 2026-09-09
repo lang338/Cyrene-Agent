@@ -165,46 +165,18 @@ describe("NapCatAdapter fake reverse WebSocket integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(incoming).toHaveLength(2);
 
-    const serialOrder: string[] = [];
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const handedOff: string[] = [];
     adapter.onMessage = async (message) => {
-      serialOrder.push(`start:${message.messageId}`);
-      if (message.messageId === "serial-1") await new Promise((resolve) => setTimeout(resolve, 20));
-      serialOrder.push(`end:${message.messageId}`);
+      handedOff.push(message.messageId!);
+      if (message.messageId === "handoff-1") await firstGate;
       return null;
     };
-    socket.send(JSON.stringify({ ...groupEvent, message_id: "serial-1" }));
-    socket.send(JSON.stringify({ ...groupEvent, message_id: "serial-2" }));
-    await waitFor(() => serialOrder.length === 4);
-    expect(serialOrder).toEqual(["start:serial-1", "end:serial-1", "start:serial-2", "end:serial-2"]);
-
-    const parallelOrder: string[] = [];
-    adapter.onMessage = async (message) => {
-      parallelOrder.push(`start:${message.chatId}`);
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      parallelOrder.push(`end:${message.chatId}`);
-      return null;
-    };
-    socket.send(JSON.stringify({ ...groupEvent, message_id: "parallel-1", group_id: "2000" }));
-    socket.send(JSON.stringify({ ...groupEvent, message_id: "parallel-2", group_id: "2001" }));
-    await waitFor(() => parallelOrder.length === 4);
-    expect(new Set(parallelOrder.slice(0, 2))).toEqual(new Set(["start:2000", "start:2001"]));
-
-    let releaseQueue!: () => void;
-    const queueGate = new Promise<void>((resolve) => { releaseQueue = resolve; });
-    let queueRuns = 0;
-    adapter.onMessage = async () => {
-      queueRuns++;
-      if (queueRuns === 1) await queueGate;
-      return null;
-    };
-    for (let index = 0; index < 21; index++) {
-      socket.send(JSON.stringify({ ...groupEvent, message_id: `queued-${index}` }));
-    }
-    await waitFor(() => queueRuns === 1);
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    releaseQueue();
-    await waitFor(() => queueRuns === 20);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(queueRuns).toBe(20);
+    socket.send(JSON.stringify({ ...groupEvent, message_id: "handoff-1" }));
+    socket.send(JSON.stringify({ ...groupEvent, message_id: "handoff-2" }));
+    await waitFor(() => handedOff.length === 2);
+    expect(handedOff).toEqual(["handoff-1", "handoff-2"]);
+    releaseFirst();
   });
 });

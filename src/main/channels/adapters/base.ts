@@ -1,12 +1,11 @@
-// ChannelAdapter —— 每个外部渠道（微信/飞书/...）的协议适配层接口。
+// 渠道适配器 —— 每个外部渠道（微信/飞书/...）的协议适配层接口。
 //
-// 设计原则：adapter 负责两件事：
-//   1) start(): 注册 webhook / 启动子进程 / 加载本地状态
-//   2) send(): 把统一 OutgoingMessage 翻译成平台协议发出去
-// 入站消息由 adapter 内部调用 onMessage 回调抛给 manager → dispatcher。
+// 设计原则：适配器只负责协议收发、消息归一化和账号凭证管理：
+//   1) 启动时注册回调、启动子进程或加载本地状态；
+//   2) 入站时归一化消息并交给调度器；
+//   3) 出站时把统一消息翻译成平台协议并发送。
 //
-// 注意：adapter 不应该直接调 CyreneAgent；那是 dispatcher 的职责。
-// adapter 只做"翻译 + 协议收发 + 账号/凭证管理"。
+// 适配器不直接调用智能体，也不重复发送入站回调的返回值。
 import type {
   ChannelCapability,
   ChannelId,
@@ -24,10 +23,10 @@ export interface ChannelAdapter {
   /** 启动：注册 webhook / 启子进程 / 加载凭证 / 写运行时配置 */
   start(): Promise<void>;
 
-  /** 关闭：停止子进程 / 关闭 webhook 监听 / flush 队列 */
+  /** 关闭：停止子进程、关闭监听并释放协议资源。 */
   stop(): Promise<void>;
 
-  /** Manager 在 start() 之前注入；adapter 把入站消息通过这个回调抛给 dispatcher */
+  /** 管理器在启动前注入；适配器通过此回调把入站消息交给调度器。 */
   onMessage: MessageHandler | null;
 
   /** 出站：把统一 OutgoingMessage 翻译成平台协议发出去 */

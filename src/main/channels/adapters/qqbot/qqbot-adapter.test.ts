@@ -269,6 +269,26 @@ describe("QqBotAdapter", () => {
     expect(seen).toHaveLength(1);
   });
 
+  it("hands same-chat messages to the dispatcher without adapter serialization", async () => {
+    const adapter = new QqBotAdapter();
+    adapters.push(adapter);
+    await adapter.start();
+
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const handedOff: string[] = [];
+    adapter.onMessage = async (msg) => {
+      handedOff.push(msg.messageId!);
+      if (msg.messageId === "handoff-1") await firstGate;
+      return null;
+    };
+
+    wsState.options.onDispatch("C2C_MESSAGE_CREATE", c2cEvent({ id: "handoff-1" }));
+    wsState.options.onDispatch("C2C_MESSAGE_CREATE", c2cEvent({ id: "handoff-2" }));
+    await vi.waitFor(() => expect(handedOff).toEqual(["handoff-1", "handoff-2"]));
+    releaseFirst();
+  });
+
   it("refuses to send without a recent inbound message (no proactive push)", async () => {
     const adapter = new QqBotAdapter();
     adapters.push(adapter);
