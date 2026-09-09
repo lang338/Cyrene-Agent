@@ -1,10 +1,11 @@
 // dispatcher 核心单元测试：sessionId hash + 限速
 import * as os from "node:os";
 import { describe, it, expect, vi } from "vitest";
-import { ChannelDispatcher, formatChannelUserText, makeSessionId, lookupOriginalSender } from "./dispatcher";
+import { ChannelDispatcher, makeSessionId } from "./dispatcher";
 import { appendHistory } from "./history-log";
 import { appendLog } from "./message-log";
 import { createOutgoingComposer } from "./outgoing-composer";
+import type { ChannelContext } from "./channel-context";
 import type { IncomingMessage } from "./types";
 
 vi.mock("electron", () => ({
@@ -29,51 +30,6 @@ vi.mock("./history-log", () => ({
 }));
 
 describe("channels/dispatcher", () => {
-  it("makeSessionId: 同 channel + 同 sender → 同 sessionId", () => {
-    const a = makeSessionId("feishu", "ou_abc123");
-    const b = makeSessionId("feishu", "ou_abc123");
-    expect(a).toBe(b);
-  });
-
-  it("makeSessionId: 跨 channel 不同 sessionId", () => {
-    const f = makeSessionId("feishu", "user-x");
-    const w = makeSessionId("wechat", "user-x");
-    expect(f).not.toBe(w);
-  });
-
-  it("makeSessionId: 长度 16 字符 hash + 前缀", () => {
-    const s = makeSessionId("feishu", "ou_abc");
-    // 格式: channel:<channel>:<16 hex>
-    expect(s).toMatch(/^channel:feishu:[0-9a-f]{16}$/);
-  });
-
-  it("makeSessionId: 不同 sender → 不同 sessionId", () => {
-    const a = makeSessionId("feishu", "ou_aaa");
-    const b = makeSessionId("feishu", "ou_bbb");
-    expect(a).not.toBe(b);
-  });
-
-  it("lookupOriginalSender: 未知 sessionId 返回 null", () => {
-    expect(lookupOriginalSender("channel:feishu:0000000000000000")).toBeNull();
-  });
-
-  it("uses a shared QQ group chat id while preserving sender identity in agent text", () => {
-    expect(makeSessionId("qq", "20001")).toBe(makeSessionId("qq", "20001"));
-    expect(formatChannelUserText({
-      channel: "qq",
-      chatType: "group",
-      senderId: "10001",
-      senderName: "小明",
-      chatId: "20001",
-      text: "你好",
-      at: new Date(0),
-    })).toBe("[群聊发送者：小明 (10001)]\n你好");
-  });
-
-  it("isolates QQ private sessions by user id", () => {
-    expect(makeSessionId("qq", "10001")).not.toBe(makeSessionId("qq", "10002"));
-  });
-
   function makeIncoming(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
     return {
       channel: "qq",
@@ -116,6 +72,39 @@ describe("channels/dispatcher", () => {
     expect(result?.targetId).toBe("chat-1");
     expect(loadRecentChannelHistory).toHaveBeenCalledWith(makeSessionId("qq", "chat-1"), 16);
     expect(buildAndRunAgent).toHaveBeenCalledOnce();
+  });
+
+  it("通过注入的上下文模块读取和提交会话状态", async () => {
+    const priorMessages = [{ role: "user" as const, content: "模块历史" }];
+    const contextService: ChannelContext = {
+      resolveDispatchContext: vi.fn((sessionId: string) => ({
+        sessionId,
+        boundConversationId: null,
+      })),
+      recordIncomingSession: vi.fn(),
+      resolvePriorMessages: vi.fn(async () => priorMessages),
+      appendIncomingContext: vi.fn(async () => undefined),
+      appendAssistantContext: vi.fn(async () => undefined),
+    };
+    const buildAndRunAgent = vi.fn(async (
+      _msg: IncomingMessage,
+      _sessionId: string,
+      prior?: Array<{ role: string; content?: string }>,
+    ) => {
+      expect(prior).toEqual(priorMessages);
+      return { text: "模块回复", sticker: null };
+    });
+    const dispatcher = new ChannelDispatcher({
+      manager: makeManager(),
+      context: contextService,
+      buildAndRunAgent,
+    });
+
+    await dispatcher.handleIncoming(makeIncoming());
+
+    expect(contextService.recordIncomingSession).toHaveBeenCalledOnce();
+    expect(contextService.appendIncomingContext).toHaveBeenCalledOnce();
+    expect(contextService.appendAssistantContext).toHaveBeenCalledOnce();
   });
 
   it.each(["qq", "wechat"] as const)("uses bound desktop history while keeping %s runtime identity separate", async (channel) => {

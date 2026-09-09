@@ -10,9 +10,7 @@
 //
 // capability 降级：
 //   把 OutgoingMessage 按目标渠道的 cap 翻译 —— image→text 描述 / card→markdown / sticker 跳过。
-import { createHash } from "crypto";
 import type {
-  ChannelId,
   IncomingMessage,
   OutgoingMessage,
 } from "./types";
@@ -33,68 +31,29 @@ import {
   type OutgoingComposer,
   type SynthesizeChannelTts,
 } from "./outgoing-composer";
+import {
+  createChannelContext,
+  makeSessionId,
+  type BoundConversationMessageMetadata,
+  type ChannelContext,
+  type ChatMessage,
+  type DispatchContext,
+} from "./channel-context";
 
-/** 用于拼接历史对话的轻量 ChatMessage 形状（与 orchestrator ChatMessage 兼容）。 */
-interface ChatMessage {
-  role: "user" | "assistant" | "system" | "tool";
-  content?: string;
-}
-
-export interface DispatchContext {
-  sessionId: string;
-  boundConversationId: string | null;
-}
+export {
+  formatChannelUserText,
+  lookupOriginalSender,
+  makeSessionId,
+} from "./channel-context";
+export type {
+  BoundConversationMessageMetadata,
+  ChatMessage,
+  DispatchContext,
+} from "./channel-context";
 
 const LOG = "[ChannelDispatcher]";
 
-/** sessionId 缓存（用于查重 / 调试 / 上限管理） */
-const sessionIndex = new Map<string, { channel: ChannelId; senderId: string; lastAt: number }>();
-
-/** 计算一个稳定、匿名的 sessionId。 */
-export function makeSessionId(channel: ChannelId, chatId: string): string {
-  const hash = createHash("sha256")
-    .update(`${channel}:${chatId}`)
-    .digest("hex")
-    .slice(0, 16);
-  return `channel:${channel}:${hash}`;
-}
-
-/** 给 Agent/历史使用的渠道用户文本；群聊必须保留发送者和引用上下文。 */
-export function formatChannelUserText(msg: IncomingMessage): string {
-  if (msg.chatType !== "group") return msg.text;
-  const sender = msg.senderName ? `${msg.senderName} (${msg.senderId})` : msg.senderId;
-  const reply = msg.reply?.text
-    ? `\n引用 ${msg.reply.senderName || msg.reply.senderId || "未知用户"}：${msg.reply.text}`
-    : "";
-  return `[群聊发送者：${sender}]${reply}\n${msg.text}`;
-}
-
-/** 记录 sessionId → 原始 senderId（用于调试 / 反查；不影响正常运行） */
-function recordSession(channel: ChannelId, senderId: string, sessionId: string): void {
-  sessionIndex.set(sessionId, { channel, senderId, lastAt: Date.now() });
-  // 上限管理：超过 5000 个 sessionId 就丢弃最老的（LRU 近似）
-  if (sessionIndex.size > 5000) {
-    const oldest = [...sessionIndex.entries()].sort((a, b) => a[1].lastAt - b[1].lastAt)[0];
-    if (oldest) sessionIndex.delete(oldest[0]);
-  }
-}
-
-/** 把原始 senderId 反查回 sessionId。调试用，不依赖也能跑。 */
-export function lookupOriginalSender(sessionId: string): { channel: ChannelId; senderId: string } | null {
-  const entry = sessionIndex.get(sessionId);
-  return entry ? { channel: entry.channel, senderId: entry.senderId } : null;
-}
-
 /** Dispatcher 配置（依赖注入）。 */
-export interface BoundConversationMessageMetadata {
-  channel: ChannelId;
-  chatType: "private" | "group";
-  senderName?: string;
-  modelContext?: string;
-  /** 昔涟本轮选择、且目标渠道声明可发送的内置或用户表情包 ID。 */
-  sticker?: string;
-}
-
 export interface DispatcherDeps {
   manager: ChannelManager;
   /** 按外部会话和绑定桌面会话串行执行；未注入时使用进程内队列。 */
@@ -103,6 +62,8 @@ export interface DispatcherDeps {
   delivery?: ChannelDeliveryService;
   /** 出站消息组装器；未注入时按当前语音依赖创建。 */
   composer?: OutgoingComposer;
+  /** 渠道会话上下文；未注入时复用当前历史与绑定依赖创建。 */
+  context?: ChannelContext;
   /** 渲染端 chatWindow 用于镜像显示（可选） */
   getChatWindow?: () => { webContents: { isDestroyed(): boolean; send: (channel: string, ...args: unknown[]) => void }; isDestroyed(): boolean } | null;
   /** 完整 agent 调用。未注入时返回纯 echo（仅供联调）。
@@ -193,6 +154,7 @@ export class ChannelDispatcher {
    */
   async handleIncoming(msg: IncomingMessage): Promise<OutgoingMessage | null> {
     const sessionId = makeSessionId(msg.channel, msg.chatId);
+    const contextService = this.createContextService();
     return this.queue.run(`external:${sessionId}`, async () => {
       if (!this.limiter.tryConsume(msg.channel, msg.senderId)) {
         console.warn(LOG, `限速: ${msg.channel}:${msg.senderId}`);
@@ -205,37 +167,34 @@ export class ChannelDispatcher {
         console.warn(LOG, "observeExternalChat 失败（继续处理消息）:", err);
       }
 
-      const context = this.resolveDispatchContext(sessionId);
-      const execute = () => this.processIncoming(msg, context);
+      const context = contextService.resolveDispatchContext(sessionId);
+      const execute = () => this.processIncoming(msg, context, contextService);
       return context.boundConversationId
         ? this.queue.run(`conversation:${context.boundConversationId}`, execute)
         : execute();
     });
   }
 
-  private resolveDispatchContext(sessionId: string): DispatchContext {
-    let requestedBoundConversationId: string | null = null;
-    try {
-      requestedBoundConversationId = this.deps.resolveBoundConversationId?.(sessionId) ?? null;
-    } catch (err) {
-      // 绑定存储故障不能阻断外部渠道消息；降级到原有渠道独立上下文。
-      console.warn(LOG, "resolveBoundConversationId 失败（继续使用渠道上下文）:", err);
-    }
-    const hasBoundContext = Boolean(requestedBoundConversationId && this.deps.loadBoundConversationHistory);
-    const boundConversationId = hasBoundContext ? requestedBoundConversationId : null;
-    return { sessionId, boundConversationId };
+  /** 按当前注入函数创建本条消息使用的上下文服务。 */
+  private createContextService(): ChannelContext {
+    return this.deps.context ?? createChannelContext({
+      resolveBoundConversationId: this.deps.resolveBoundConversationId,
+      loadRecentChannelHistory: this.deps.loadRecentChannelHistory,
+      loadBoundConversationHistory: this.deps.loadBoundConversationHistory,
+      appendChannelHistory,
+      appendBoundConversationMessage: this.deps.appendBoundConversationMessage,
+      migrateHistory,
+    });
   }
 
   private async processIncoming(
     msg: IncomingMessage,
     context: DispatchContext,
+    contextService: ChannelContext,
   ): Promise<OutgoingMessage | null> {
-    const { sessionId, boundConversationId } = context;
+    const { sessionId } = context;
     // 绑定只选择历史与消息镜像目标，Agent 运行身份始终属于原渠道。
-    // 兼容旧版按 senderId 键控的历史：飞书 p2p 的 chatId(oc_) 与 senderId(ou_) 不同，
-    // 升级后迁移旧滑窗文件到新键，避免既有渠道用户上下文一次性丢失（微信两者同值、QQ 为新增渠道，均无影响）
-    migrateHistory(makeSessionId(msg.channel, msg.senderId), sessionId);
-    recordSession(msg.channel, msg.senderId, sessionId);
+    contextService.recordIncomingSession(msg, context);
     rememberProactiveChannelRecipient(msg, sessionId);
 
     // 入站消息广播到桌面端 chatWindow（让用户看到 bot 在和谁聊天）
@@ -275,46 +234,11 @@ export class ChannelDispatcher {
     // 消息追加给 agent，模型会把同一条消息读两遍。
     let priorMessages: ChatMessage[] | undefined;
     if (this.deps.buildAndRunAgent) {
-      try {
-        if (boundConversationId && this.deps.loadBoundConversationHistory) {
-          priorMessages = await this.deps.loadBoundConversationHistory(boundConversationId, 16);
-        } else if (this.deps.loadRecentChannelHistory) {
-          priorMessages = await this.deps.loadRecentChannelHistory(sessionId, 16);
-        }
-      } catch (err) {
-        console.warn(LOG, "加载绑定/渠道历史失败 (继续不带历史):", err);
-        if (boundConversationId && this.deps.loadRecentChannelHistory) {
-          try {
-            priorMessages = await this.deps.loadRecentChannelHistory(sessionId, 16);
-          } catch (fallbackErr) {
-            console.warn(LOG, "loadRecentChannelHistory fallback 失败:", fallbackErr);
-            priorMessages = undefined;
-          }
-        } else {
-          priorMessages = undefined;
-        }
-      }
+      priorMessages = await contextService.resolvePriorMessages(context, 16);
     }
 
     // 入站消息落对话历史（下一轮滑窗的数据源）
-    try {
-      appendChannelHistory(sessionId, "user", formatChannelUserText(msg));
-    } catch (err) {
-      console.warn(LOG, "appendHistory (incoming) 失败:", err);
-    }
-    if (boundConversationId && this.deps.appendBoundConversationMessage) {
-      try {
-        const agentUserText = formatChannelUserText(msg);
-        await this.deps.appendBoundConversationMessage(boundConversationId, "user", msg.text, {
-          channel: msg.channel,
-          chatType: msg.chatType ?? "private",
-          senderName: msg.senderName,
-          modelContext: agentUserText === msg.text ? undefined : agentUserText,
-        });
-      } catch (err) {
-        console.warn(LOG, "appendBoundConversationMessage (incoming) 失败:", err);
-      }
-    }
+    await contextService.appendIncomingContext(msg, context);
 
     // agent 调用；未注入 → echo
     let replyText: string;
@@ -416,30 +340,8 @@ export class ChannelDispatcher {
         console.warn(LOG, "appendLog (outgoing) 失败:", err);
       }
 
-      // 出站消息落对话历史（assistant 角色）
-      try {
-        appendChannelHistory(sessionId, "assistant", prepared.assistantText);
-      } catch (err) {
-        console.warn(LOG, "appendHistory (outgoing) 失败:", err);
-      }
-      if (boundConversationId && this.deps.appendBoundConversationMessage) {
-        try {
-          await this.deps.appendBoundConversationMessage(
-            boundConversationId,
-            "assistant",
-            prepared.assistantText,
-            {
-              channel: msg.channel,
-              chatType: msg.chatType ?? "private",
-              senderName: msg.senderName,
-              modelContext: undefined,
-              ...(prepared.stickerId ? { sticker: prepared.stickerId } : {}),
-            },
-          );
-        } catch (err) {
-          console.warn(LOG, "appendBoundConversationMessage (outgoing) 失败:", err);
-        }
-      }
+      // 助手上下文只在渠道确认发送成功后提交。
+      await contextService.appendAssistantContext(msg, context, prepared);
 
       return prepared.message;
     } finally {
