@@ -85,9 +85,24 @@ resources/mingit/
 .cache/music-component/
 dist/components/
 
-# NOTE: dist/renderer/audio, dist/renderer/avatars, dist/renderer/models,
-# dist/renderer/stickers are intentionally NOT ignored (product assets).
-# Lines above ignore Vite-bundled artifacts only.
+# === 显式产品资源白名单 ===
+# 上方 lines 4-23 + 64-86 忽略了 dist/ 下的 Vite 构建产物；
+# 以下路径默认被跟踪（无显式 ignore 匹配），是「有意豁免」的产品资源：
+#   - dist/renderer/audio        提示音 / 背景音
+#   - dist/renderer/avatars      角色头像资源
+#   - dist/renderer/stickers     表情贴纸
+#   - dist/renderer/icons        品牌 / 供应商 logo（含 deepseek / kimi / claude / glm / custom-endpoint）
+#   - dist/renderer/models       Live2D 模型 + 表情 + 物理 + 动作（核心产品资源，含 cyrene 角色）
+#   - dist/renderer/splash.html  启动屏（用户首次看到的画面，与各窗口 index.html 不同——splash 是真源非 Vite 产物）
+# 用 ! 显式列出 + 注释，让未来维护者一眼看清豁免逻辑，也防止后续误 ignore。
+# 新增产品资源请同步追加到此节。
+
+!dist/renderer/audio/
+!dist/renderer/avatars/
+!dist/renderer/stickers/
+!dist/renderer/icons/
+!dist/renderer/models/
+!dist/renderer/splash.html
 
 # Test & coverage
 coverage/
