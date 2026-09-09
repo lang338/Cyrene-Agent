@@ -30,6 +30,17 @@ body:
       required: true
 
   - type: dropdown
+    id: install-source
+    attributes:
+      label: 安装来源
+      options:
+        - 仓库源码（git clone + npm install / npm run dev）
+        - 预编译安装包（GitHub Releases 下载的 exe）
+        - 不确定 / 其他
+    validations:
+      required: true
+
+  - type: dropdown
     id: mode
     attributes:
       label: 出问题的会话模式
