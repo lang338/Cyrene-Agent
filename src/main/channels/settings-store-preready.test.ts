@@ -1,6 +1,6 @@
 // settings-store 在 app ready 之前的行为测试（2026-08-27 修复）。
 // 核心回归点：isSafeStorageAvailable 在 ready 前返回 false 但【不写缓存】，
-// 否则模块加载期的早期调用（channelDispatcher 是模块级单例）会把 false
+// 否则模块加载期的任何早期设置读取都会把 false
 // 永久缓存 → 之后 enc: 字段全部解密失败、加密全部降级混淆。
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import * as fs from "fs";

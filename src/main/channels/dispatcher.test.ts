@@ -1,11 +1,19 @@
 // dispatcher 核心单元测试：sessionId hash + 限速
 import * as os from "node:os";
 import { describe, it, expect, vi } from "vitest";
-import { ChannelDispatcher, makeSessionId } from "./dispatcher";
-import { appendHistory } from "./history-log";
-import { appendLog } from "./message-log";
+import {
+  ChannelDispatcher,
+  makeSessionId,
+  type DispatcherDeps,
+} from "./dispatcher";
+import { appendHistory, migrateHistory } from "./history-log";
+import { appendLog, reloadLogFromDisk } from "./message-log";
 import { createOutgoingComposer } from "./outgoing-composer";
-import type { ChannelContext } from "./channel-context";
+import { createChannelContext, type ChannelContext } from "./channel-context";
+import { createKeyedQueue } from "./keyed-queue";
+import { createChannelRateLimiter } from "./rate-limiter";
+import { createChannelDeliveryService } from "./delivery-service";
+import type { ChannelsSettings } from "./settings-store";
 import type { IncomingMessage } from "./types";
 
 vi.mock("electron", () => ({
@@ -52,11 +60,70 @@ describe("channels/dispatcher", () => {
     } as any;
   }
 
+  type TestDispatcherOptions = Partial<DispatcherDeps> & {
+    manager?: ReturnType<typeof makeManager>;
+    loadRecentChannelHistory?: Parameters<typeof createChannelContext>[0]["loadRecentChannelHistory"];
+    resolveBoundConversationId?: Parameters<typeof createChannelContext>[0]["resolveBoundConversationId"];
+    loadBoundConversationHistory?: Parameters<typeof createChannelContext>[0]["loadBoundConversationHistory"];
+    appendBoundConversationMessage?: Parameters<typeof createChannelContext>[0]["appendBoundConversationMessage"];
+  };
+
+  function makeDispatcher(options: TestDispatcherOptions): ChannelDispatcher {
+    const manager = options.manager ?? makeManager();
+    const baseComposer = options.composer ?? createOutgoingComposer({
+      resolveStickerImagePath: (stickerId) => stickerId === "OK" ? "C:/stickers/ok.png" : null,
+    });
+    return new ChannelDispatcher({
+      queue: options.queue ?? createKeyedQueue({ maxPendingPerKey: 20 }),
+      limiter: options.limiter ?? createChannelRateLimiter({
+        limits: { perUser: 10, perChannel: 100 },
+      }),
+      context: options.context ?? createChannelContext({
+        resolveBoundConversationId: options.resolveBoundConversationId,
+        loadRecentChannelHistory: options.loadRecentChannelHistory,
+        loadBoundConversationHistory: options.loadBoundConversationHistory,
+        appendChannelHistory: appendHistory,
+        appendBoundConversationMessage: options.appendBoundConversationMessage,
+        migrateHistory,
+      }),
+      composer: {
+        compose: (input) => baseComposer.compose({
+          ...input,
+          capability: manager.getAdapter(input.incoming.channel)?.capability,
+        }),
+        cleanupTransientFiles: (files) => baseComposer.cleanupTransientFiles(files),
+      },
+      delivery: options.delivery ?? createChannelDeliveryService(manager),
+      buildAndRunAgent: options.buildAndRunAgent ?? (async (msg) => ({
+        text: `[回声][${msg.channel}][${msg.senderId}] ${msg.text}`,
+        sticker: null,
+      })),
+      loadSettings: options.loadSettings ?? (() => ({
+        rateLimitPerUser: 10,
+        rateLimitPerChannel: 100,
+        ttsEnabled: true,
+        stickerEnabled: true,
+        mirrorToDesktop: true,
+      } as ChannelsSettings)),
+      loadGeneralSettings: options.loadGeneralSettings ?? (() => ({})),
+      observeExternalChat: options.observeExternalChat,
+      broadcastChat: options.broadcastChat,
+    });
+  }
+
   async function flushMicrotasks(rounds = 12): Promise<void> {
     for (let index = 0; index < rounds; index += 1) {
       await Promise.resolve();
     }
   }
+
+  it("构造调度器时不读取消息日志", () => {
+    vi.mocked(reloadLogFromDisk).mockClear();
+
+    makeDispatcher({});
+
+    expect(reloadLogFromDisk).not.toHaveBeenCalled();
+  });
 
   it("uses channel history and channel session when the chat is unbound", async () => {
     const loadRecentChannelHistory = vi.fn(async () => [{ role: "user" as const, content: "渠道旧消息" }]);
@@ -65,7 +132,7 @@ describe("channels/dispatcher", () => {
       expect(prior).toEqual([{ role: "user", content: "渠道旧消息" }]);
       return { text: "渠道回复", sticker: null };
     });
-    const dispatcher = new ChannelDispatcher({ manager: makeManager(), loadRecentChannelHistory, buildAndRunAgent });
+    const dispatcher = makeDispatcher({ manager: makeManager(), loadRecentChannelHistory, buildAndRunAgent });
 
     const result = await dispatcher.handleIncoming(makeIncoming());
 
@@ -94,7 +161,7 @@ describe("channels/dispatcher", () => {
       expect(prior).toEqual(priorMessages);
       return { text: "模块回复", sticker: null };
     });
-    const dispatcher = new ChannelDispatcher({
+    const dispatcher = makeDispatcher({
       manager: makeManager(),
       context: contextService,
       buildAndRunAgent,
@@ -121,7 +188,7 @@ describe("channels/dispatcher", () => {
       expect(prior).toEqual([{ role: "user", content: "桌面旧消息" }]);
       return { text: "共享回复", sticker: null };
     });
-    const dispatcher = new ChannelDispatcher({
+    const dispatcher = makeDispatcher({
       manager: makeManager(),
       loadRecentChannelHistory,
       loadBoundConversationHistory,
@@ -152,7 +219,7 @@ describe("channels/dispatcher", () => {
 
   it("keeps QQ group identity in model context without putting it in the visible bound message", async () => {
     const appendBoundConversationMessage = vi.fn();
-    const dispatcher = new ChannelDispatcher({
+    const dispatcher = makeDispatcher({
       manager: makeManager(),
       resolveBoundConversationId: () => "conversation-group",
       loadBoundConversationHistory: vi.fn(async () => []),
@@ -179,7 +246,7 @@ describe("channels/dispatcher", () => {
 
   it("persists the same selected built-in sticker in the bound desktop reply", async () => {
     const appendBoundConversationMessage = vi.fn();
-    const dispatcher = new ChannelDispatcher({
+    const dispatcher = makeDispatcher({
       manager: {
         getAdapter: () => ({
           capability: { text: true, image: true, audio: false, file: false, video: false, markdown: false, card: false, sticker: true, maxTextLength: 2048 },
@@ -202,7 +269,7 @@ describe("channels/dispatcher", () => {
 
   it("does not persist a selected sticker when the channel capability rejects stickers", async () => {
     const appendBoundConversationMessage = vi.fn();
-    const dispatcher = new ChannelDispatcher({
+    const dispatcher = makeDispatcher({
       manager: makeManager(),
       resolveBoundConversationId: () => "conversation-no-sticker",
       loadBoundConversationHistory: vi.fn(async () => []),
@@ -224,7 +291,7 @@ describe("channels/dispatcher", () => {
       expect(prior).toEqual([{ role: "user", content: "渠道回退" }]);
       return { text: "回复", sticker: null };
     });
-    const dispatcher = new ChannelDispatcher({
+    const dispatcher = makeDispatcher({
       manager: makeManager(),
       loadRecentChannelHistory,
       loadBoundConversationHistory,
@@ -245,7 +312,7 @@ describe("channels/dispatcher", () => {
       expect(prior).toEqual([{ role: "user", content: "渠道历史" }]);
       return { text: "回复", sticker: null };
     });
-    const dispatcher = new ChannelDispatcher({
+    const dispatcher = makeDispatcher({
       manager: makeManager(),
       loadRecentChannelHistory,
       resolveBoundConversationId: () => { throw new Error("绑定存储暂不可用"); },
@@ -264,7 +331,7 @@ describe("channels/dispatcher", () => {
     const appendBoundConversationMessage = vi.fn();
     const broadcastChat = vi.fn();
     const send = vi.fn(async () => ({ ok: false, error: "offline" }));
-    const dispatcher = new ChannelDispatcher({
+    const dispatcher = makeDispatcher({
       manager: makeManager(send),
       resolveBoundConversationId: () => "conversation-1",
       loadBoundConversationHistory: vi.fn(async () => []),
@@ -299,7 +366,7 @@ describe("channels/dispatcher", () => {
 
   it("通过注入的传输服务发送并在确认成功后提交", async () => {
     vi.mocked(appendHistory).mockClear();
-    const dispatcher = new ChannelDispatcher({
+    const dispatcher = makeDispatcher({
       manager: { getAdapter: () => undefined } as any,
       delivery: {
         send: vi.fn(async () => ({ ok: true })),
@@ -350,7 +417,7 @@ describe("channels/dispatcher", () => {
         },
       }),
     } as any;
-    const dispatcher = new ChannelDispatcher({
+    const dispatcher = makeDispatcher({
       manager,
       composer,
       delivery: {
@@ -383,7 +450,7 @@ describe("channels/dispatcher", () => {
       markFirstStarted = resolve;
     });
     let runCount = 0;
-    const dispatcher = new ChannelDispatcher({
+    const dispatcher = makeDispatcher({
       manager: makeManager(vi.fn(async (outgoing) => {
         events.push(`${outgoing.targetId}:sent`);
         return { ok: true };
@@ -425,7 +492,7 @@ describe("channels/dispatcher", () => {
     const firstStarted = new Promise<void>((resolve) => {
       markFirstStarted = resolve;
     });
-    const dispatcher = new ChannelDispatcher({
+    const dispatcher = makeDispatcher({
       manager: makeManager(vi.fn(async (outgoing) => {
         events.push(`${outgoing.targetId}:sent`);
         return { ok: true };
@@ -474,7 +541,7 @@ describe("channels/dispatcher", () => {
       release = resolve;
     });
     const sessionA = makeSessionId("qq", "chat-a");
-    const dispatcher = new ChannelDispatcher({
+    const dispatcher = makeDispatcher({
       manager: makeManager(),
       resolveBoundConversationId: (sessionId) => (
         sessionId === sessionA ? "conversation-a" : "conversation-b"

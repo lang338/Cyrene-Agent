@@ -21,18 +21,22 @@ import { loadChannelsSettings } from "./settings-store";
 import { enforceChannelAgentPolicy, resolveChannelAgentPolicy } from "./agent-policy";
 import { appendMessage, getSession, listSessions } from "../chats/chats-store";
 import { getChannelConversationBindingStore } from "./conversation-binding-store";
+import { ChannelDispatcher, type DispatcherDeps } from "./dispatcher";
 import {
-  setDispatcherBuildAndRunAgent,
-  setDispatcherBroadcastChat,
-  setDispatcherLoadGeneralSettings,
-  setDispatcherLoadRecentHistory,
-  setDispatcherObserveExternalChat,
-  setDispatcherResolveBoundConversation,
-  setDispatcherLoadBoundConversationHistory,
-  setDispatcherAppendBoundConversationMessage,
-  setDispatcherSynthesizeTts,
+  createChannelContext,
   formatChannelUserText,
-} from "./dispatcher";
+  type BoundConversationMessageMetadata,
+} from "./channel-context";
+import { appendHistory, migrateHistory } from "./history-log";
+import { createKeyedQueue } from "./keyed-queue";
+import { createChannelRateLimiter } from "./rate-limiter";
+import { createChannelDeliveryService } from "./delivery-service";
+import {
+  createOutgoingComposer,
+  type OutgoingComposer,
+  type SynthesizeChannelTts,
+} from "./outgoing-composer";
+import { channelManager } from "./manager";
 import {
   initializeChannels,
   startChannels,
@@ -64,20 +68,19 @@ export interface ChannelsSubsystemDeps {
 }
 
 /**
- * 组装 channels 子系统。构造期只注入 dispatcher 依赖（纯 setter 赋值），
+ * 组装渠道子系统。构造期只创建对象并连接依赖，
  * 不做任何初始化/启动 —— initialize / start / shutdown 必须显式调用。
  */
 export function createChannelsSubsystem(
   deps: ChannelsSubsystemDeps,
   lifecycle?: ChannelsLifecycleAdapter,
 ): ChannelsSubsystem {
-  setDispatcherLoadRecentHistory(async (sessionId, limit) => {
+  const loadRecentChannelHistory = async (sessionId: string, limit: number) => {
     const { loadRecentHistory } = await import("./history-log");
     return loadRecentHistory(sessionId, limit);
-  });
-  setDispatcherLoadGeneralSettings(loadGeneralSettings);
+  };
 
-  setDispatcherObserveExternalChat((sessionId, msg) => {
+  const observeExternalChat: DispatcherDeps["observeExternalChat"] = (sessionId, msg) => {
     getChannelConversationBindingStore().observe({
       sessionId,
       channel: msg.channel,
@@ -86,14 +89,14 @@ export function createChannelsSubsystem(
       ...(msg.senderName ? { senderName: msg.senderName } : {}),
       lastAt: msg.at.getTime(),
     });
-  });
+  };
 
-  setDispatcherResolveBoundConversation((sessionId) => {
+  const resolveBoundConversationId = (sessionId: string): string | null => {
     const conversationId = getChannelConversationBindingStore().resolve(sessionId);
     return conversationId && listSessions().some((session) => session.id === conversationId) ? conversationId : null;
-  });
+  };
 
-  setDispatcherLoadBoundConversationHistory(async (conversationId, limit) => {
+  const loadBoundConversationHistory = async (conversationId: string, limit: number) => {
     const session = getSession(conversationId);
     if (!session) return [];
     return session.messages
@@ -103,9 +106,14 @@ export function createChannelsSubsystem(
         role: message.role === "model" ? "assistant" as const : "user" as const,
         content: message.modelContext?.trim() || message.content,
       }));
-  });
+  };
 
-  setDispatcherAppendBoundConversationMessage((conversationId, role, content, metadata) => {
+  const appendBoundConversationMessage = (
+    conversationId: string,
+    role: "user" | "assistant",
+    content: string,
+    metadata: BoundConversationMessageMetadata,
+  ) => {
     const session = appendMessage(conversationId, {
       id: randomUUID(),
       role: role === "assistant" ? "model" : "user",
@@ -128,9 +136,13 @@ export function createChannelsSubsystem(
         console.warn("[Channels] bound conversation refresh failed:", err);
       }
     }
-  });
+  };
 
-  setDispatcherBuildAndRunAgent(async (msg, sessionId, priorMessages) => {
+  const buildAndRunAgent: DispatcherDeps["buildAndRunAgent"] = async (
+    msg,
+    sessionId,
+    priorMessages,
+  ) => {
     const channelResult: { text: string; sticker: string | null } = { text: "", sticker: null };
 
     const sandbox = loadChannelsSettings().toolSandbox;
@@ -254,14 +266,14 @@ export function createChannelsSubsystem(
         durationMs: Date.now() - runStartedAt,
       });
     }
-  });
+  };
 
-  setDispatcherSynthesizeTts(async (text: string, context) => {
+  const synthesizeTts: SynthesizeChannelTts = async (text, context) => {
     const cfg = loadGeneralSettings();
     return await deps.ttsSynthesisService.synthesizeChannelTts(text, cfg, context.channel);
-  });
+  };
 
-  setDispatcherBroadcastChat((event) => {
+  const broadcastChat: DispatcherDeps["broadcastChat"] = (event) => {
     const win = deps.getReactChatWindow();
     if (!win || win.isDestroyed()) return;
     try {
@@ -273,11 +285,51 @@ export function createChannelsSubsystem(
     } catch (err) {
       console.warn("[Channels] botMessage 广播失败:", err);
     }
+  };
+
+  const context = createChannelContext({
+    resolveBoundConversationId,
+    loadRecentChannelHistory,
+    loadBoundConversationHistory,
+    appendChannelHistory: appendHistory,
+    appendBoundConversationMessage,
+    migrateHistory,
+  });
+  const baseComposer = createOutgoingComposer({ synthesizeTts });
+  const composer: OutgoingComposer = {
+    compose: (input) => baseComposer.compose({
+      ...input,
+      capability: channelManager.getAdapter(input.incoming.channel)?.capability,
+    }),
+    cleanupTransientFiles: (files) => baseComposer.cleanupTransientFiles(files),
+  };
+  // 首次处理消息前，调度器会用实际设置重新配置这两个占位上限。
+  const limiter = createChannelRateLimiter({
+    limits: {
+      perUser: Number.MAX_SAFE_INTEGER,
+      perChannel: Number.MAX_SAFE_INTEGER,
+    },
+  });
+  const dispatcher = new ChannelDispatcher({
+    queue: createKeyedQueue({ maxPendingPerKey: 20 }),
+    limiter,
+    context,
+    composer,
+    delivery: createChannelDeliveryService(channelManager),
+    buildAndRunAgent,
+    loadSettings: loadChannelsSettings,
+    loadGeneralSettings,
+    observeExternalChat,
+    broadcastChat,
   });
 
   // 默认生命周期：委托到 init.ts 的显式操作（幂等）
   const defaultLifecycle: ChannelsLifecycleAdapter = {
-    initialize: () => initializeChannels(deps.ipc),
+    initialize: () => initializeChannels({
+      ipc: deps.ipc,
+      handleIncoming: (msg) => dispatcher.handleIncoming(msg),
+      reloadDispatcherSettings: () => dispatcher.reloadSettings(),
+    }),
     start: (signal?: AbortSignal) => startChannels(signal),
     shutdown: () => shutdownChannels(),
   };
