@@ -20,8 +20,8 @@ body:
         - Windows 10
         - macOS (unsupported)
         - Linux (unsupported)
-      validations:
-        required: true
+    validations:
+      required: true
 
   - type: input
     id: node-version
@@ -29,8 +29,8 @@ body:
       label: Node.js 版本
       description: 运行 `node --version` 的输出
       placeholder: "v24.x.x"
-      validations:
-        required: true
+    validations:
+      required: true
 
   - type: input
     id: npm-version
@@ -38,8 +38,8 @@ body:
       label: npm 版本
       description: 运行 `npm --version` 的输出
       placeholder: "11.x.x"
-      validations:
-        required: true
+    validations:
+      required: true
 
   - type: textarea
     id: steps
@@ -51,8 +51,8 @@ body:
         2. cd Cyrene-Agent
         3. npm install
         4. ...
-      validations:
-        required: true
+    validations:
+      required: true
 
   - type: textarea
     id: error
@@ -61,21 +61,21 @@ body:
       description: |
         完整错误信息。请用 `npm install 2>&1 | tee log.txt` 保存日志，
         然后粘贴 `log.txt` 最后 ~50 行。
-      validations:
-        required: true
+    validations:
+      required: true
 
   - type: textarea
     id: expected
     attributes:
       label: 期望行为
       description: 你期望发生什么？实际发生了什么？
-      validations:
-        required: false
+    validations:
+      required: false
 
   - type: textarea
     id: screenshots
     attributes:
       label: 截图
       description: 如果有报错截图，请拖拽上传
-      validations:
-        required: false
+    validations:
+      required: false
