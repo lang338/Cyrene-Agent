@@ -16,8 +16,8 @@ body:
       label: 应用版本
       description: 设置页 / 关于页显示的版本号（如 v1.1.9）
       placeholder: "v1.x.x"
-      validations:
-        required: true
+    validations:
+      required: true
 
   - type: dropdown
     id: os
@@ -26,8 +26,8 @@ body:
       options:
         - Windows 11
         - Windows 10
-      validations:
-        required: true
+    validations:
+      required: true
 
   - type: dropdown
     id: mode
@@ -40,8 +40,8 @@ body:
         - learn（学习）
         - code（编程）
         - 不确定 / 其他入口（渠道、定时任务等）
-      validations:
-        required: true
+    validations:
+      required: true
 
   - type: textarea
     id: steps
@@ -52,24 +52,24 @@ body:
         1.
         2.
         3.
-      validations:
-        required: true
+    validations:
+      required: true
 
   - type: textarea
     id: actual
     attributes:
       label: 实际行为
       description: 实际发生了什么？有没有报错提示？
-      validations:
-        required: true
+    validations:
+      required: true
 
   - type: textarea
     id: expected
     attributes:
       label: 期望行为
       description: 你认为应该发生什么？
-      validations:
-        required: false
+    validations:
+      required: false
 
   - type: textarea
     id: logs
@@ -78,8 +78,8 @@ body:
       description: |
         如有报错弹窗、异常截图请拖拽上传。
         日志位于 `%APPDATA%/live2d-cyrene/logs/`，可粘贴相关片段。
-      validations:
-        required: false
+    validations:
+      required: false
 
   - type: input
     id: frequency
@@ -87,5 +87,5 @@ body:
       label: 出现频率
       description: 必现 / 偶现（大约多少次出一次）
       placeholder: "必现 / 偶现（约 N 次出 1 次）"
-      validations:
-        required: false
+    validations:
+      required: false
