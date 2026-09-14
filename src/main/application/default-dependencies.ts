@@ -84,6 +84,7 @@ import { registerMomentsIpc } from "../moments/moments-ipc";
 import { registerChatUiIpc, getActiveChatSessionId } from "../chats/chat-ui-ipc";
 import { createToastWindowController } from "../toast/toast-window";
 import { createToastService } from "../toast/toast-service";
+import { createTaskTtsService } from "../toast/task-tts-service";
 import { toastEvents } from "../toast/toast-events";
 import { createToastWindowShell } from "../windows/create-toast-window";
 import * as chatsStore from "../chats/chats-store";
@@ -553,7 +554,7 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         proactiveLifecycle: services.proactive,
         broadcastToAuxWindows,
       }),
-      wireToastCenter: ({ ipc, windowManager }) => {
+      wireToastCenter: ({ ipc, windowManager, services }) => {
         // 提醒中心组合根：窗口控制器 + 生命周期权威服务 + 事件总线订阅
         const toastWindowController = createToastWindowController({
           createWindow: createToastWindowShell,
@@ -578,12 +579,31 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           },
         });
         toastService.registerIpc(ipc);
+        // 定时任务完成语音播报（#82 增强层）：独立开关默认关；
+        // 复用宿主 TTS 合成链（用户自配引擎），播报文本 = outputPreview（听到=看到）
+        const taskTtsService = createTaskTtsService({
+          bus: toastEvents,
+          isEnabled: () => loadGeneralSettings().taskTtsEnabled,
+          // 借道非特殊处理渠道（qq）走默认合成分支：无 wechat(wav)/feishu(opus) 的转码副作用
+          synthesize: async (text) => {
+            const result = await services.tts.synthesizeChannelTts(text, loadGeneralSettings(), "qq");
+            return result ? { audio: result.audio, mime: result.mime } : null;
+          },
+          findActiveTaskToastId: (schedulerRunId) => {
+            const active = toastService
+              .getActiveToasts()
+              .find((item) => item.kind === "task-finished" && item.sourceId === schedulerRunId);
+            return active?.id ?? null;
+          },
+          send: (channel, payload) => toastWindowController.send(channel, payload),
+        });
         // 预创建隐藏窗口，提前加载渲染页，首次弹出零延迟
         toastWindowController.preload();
         shutdown.register({
           id: "toast-center",
           phase: "stopLocalResources",
           dispose: async () => {
+            taskTtsService.dispose();
             toastService.dispose();
             toastWindowController.dispose();
           },

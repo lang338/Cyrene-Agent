@@ -145,6 +145,7 @@ async function loadTtsConfig(): Promise<void> {
 
   // 播放交互
   ttsEl("tts-auto-read").checked = Boolean(ttsState.config.ttsAutoRead);
+  ttsEl("task-tts-enabled").checked = Boolean(ttsState.config.taskTtsEnabled);
   ttsEl("tts-speed").value = String(ttsState.config.ttsSpeed ?? 1);
   ttsEl("tts-volume").value = String(ttsState.config.ttsVolume ?? 1);
   // 自动朗读文本切分开关 + 切分模式按钮组（关闭时置灰按钮组）
@@ -274,6 +275,11 @@ document.querySelectorAll<HTMLButtonElement>("[data-engine]").forEach((btn) => {
 // 自动朗读开关
 ttsEl("tts-auto-read").addEventListener("change", () => {
   void saveTtsField("ttsAutoRead", ttsEl("tts-auto-read").checked);
+});
+
+// 定时任务完成播报开关（#82 增强层：昔涟朗读任务输出摘要）
+ttsEl("task-tts-enabled").addEventListener("change", () => {
+  void saveTtsField("taskTtsEnabled", ttsEl("task-tts-enabled").checked);
 });
 
 // 自动朗读文本切分开关（关闭时禁用切分模式按钮组并立即保存）

@@ -75,9 +75,11 @@ export const IPC = {
   SCHEDULER_EVENT: "scheduler:event",
 
   // 注意力 Toast 中心（右下角提醒弹窗；main 为生命周期唯一权威，渲染页纯表现层）
-  // main → toast 窗口：推送/更新条目（同 id 覆盖）、移除条目（关闭回执/点击消隐/通知档超时/结算清退）
+  // main → toast 窗口：推送/更新条目（同 id 覆盖）、移除条目（关闭回执/点击消隐/通知档超时/结算清退）；
+  // 任务语音播报（task-tts 增强层合成完成后下发，渲染页负责播放）
   TOAST_PUSH: "toast:push",
   TOAST_REMOVE: "toast:remove",
+  TOAST_TASK_TTS_PLAY: "toast:task-tts-play",
   // toast 窗口 → main：页面加载/重载后恢复当前显示列表；用户点击与关闭只带 toast id，
   // 跳转目标由主进程查权威状态解析；resize 上报内容区实际高度（高度协议）
   TOAST_GET_ALL: "toast:get-all",

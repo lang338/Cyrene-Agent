@@ -5,7 +5,7 @@
 // 结算信号到达才清记忆，此后同一业务重新 pending 可正常再弹。
 
 import { IPC } from "../../shared/ipc-channels";
-import type { ToastItem, ToastPushPayload } from "../../shared/toast-types";
+import type { ToastItem, ToastPushPayload, ToastRemoveReason } from "../../shared/toast-types";
 import type { IpcScope } from "../application/ipc-scope";
 import type { WindowActivationRequest } from "../application/window-activation";
 import type { ToastWindowController } from "./toast-window";
@@ -84,7 +84,11 @@ export function createToastService(deps: ToastServiceDeps) {
     deps.window.syncVisibility(true);
   }
 
-  function removeToast(id: string): void {
+  /**
+   * 移除并通知渲染页。reason 随载荷下发：语音播报层据此决定是否随停
+   * （仅 timeout 消隐不打断播报，用户关闭/结算清退立即停）。
+   */
+  function removeToast(id: string, reason: ToastRemoveReason): void {
     // 通知档提前结束（点击/关闭）时清掉自动消隐定时器
     const timer = notifyTimeouts.get(id);
     if (timer) {
@@ -92,7 +96,7 @@ export function createToastService(deps: ToastServiceDeps) {
       notifyTimeouts.delete(id);
     }
     if (!activeToasts.delete(id)) return;
-    deps.window.send(IPC.TOAST_REMOVE, id);
+    deps.window.send(IPC.TOAST_REMOVE, { id, reason });
     deps.window.syncVisibility(activeToasts.size > 0);
   }
 
@@ -116,7 +120,7 @@ export function createToastService(deps: ToastServiceDeps) {
   function settleActionToast(kind: ToastItem["kind"], sourceId: string): void {
     pendingSeen.delete(dedupeKey(kind, sourceId));
     const active = findActiveBySource(kind, sourceId);
-    if (active) removeToast(active.id);
+    if (active) removeToast(active.id, "settled");
   }
 
   // ── 四类等待操作档事件 ─────────────────────────────────
@@ -178,7 +182,7 @@ export function createToastService(deps: ToastServiceDeps) {
       planRunIds.delete(runId);
     } else {
       const active = findActiveBySource("plan-review", runId);
-      if (active) removeToast(active.id);
+      if (active) removeToast(active.id, "settled");
     }
   }
 
@@ -250,7 +254,7 @@ export function createToastService(deps: ToastServiceDeps) {
     // 提前结束（点击/手动关闭）时 removeToast 会清掉定时器
     const timer = setTimeout(() => {
       notifyTimeouts.delete(item.id);
-      removeToast(item.id);
+      removeToast(item.id, "timeout");
     }, TOAST_NOTIFY_TIMEOUT_MS);
     if (typeof timer.unref === "function") timer.unref();
     notifyTimeouts.set(item.id, timer);
@@ -274,12 +278,12 @@ export function createToastService(deps: ToastServiceDeps) {
         break;
     }
     // 点击即视觉消隐；等待操作档的去重记忆保留到业务结算
-    removeToast(id);
+    removeToast(id, "user");
   }
 
   function handleDismissed(id: string): void {
     // 手动关闭：视觉消失，去重记忆保留（等待操作档），结算信号负责最终清退
-    removeToast(id);
+    removeToast(id, "user");
   }
 
   // ── 订阅与 IPC 注册 ─────────────────────────────────────

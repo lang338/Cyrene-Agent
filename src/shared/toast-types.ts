@@ -43,6 +43,25 @@ export interface ToastPushPayload extends ToastItem {
   sound: boolean;
 }
 
+/** 移除原因：渲染页据此决定语音播报是否随之终止（仅超时消隐不打断播报） */
+export type ToastRemoveReason = "timeout" | "user" | "settled";
+
+/** 移除条目载荷：id + 消隐原因 */
+export interface ToastRemovePayload {
+  id: string;
+  reason: ToastRemoveReason;
+}
+
+/** 主进程合成完任务语音后下发的播放载荷 */
+export interface ToastTaskTtsPayload {
+  /** 关联的 task-finished toast id：渲染页据此与卡片绑定（移除时停播） */
+  toastId: string;
+  /** base64 音频数据 */
+  base64: string;
+  /** 音频 MIME（audio/mpeg / audio/wav / audio/pcm） */
+  mime: string;
+}
+
 /** 单窗口内最多同时显示的 toast 条数：等待操作档优先占位，超出容器内部滚动 */
 export const TOAST_MAX_VISIBLE = 4;
 
@@ -58,6 +77,8 @@ export interface ToastRendererApi {
   reportHeight(height: number): void;
   /** 订阅推送（同 id 覆盖）；返回退订函数 */
   onPush(callback: (payload: ToastPushPayload) => void): () => void;
-  /** 订阅移除（主进程已决定移除，渲染页播退出动画）；返回退订函数 */
-  onRemove(callback: (id: string) => void): () => void;
+  /** 订阅移除（主进程已决定移除，渲染页播退出动画；reason 供语音播报决定是否随停）；返回退订函数 */
+  onRemove(callback: (payload: ToastRemovePayload) => void): () => void;
+  /** 订阅任务语音播报（主进程合成完成后下发；渲染页负责播放与随卡片移除停播） */
+  onTaskTts(callback: (payload: ToastTaskTtsPayload) => void): () => void;
 }
