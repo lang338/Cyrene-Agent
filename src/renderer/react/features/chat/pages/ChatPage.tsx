@@ -903,6 +903,21 @@ export function ChatPage() {
     return session.id;
   }
 
+  /**
+   * 工作台入口放在 composer 底栏，work/code 模式常驻：
+   * 欢迎页（尚无会话）点击时先自动建会话，再打开工作台。
+   */
+  async function openWorkbench(): Promise<void> {
+    if (!activeSessionId) {
+      try {
+        await ensureSession(mode);
+      } catch {
+        return;
+      }
+    }
+    setWorkbenchOpen(true);
+  }
+
 
 
   async function initVaultStructure(sessionId: string, options?: { confirm?: boolean }) {
@@ -1347,9 +1362,6 @@ export function ChatPage() {
         onMaximize={() => window.chat?.toggleMaximize()}
         onCloseWindow={() => window.chat?.close()}
         onOpenSettings={() => sidebarApi()?.openSettings("appearance")}
-        onOpenWorkbench={(mode === "work" || mode === "code") && activeSessionId
-          ? () => setWorkbenchOpen(true)
-          : undefined}
       />
       <main
         className={`cy-page-main cy-workspace ${hasMessages ? "has-messages" : "is-empty"} ${isDraggingFiles ? "is-dragging-files" : ""}`}
@@ -1453,6 +1465,7 @@ export function ChatPage() {
             onQueueMessage={(value) => queueCurrentDraft(value)}
             onRemoveQueuedMessage={(id) => activeSessionId && removeQueuedMessage(activeSessionId, id)}
             onChooseWorkspace={() => void chooseWorkspace()}
+            onOpenWorkbench={(mode === "work" || mode === "code") ? () => void openWorkbench() : undefined}
             onChooseFiles={(files) => void chooseFiles(files)}
             onRemoveAttachment={removeAttachment}
             onScreenshot={() => void handleScreenshot()}
