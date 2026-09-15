@@ -11,6 +11,7 @@ import {
   buildRestoreConflictMessage,
   computeFilesToDelete,
   createCheckpointService,
+  mapWithConcurrency,
   splitNulOutput,
   type CheckpointGitClient,
   type CheckpointLogRecord,
@@ -301,6 +302,41 @@ describe("checkpoint-service", () => {
     const result = await service.restore("s1", hashOld);
     expect(result.restoredHash).toBe(hashOld);
     expect((client.deleteWorkspaceFiles as ReturnType<typeof vi.fn>).mock.calls[0][0]).toEqual(["废弃的文件.js"]);
+  });
+});
+
+describe("mapWithConcurrency（有界并发）", () => {
+  it("结果顺序与输入一致，空数组不启动 worker", async () => {
+    const items = ["a", "b", "c", "d", "e"];
+    const result = await mapWithConcurrency(items, 2, async (item) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return item.toUpperCase();
+    });
+    expect(result).toEqual(["A", "B", "C", "D", "E"]);
+    expect(await mapWithConcurrency([], 4, async () => "never")).toEqual([]);
+  });
+
+  it("同时进行的 worker 数不超过 limit（防止一次性打满文件描述符）", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    await mapWithConcurrency(Array.from({ length: 40 }, (_, i) => i), 8, async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      inFlight -= 1;
+      return null;
+    });
+    expect(peak).toBeLessThanOrEqual(8);
+    expect(peak).toBeGreaterThan(1); // 确实并发，而不是退化成串行
+  });
+
+  it("worker 抛错时整体 reject（fail-closed，不吞错误）", async () => {
+    await expect(
+      mapWithConcurrency([1, 2, 3], 2, async (item) => {
+        if (item === 2) throw new Error("EACCES: 权限不足");
+        return item;
+      }),
+    ).rejects.toThrow("EACCES");
   });
 });
 

@@ -335,6 +335,34 @@ function errorMessage(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
 }
 
+/** lstat 并发上限：目标快照可能有上万个文件，一次性 Promise.all 会打满文件描述符（EMFILE） */
+const LSTAT_CONCURRENCY = 32;
+
+/** 只有"路径确实不存在"才能当作无碰撞；其余 errno 必须向上抛（见 findIgnoredCollisions） */
+function isMissingPathError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+}
+
+/** 有界并发的 map：保持结果顺序，避免一次性打满资源 */
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 /** 大小写不敏感、去掉结尾分隔符的路径比较（Windows 盘符/用户目录可能写法不一） */
 function normalizeForCompare(target: string): string {
   return path.resolve(target).replace(/[\\/]+$/, "").toLowerCase();
@@ -601,28 +629,30 @@ function createRealCheckpointClient(input: { workspaceRoot: string; executable: 
     },
 
     async findIgnoredCollisions(hash) {
-      // 第一步：目标树里的文件，只保留磁盘上真实存在的（文件/符号链接）
+      // 第一步：目标树里的文件，只保留磁盘上真实存在的（文件/符号链接）。
+      // 并发有上限：快照可能有上万个文件，一次性 Promise.all 会打满文件描述符。
       const treeFiles = await this.listTreeFiles(hash);
-      const existing: string[] = [];
-      await Promise.all(
-        treeFiles.map(async (relative) => {
-          try {
-            const stat = await fs.promises.lstat(path.resolve(input.workspaceRoot, relative));
-            if (stat.isFile() || stat.isSymbolicLink()) existing.push(relative);
-          } catch {
-            // 磁盘上不存在：checkout 是新建而非覆盖，无碰撞
-          }
-        }),
-      );
+      const examined = await mapWithConcurrency(treeFiles, LSTAT_CONCURRENCY, async (relative) => {
+        try {
+          const stat = await fs.promises.lstat(path.resolve(input.workspaceRoot, relative));
+          return stat.isFile() || stat.isSymbolicLink() ? relative : null;
+        } catch (error) {
+          // 只有"磁盘上不存在"才算无碰撞（checkout 是新建而非覆盖）。
+          // 其余 errno（EMFILE/EACCES/…）必须向上抛：漏检会直接导致静默覆盖用户文件；
+          // 抛出时尚未打 pre-restore 快照、未动任何文件，是干净的 fail-closed。
+          if (isMissingPathError(error)) return null;
+          throw error;
+        }
+      });
+      const existing = examined.filter((relative): relative is string => relative !== null);
       // 第二步：批量问 git 哪些路径当前被忽略（已跟踪文件 git 自动不报，
-      // 那些文件的内容在用户自己的 git 历史里可达，不属于数据丢失场景）
+      // 那些文件的内容在用户自己的 git 历史里可达，不属于数据丢失场景）。
+      // 这里不再吞错误：实测 check-ignore 在"无匹配"时并不抛（simple-git 返回空输出），
+      // 一旦抛出就是真失败，必须中止回退，而不是当成"本批无冲突"。
       const conflicts = new Set<string>();
       for (let index = 0; index < existing.length; index += CHECK_IGNORE_BATCH) {
         const batch = existing.slice(index, index + CHECK_IGNORE_BATCH);
-        // 无匹配时 check-ignore 退出码为 1，simple-git 会 reject，按"本批无冲突"处理
-        const output = await git
-          .raw(["-c", "core.quotepath=false", "check-ignore", "--", ...batch])
-          .catch(() => "");
+        const output = await git.raw(["-c", "core.quotepath=false", "check-ignore", "--", ...batch]);
         for (const line of output.split("\n")) {
           if (line.length > 0) conflicts.add(line.replace(/\r$/, ""));
         }
