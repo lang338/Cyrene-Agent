@@ -271,13 +271,6 @@ export function WorkbenchPage({
             ‹ {t("workbench.back")}
           </button>
           <span className="cy-workbench__title">{t("workbench.title")}</span>
-        </div>
-        <div className="cy-workbench__topbar-right">
-          {error && (
-            <button type="button" className="cy-workbench__error" onClick={() => setError(null)} title={t("workbench.dismissError")}>
-              {error} ×
-            </button>
-          )}
           <button
             type="button"
             className="cy-workbench__action"
@@ -286,6 +279,49 @@ export function WorkbenchPage({
           >
             {snapshotBusy ? t("workbench.snapshotBusy") : t("workbench.manualSnapshot")}
           </button>
+        </div>
+        <div className="cy-workbench__topbar-right">
+          {error && (
+            <button type="button" className="cy-workbench__error" onClick={() => setError(null)} title={t("workbench.dismissError")}>
+              {error} ×
+            </button>
+          )}
+          <div className="cy-workbench__win-controls">
+            <button
+              type="button"
+              className="cy-workbench__win-btn"
+              onClick={() => window.chat?.minimize()}
+              aria-label={t("ui.minimize")}
+              title={t("ui.minimize")}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                <rect x="1.5" y="5.5" width="9" height="1" rx="0.5" fill="currentColor" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className="cy-workbench__win-btn"
+              onClick={() => window.chat?.toggleMaximize()}
+              aria-label={t("ui.maximizeOrRestore")}
+              title={t("ui.maximizeOrRestore")}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                <rect x="1.5" y="1.5" width="9" height="9" rx="1" fill="none" stroke="currentColor" strokeWidth="1.1" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className="cy-workbench__win-btn cy-workbench__win-btn--close"
+              onClick={() => window.chat?.close()}
+              aria-label={t("ui.closeChatWindow")}
+              title={t("ui.closeChatWindow")}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                <line x1="2.5" y1="2.5" x2="9.5" y2="9.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                <line x1="9.5" y1="2.5" x2="2.5" y2="9.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
         </div>
       </header>
 

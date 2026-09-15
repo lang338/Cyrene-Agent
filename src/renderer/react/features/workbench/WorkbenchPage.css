@@ -26,10 +26,16 @@
   justify-content: space-between;
   gap: 12px;
   height: 42px;
-  padding: 0 12px;
+  padding: 0 0 0 12px;
   background: #232529;
   border-bottom: 1px solid #2f3238;
   flex: none;
+  /* 工作台是全屏覆盖层、盖住了系统标题栏：顶栏承担拖拽移动窗口的职责 */
+  -webkit-app-region: drag;
+}
+
+.cy-workbench__topbar button {
+  -webkit-app-region: no-drag;
 }
 
 .cy-workbench__topbar-left,
@@ -109,6 +115,37 @@
   background: #5c3535;
   border-color: #7a4545;
   color: #e5a3a3;
+}
+
+/* ── 窗口控制（Windows 风格扁平键） ───────────────────── */
+
+.cy-workbench__win-controls {
+  display: flex;
+  align-items: stretch;
+  height: 42px;
+}
+
+.cy-workbench__win-btn {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 42px;
+  border: none;
+  background: transparent;
+  color: #c4c7cc;
+  cursor: pointer;
+  border-radius: 0;
+  transition: background 0.12s, color 0.12s;
+}
+
+.cy-workbench__win-btn:hover {
+  background: #34373d;
+  color: #f0f0f0;
+}
+
+.cy-workbench__win-btn--close:hover {
+  background: #e81123;
+  color: #fff;
 }
 
 /* ── 三栏 ─────────────────────────────────────────────── */
