@@ -859,6 +859,98 @@
   color: #9aa0a8;
 }
 
+/* 代码块（antd-x CodeHighlighter）深色化。
+   注意：组件即使传 prismLightMode={false}，配色仍硬编码 oneLight（浅色白底），
+   且 prism 把颜色以内联 style 注入到 pre/code/token span 上，这里必须 !important 覆盖。
+   主窗口是浅色主题，保持原样不动。 */
+.cy-workbench .ant-code-highlighter-header {
+  background: #262a31;
+  color: #9aa0a8;
+}
+
+.cy-workbench .ant-code-highlighter-header-title {
+  color: #7e858f;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.cy-workbench .ant-code-highlighter-code {
+  background: #16181d;
+  border-color: #34383f;
+}
+
+/* 复制按钮颜色 inherit 自 header；补一个深底下的悬停反馈 */
+.cy-workbench .ant-actions-copy:hover {
+  color: #e8e8e8 !important;
+  background: rgb(255 255 255 / 8%);
+}
+
+/* 代码容器：去白底、窄栏折行（长路径/长 URL 不再撑出横向滚动条）、收紧行距 */
+.cy-workbench .ant-code-highlighter-code pre[class*="language-"],
+.cy-workbench .ant-code-highlighter-code code[class*="language-"] {
+  background: transparent !important;
+  color: #d7dade !important;
+  text-shadow: none !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+/* prism token：oneDark 调色板（全部以内联样式注入，故 !important） */
+.cy-workbench .ant-code-highlighter-code .token.comment,
+.cy-workbench .ant-code-highlighter-code .token.prolog,
+.cy-workbench .ant-code-highlighter-code .token.doctype,
+.cy-workbench .ant-code-highlighter-code .token.cdata {
+  color: #7f848e !important;
+}
+
+.cy-workbench .ant-code-highlighter-code .token.punctuation {
+  color: #abb2bf !important;
+}
+
+.cy-workbench .ant-code-highlighter-code .token.property,
+.cy-workbench .ant-code-highlighter-code .token.tag,
+.cy-workbench .ant-code-highlighter-code .token.constant,
+.cy-workbench .ant-code-highlighter-code .token.symbol,
+.cy-workbench .ant-code-highlighter-code .token.deleted,
+.cy-workbench .ant-code-highlighter-code .token.variable {
+  color: #e06c75 !important;
+}
+
+.cy-workbench .ant-code-highlighter-code .token.boolean,
+.cy-workbench .ant-code-highlighter-code .token.number {
+  color: #d19a66 !important;
+}
+
+.cy-workbench .ant-code-highlighter-code .token.selector,
+.cy-workbench .ant-code-highlighter-code .token.attr-name,
+.cy-workbench .ant-code-highlighter-code .token.string,
+.cy-workbench .ant-code-highlighter-code .token.char,
+.cy-workbench .ant-code-highlighter-code .token.builtin,
+.cy-workbench .ant-code-highlighter-code .token.inserted {
+  color: #98c379 !important;
+}
+
+.cy-workbench .ant-code-highlighter-code .token.operator,
+.cy-workbench .ant-code-highlighter-code .token.entity,
+.cy-workbench .ant-code-highlighter-code .token.url,
+.cy-workbench .ant-code-highlighter-code .language-css .token.string,
+.cy-workbench .ant-code-highlighter-code .style .token.string,
+.cy-workbench .ant-code-highlighter-code .token.regex,
+.cy-workbench .ant-code-highlighter-code .token.important,
+.cy-workbench .ant-code-highlighter-code .token.atrule,
+.cy-workbench .ant-code-highlighter-code .token.attr-value,
+.cy-workbench .ant-code-highlighter-code .token.keyword {
+  color: #c678dd !important;
+}
+
+.cy-workbench .ant-code-highlighter-code .token.function,
+.cy-workbench .ant-code-highlighter-code .token.class-name {
+  color: #61afef !important;
+}
+
 .cy-workbench .cy-message--assistant .cy-message-markdown th,
 .cy-workbench .cy-message--assistant .cy-message-markdown td {
   border-color: #3a3e45;
