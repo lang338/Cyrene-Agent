@@ -7,6 +7,7 @@ import { NewTaskButton } from "../../../components/ui/NewTaskButton";
 import { PluginModeButton } from "../../../components/ui/PluginModeButton";
 import { SettingsButton } from "../../../components/ui/SettingsButton";
 import { SidebarToggle } from "../../../components/ui/SidebarToggle";
+import { useTranslation } from "../../../i18n";
 import { SkillModeButton } from "../../../components/ui/SkillModeButton";
 import { ToolModeButton } from "../../../components/ui/ToolModeButton";
 import { UserAvatar } from "../../../components/ui/UserAvatar";
