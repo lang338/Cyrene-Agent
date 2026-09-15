@@ -75,7 +75,7 @@ export function WorkbenchPage({
   const { t } = useTranslation();
   const columns = useResizableColumns({
     storageKey: "cy-workbench-columns",
-    initial: [260, 640],
+    initial: { left: 260, right: 360 },
   });
 
   const [middleTab, setMiddleTab] = useState<"code" | "history">("code");
@@ -328,7 +328,7 @@ export function WorkbenchPage({
         </div>
       </header>
 
-      <div className="cy-workbench__body">
+      <div className="cy-workbench__body" ref={columns.bodyRef}>
         <aside className="cy-workbench__col cy-workbench__col--left" style={{ width: columns.left }}>
           <div className="cy-workbench__col-header">{t("workbench.filesHeader")}</div>
           <div className="cy-workbench__col-body">
@@ -341,13 +341,15 @@ export function WorkbenchPage({
           </div>
         </aside>
 
-        <div
-          className="cy-workbench__resizer"
-          onPointerDown={(event) => columns.beginDrag(0, event)}
-          onDoubleClick={() => void 0}
-        />
+        {!columns.leftCollapsed && (
+          <div
+            className="cy-workbench__resizer"
+            title={t("workbench.resizerHint")}
+            onPointerDown={(event) => columns.beginDrag("left", event)}
+          />
+        )}
 
-        <section className="cy-workbench__col cy-workbench__col--middle" style={{ width: columns.middle }}>
+        <section className="cy-workbench__col cy-workbench__col--middle">
           <div className="cy-workbench__col-header cy-workbench__col-header--tabs">
             <button
               type="button"
@@ -456,13 +458,15 @@ export function WorkbenchPage({
           )}
         </section>
 
-        <div
-          className="cy-workbench__resizer"
-          onPointerDown={(event) => columns.beginDrag(1, event)}
-          onDoubleClick={() => void 0}
-        />
+        {!columns.rightCollapsed && (
+          <div
+            className="cy-workbench__resizer"
+            title={t("workbench.resizerHint")}
+            onPointerDown={(event) => columns.beginDrag("right", event)}
+          />
+        )}
 
-        <section className="cy-workbench__col cy-workbench__col--right">
+        <section className="cy-workbench__col cy-workbench__col--right" style={{ width: columns.right }}>
           <div className="cy-workbench__col-header">{t("workbench.chatHeader")}</div>
           <div className="cy-workbench__col-body cy-workbench__chat-body">
             {messages.length > 0 && (
@@ -509,6 +513,34 @@ export function WorkbenchPage({
             </div>
           </div>
         </section>
+
+        {/* 收起后的找回入口：贴在窗口最左/最右边缘，鼠标移上去浮现箭头 */}
+        {columns.leftCollapsed && (
+          <button
+            type="button"
+            className="cy-workbench__reveal cy-workbench__reveal--left"
+            onClick={() => columns.reveal("left")}
+            title={t("workbench.expandLeft")}
+            aria-label={t("workbench.expandLeft")}
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+              <path d="m3 1 4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )}
+        {columns.rightCollapsed && (
+          <button
+            type="button"
+            className="cy-workbench__reveal cy-workbench__reveal--right"
+            onClick={() => columns.reveal("right")}
+            title={t("workbench.expandRight")}
+            aria-label={t("workbench.expandRight")}
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+              <path d="m7 1-4 4 4 4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )}
       </div>
     </div>,
     document.body,
