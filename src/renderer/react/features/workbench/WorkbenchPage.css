@@ -2,11 +2,21 @@
    z-index 900：低于 antd Modal（1000），保证回退确认弹窗浮在工作台之上。 */
 
 .cy-workbench {
+  /* 分隔线：主窗口是透明窗体 + .cy-page 自绘圆角；工作台被 portal 到 body，
+     在 .cy-page 之外，必须自己再画一次圆角，否则深色底会盖住窗口圆角、四角变直角。
+     内部各功能分区共用这两条亮线，避免整块深色糊成一团。 */
+  --cy-wb-line: rgba(255, 255, 255, 0.10);
+  --cy-wb-line-strong: rgba(255, 255, 255, 0.18);
+
   position: fixed;
   inset: 0;
   z-index: 900;
   display: flex;
   flex-direction: column;
+  box-sizing: border-box;
+  border: 1px solid var(--cy-wb-line-strong);
+  border-radius: var(--cy-window-radius, 24px);
+  overflow: hidden;
   background: #1b1d21;
   color: #d4d4d4;
   color-scheme: dark;
@@ -28,7 +38,7 @@
   height: 42px;
   padding: 0 0 0 12px;
   background: #232529;
-  border-bottom: 1px solid #2f3238;
+  border-bottom: 1px solid var(--cy-wb-line-strong);
   flex: none;
   /* 工作台是全屏覆盖层、盖住了系统标题栏：顶栏承担拖拽移动窗口的职责 */
   -webkit-app-region: drag;
@@ -187,7 +197,8 @@
   padding: 0 10px;
   font-size: 12px;
   color: #9aa0a8;
-  border-bottom: 1px solid #2f3238;
+  background: #202329;
+  border-bottom: 1px solid var(--cy-wb-line);
   flex: none;
 }
 
@@ -201,15 +212,32 @@
   overflow: auto;
 }
 
+/* 列间隔：保留 5px 命中区，视觉上收成 1px 亮线，拖动时整条高亮 */
 .cy-workbench__resizer {
+  position: relative;
   width: 5px;
   cursor: col-resize;
-  background: #26282d;
+  background: transparent;
   flex: none;
   transition: background 0.15s;
 }
 
+.cy-workbench__resizer::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 50%;
+  width: 1px;
+  background: var(--cy-wb-line);
+  transition: background 0.15s, width 0.15s, transform 0.15s;
+}
+
 .cy-workbench__resizer:hover {
+  background: rgba(47, 111, 235, 0.12);
+}
+
+.cy-workbench__resizer:hover::after {
+  width: 2px;
+  transform: translateX(-0.5px);
   background: #2f6feb;
 }
 
@@ -252,7 +280,7 @@
   flex-wrap: wrap;
   gap: 2px;
   padding: 4px 6px;
-  border-bottom: 1px solid #2f3238;
+  border-bottom: 1px solid var(--cy-wb-line);
   flex: none;
   max-height: 64px;
   overflow-y: auto;
@@ -262,7 +290,7 @@
   display: inline-flex;
   align-items: center;
   background: #232529;
-  border: 1px solid #2f3238;
+  border: 1px solid var(--cy-wb-line);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -316,7 +344,7 @@
   font-size: 12px;
   color: #d8b26a;
   background: #322b1e;
-  border-bottom: 1px solid #4a4028;
+  border-bottom: 1px solid var(--cy-wb-line);
   flex: none;
 }
 
@@ -401,7 +429,7 @@
   list-style: none;
   margin: 0;
   padding: 6px 4px;
-  border-bottom: 1px solid #2f3238;
+  border-bottom: 1px solid var(--cy-wb-line);
   flex: none;
   max-height: 40%;
   overflow-y: auto;
@@ -536,7 +564,7 @@
   font-size: 12px;
   line-height: 1.5;
   background: #16171a;
-  border: 1px solid #2f3238;
+  border: 1px solid var(--cy-wb-line);
   border-radius: 8px;
   padding: 8px;
   overflow: auto;
@@ -605,7 +633,7 @@
 
 .cy-workbench__chat-composer {
   flex: none;
-  border-top: 1px solid #2f3238;
+  border-top: 1px solid var(--cy-wb-line);
   padding: 8px;
   display: flex;
   flex-direction: column;
@@ -619,7 +647,7 @@
   max-height: 140px;
   resize: vertical;
   background: #1b1d21;
-  border: 1px solid #2f3238;
+  border: 1px solid var(--cy-wb-line);
   border-radius: 8px;
   color: #d4d4d4;
   font-size: 13px;
