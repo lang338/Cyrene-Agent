@@ -1346,6 +1346,9 @@ export function ChatPage() {
         onMaximize={() => window.chat?.toggleMaximize()}
         onCloseWindow={() => window.chat?.close()}
         onOpenSettings={() => sidebarApi()?.openSettings("appearance")}
+        onOpenWorkbench={(mode === "work" || mode === "code") && activeSessionId
+          ? () => setWorkbenchOpen(true)
+          : undefined}
       />
       <main
         className={`cy-page-main cy-workspace ${hasMessages ? "has-messages" : "is-empty"} ${isDraggingFiles ? "is-dragging-files" : ""}`}
