@@ -5,11 +5,14 @@
 
 import { loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
-import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
-import CssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
-import HtmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
-import TsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
+// 注意：monaco-editor 0.56 的 package.json exports 只暴露 esm/vs 下的短路径
+// （"./*": "./esm/vs/*.js"）。写 monaco-editor/esm/vs/... 会被映射成
+// esm/vs/esm/vs/... 导致 vite dev 解析 500；生产构建恰好绕过 exports 才掩盖了问题。
+import EditorWorker from "monaco-editor/editor/editor.worker?worker";
+import JsonWorker from "monaco-editor/language/json/json.worker?worker";
+import CssWorker from "monaco-editor/language/css/css.worker?worker";
+import HtmlWorker from "monaco-editor/language/html/html.worker?worker";
+import TsWorker from "monaco-editor/language/typescript/ts.worker?worker";
 
 let configured = false;
 
