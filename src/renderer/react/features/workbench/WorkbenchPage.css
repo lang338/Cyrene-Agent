@@ -673,6 +673,53 @@
   font-size: 13px;
 }
 
+/* "带上当前文件"开关：把"这一轮发了什么上下文"显式告诉用户，避免黑箱感 */
+.cy-workbench__context-chip {
+  display: inline-flex;
+  align-self: flex-start;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--cy-wb-line);
+  border-radius: 999px;
+  background: transparent;
+  color: #8a9099;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.cy-workbench__context-chip > span.cy-workbench__context-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: #5b6169;
+  transition: background 0.15s;
+}
+
+.cy-workbench__context-chip.is-on {
+  border-color: rgba(47, 111, 235, 0.55);
+  background: rgba(47, 111, 235, 0.14);
+  color: #a9c6f7;
+}
+
+.cy-workbench__context-chip.is-on > span.cy-workbench__context-dot {
+  background: #4d8bf5;
+}
+
+.cy-workbench__context-chip:hover:not(:disabled) {
+  color: #d4d4d4;
+  border-color: var(--cy-wb-line-strong);
+}
+
+.cy-workbench__context-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .cy-workbench__chat-composer {
   flex: none;
   border-top: var(--cy-wb-line-w) solid var(--cy-wb-line);

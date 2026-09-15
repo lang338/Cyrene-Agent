@@ -11,6 +11,7 @@ import type { ConversationMode } from "../../../../shared/chat-types";
 import type { WorkbenchFileContent } from "../../../../shared/code-workbench-types";
 import { ChatMessageList, type ChatMessageItem } from "../chat/components/ChatMessageList";
 import { monacoLanguageFor, setupMonaco } from "./monaco-setup";
+import { buildActiveFileContext, type ActiveFileSelection } from "./active-file-context";
 import { useResizableColumns } from "./use-resizable-columns";
 import { workbenchApi, WorkspaceTree } from "./WorkspaceTree";
 import { CheckpointTimeline } from "./CheckpointTimeline";
@@ -25,8 +26,9 @@ export interface WorkbenchPageProps {
   preferredAddress: string;
   stickerSize?: "small" | "standard" | "large";
   onTtsCacheKey?: (messageId: string, cacheKey: string, converterVersion: string) => void;
-  /** 发送文本到会话；返回 true 表示已接受（忙时主进程侧自动排队） */
-  onSendText: (text: string) => Promise<boolean>;
+  /** 发送文本到会话；返回 true 表示已接受（忙时主进程侧自动排队）。
+   *  contextAttachments 为本轮临时上下文（工作台当前打开的文件），不落历史。 */
+  onSendText: (text: string, contextAttachments?: Array<{ name: string; text: string }>) => Promise<boolean>;
   onCancelRun: () => void;
   onClose: () => void;
 }
@@ -60,6 +62,25 @@ function fileBaseName(path: string): string {
   return normalized.split("/").pop() ?? path;
 }
 
+/** "发送时带上当前文件"开关的持久化键；缺省为开 */
+const INCLUDE_ACTIVE_FILE_KEY = "cy-workbench-include-active-file";
+
+function readIncludeActiveFile(): boolean {
+  try {
+    return localStorage.getItem(INCLUDE_ACTIVE_FILE_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function persistIncludeActiveFile(value: boolean): void {
+  try {
+    localStorage.setItem(INCLUDE_ACTIVE_FILE_KEY, value ? "1" : "0");
+  } catch {
+    // 存不进就只在本会话生效
+  }
+}
+
 export function WorkbenchPage({
   sessionId,
   mode,
@@ -87,6 +108,7 @@ export function WorkbenchPage({
   const [snapshotBusy, setSnapshotBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [chatDraft, setChatDraft] = useState("");
+  const [includeActiveFile, setIncludeActiveFile] = useState(readIncludeActiveFile);
 
   const editorRef = useRef<monacoNs.editor.IStandaloneCodeEditor | null>(null);
   const autoSnapshotTimer = useRef<number | null>(null);
@@ -258,11 +280,50 @@ export function WorkbenchPage({
     }
   }, [sessionId, snapshotBusy]);
 
+  /** 读编辑器当前选中片段；无选区、不在代码页签、或编辑器已销毁时返回 null */
+  const readEditorSelection = useCallback((): ActiveFileSelection | null => {
+    // 历史页签下编辑器已卸载，editorRef 可能仍指向已销毁实例
+    if (middleTab !== "code") return null;
+    try {
+      const editor = editorRef.current;
+      const model = editor?.getModel();
+      const selection = editor?.getSelection();
+      if (!editor || !model || !selection || selection.isEmpty()) return null;
+      const text = model.getValueInRange(selection);
+      if (!text.trim()) return null;
+      return { startLine: selection.startLineNumber, endLine: selection.endLineNumber, text };
+    } catch {
+      return null; // 编辑器已销毁：当作无选区，不影响发送
+    }
+  }, [middleTab]);
+
+  const toggleIncludeActiveFile = useCallback(() => {
+    setIncludeActiveFile((current) => {
+      const next = !current;
+      persistIncludeActiveFile(next);
+      return next;
+    });
+  }, []);
+
   const sendChat = useCallback(async () => {
     const text = chatDraft.trim();
     if (!text) return;
-    if (await onSendText(text)) setChatDraft("");
-  }, [chatDraft, onSendText]);
+    // 上下文在"发送这一刻"构建：带上用户此刻真正在看的内容
+    const entry = activePath ? buffersRef.current[activePath] : undefined;
+    const context = includeActiveFile && activePath
+      ? buildActiveFileContext({
+        relativePath: activePath,
+        content: entry?.content ?? "",
+        dirty: Boolean(entry?.dirty),
+        // 二进制/被截断的文件内容不可信，只给路径
+        readOnly: Boolean(entry?.binary || entry?.truncated),
+        // 还在读盘或读失败：内容未知，不要对模型谎称"已保存"
+        pending: Boolean(entry?.loading || entry?.error),
+        selection: readEditorSelection(),
+      })
+      : null;
+    if (await onSendText(text, context ? [context] : undefined)) setChatDraft("");
+  }, [activePath, chatDraft, includeActiveFile, onSendText, readEditorSelection]);
 
   const activeEntry = activePath ? buffers[activePath] : undefined;
 
@@ -483,6 +544,21 @@ export function WorkbenchPage({
               <div className="cy-workbench__chat-empty">{t("workbench.chatEmpty")}</div>
             )}
             <div className="cy-workbench__chat-composer">
+              <button
+                type="button"
+                className={`cy-workbench__context-chip ${includeActiveFile && activePath ? "is-on" : ""}`}
+                onClick={toggleIncludeActiveFile}
+                disabled={!activePath}
+                aria-pressed={includeActiveFile}
+                title={t("workbench.includeActiveFileHint")}
+              >
+                <span className="cy-workbench__context-dot" aria-hidden="true" />
+                {!activePath
+                  ? t("workbench.includeActiveFileEmpty")
+                  : includeActiveFile
+                    ? t("workbench.includeActiveFileOn", { name: fileBaseName(activePath) })
+                    : t("workbench.includeActiveFile")}
+              </button>
               <textarea
                 className="cy-workbench__chat-input"
                 value={chatDraft}

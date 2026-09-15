@@ -164,6 +164,44 @@ describe("AgentRunController", () => {
     await promise;
   });
 
+  it("本轮临时上下文（工作台当前打开的文件）作为 attachments 传给主进程，且不落历史", async () => {
+    const api = createFakeApi({ success: true, runId: "run-1" });
+    const store = createFakeStore();
+    const { host } = createRecordingHost();
+    const context = [{
+      name: "src/main/foo.ts",
+      text: "[工作台当前打开的文件]\n路径（相对工作区根）：src/main/foo.ts",
+    }];
+    const input = createInput({ contextAttachments: context });
+    const { promise } = launch(input, { api, store, host, registries: createRegistries() });
+    await flush();
+
+    expect(api.run).toHaveBeenCalledWith(expect.objectContaining({ attachments: context }));
+    // 关键：上下文只进本轮 prompt，历史消息里仍只有用户原文
+    expect(api.run).toHaveBeenCalledWith(expect.objectContaining({
+      messages: [expect.objectContaining({ content: "你好" })],
+    }));
+
+    api.emit(RUN_STARTED_EVENT);
+    api.emit({ type: "RUN_FINISHED", runId: "run-1", result: { status: "success" } });
+    await promise;
+  });
+
+  it("没有本轮上下文时不携带 attachments 字段（不给主进程塞空数组）", async () => {
+    const api = createFakeApi({ success: true, runId: "run-1" });
+    const store = createFakeStore();
+    const { host } = createRecordingHost();
+    const { promise } = launch(createInput(), { api, store, host, registries: createRegistries() });
+    await flush();
+
+    const payload = (api.run as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>;
+    expect("attachments" in payload).toBe(false);
+
+    api.emit(RUN_STARTED_EVENT);
+    api.emit({ type: "RUN_FINISHED", runId: "run-1", result: { status: "success" } });
+    await promise;
+  });
+
   it("桥或存储未就绪时直接把错误写进消息并落盘，不进入 run 流程", async () => {
     const input = createInput();
     const store = createFakeStore();

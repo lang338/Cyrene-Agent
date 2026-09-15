@@ -765,6 +765,7 @@ export function ChatPage() {
             rawContent: next.rawContent,
             visibleContent: next.visibleContent,
             attachments: next.attachments,
+            contextAttachments: next.contextAttachments,
             userSticker: next.userSticker,
             assistantId: crypto.randomUUID(),
             userMessageId: next.id,
@@ -1128,8 +1129,10 @@ export function ChatPage() {
     keepComposer?: boolean;
     /** 为 false 时用户消息落盘后立即返回，模型运行转入后台继续。 */
     waitForRun?: boolean;
+    /** 本轮临时文本上下文（工作台当前打开的文件）；不落历史，只进本轮 prompt。 */
+    contextAttachments?: Array<{ name: string; text: string }>;
   }): Promise<{ persisted: boolean }> {
-    const { targetMode, sessionId, rawContent, visibleContent, attachments, userSticker, assistantId, userMessageId, resumeFromRunId, keepComposer } = input;
+    const { targetMode, sessionId, rawContent, visibleContent, attachments, userSticker, assistantId, userMessageId, resumeFromRunId, keepComposer, contextAttachments } = input;
     appendMessages(sessionId, [
       {
         id: userMessageId,
@@ -1197,6 +1200,7 @@ export function ChatPage() {
         assistantId,
         session: updatedSession,
         attachments,
+        contextAttachments,
         resumeFromRunId,
       });
     } else {
@@ -1207,6 +1211,7 @@ export function ChatPage() {
         assistantId,
         session: updatedSession,
         attachments,
+        contextAttachments,
         resumeFromRunId,
       });
     }
@@ -1224,6 +1229,8 @@ export function ChatPage() {
     sessionId: string;
     mode: ConversationMode;
     text: string;
+    /** 本轮临时文本上下文（工作台当前打开的文件）；不落历史。 */
+    contextAttachments?: Array<{ name: string; text: string }>;
   }): Promise<{ ok: true } | { ok: false; error: { code: string; message: string } }> {
     const text = input.text.trim();
     if (!text) {
@@ -1247,6 +1254,8 @@ export function ChatPage() {
         rawContent: text,
         visibleContent: text,
         attachments: [],
+        // 上下文在入队这一刻冻结：真正发出时用户可能已经切走了文件
+        contextAttachments: input.contextAttachments,
         keepComposer: true,
       });
       pendingQueueBySessionRef.current = nextQueue;
@@ -1259,6 +1268,7 @@ export function ChatPage() {
       rawContent: text,
       visibleContent: text,
       attachments: [],
+      contextAttachments: input.contextAttachments,
       assistantId: crypto.randomUUID(),
       userMessageId: crypto.randomUUID(),
       keepComposer: true,
@@ -1580,7 +1590,9 @@ export function ChatPage() {
           onTtsCacheKey={(messageId, cacheKey, converterVersion) => {
             void handleTtsCacheKey(activeSessionId, messageId, cacheKey, converterVersion);
           }}
-          onSendText={async (text) => (await submitTextToSession({ sessionId: activeSessionId, mode, text })).ok}
+          onSendText={async (text, contextAttachments) => (
+            await submitTextToSession({ sessionId: activeSessionId, mode, text, contextAttachments })
+          ).ok}
           onCancelRun={() => void cancelCurrentRun()}
           onClose={() => setWorkbenchOpen(false)}
         />
