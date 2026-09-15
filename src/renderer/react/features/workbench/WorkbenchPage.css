@@ -638,3 +638,105 @@
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* ── 右栏对话流深色适配 ─────────────────────────────────
+   ChatMessageList 复用自主窗口，整套样式按浅色背景设计（正文 --cy-text: #1d1d1f，
+   且昔涟气泡默认关闭、透明底裸排文字）。直接放进深色工作台会近黑字贴深底、几乎不可见。
+   这里只做工作台作用域内的局部深色化：覆盖"直接贴在面板上"的文字与代码面；
+   自带浅色卡片的组件（文件改动卡、Review 面板等）保持原样不动。 */
+
+/* 昔涟正文气泡：跟随系统气泡开关——开启时给深色气泡，关闭时透明底浅字 */
+.cy-workbench .cy-message--assistant .ant-bubble-content {
+  background: #2a2d33;
+  border: 1px solid #3a3e45;
+  color: #d7dade;
+  box-shadow: none;
+}
+
+/* 特异性需压过全局 :root[data-assistant-bubble="off"] 规则（0,4,0），保持无气泡外观 */
+:root[data-assistant-bubble="off"] .cy-workbench .cy-message--assistant .ant-bubble-content {
+  background: transparent;
+  border: 0;
+  color: #d7dade;
+}
+
+/* 气泡内 Markdown 小元素 */
+.cy-workbench .cy-message--assistant .cy-message-markdown :not(pre) > code,
+.cy-workbench .cy-run-activity__process .cy-message-markdown :not(pre) > code {
+  background: rgb(255 255 255 / 10%);
+  color: #f097b8;
+}
+
+.cy-workbench .cy-message--assistant .cy-message-markdown blockquote {
+  border-left-color: #4a4f58;
+  color: #9aa0a8;
+}
+
+.cy-workbench .cy-message--assistant .cy-message-markdown th,
+.cy-workbench .cy-message--assistant .cy-message-markdown td {
+  border-color: #3a3e45;
+}
+
+/* 运行状态行 / 思考块 / 过程消息：浅主题下用近黑色文字，统一抬亮 */
+.cy-workbench .cy-run-activity__header,
+.cy-workbench .cy-agent-round__header,
+.cy-workbench .cy-message-reasoning,
+.cy-workbench .cy-message-reasoning .ant-think-status-wrapper,
+.cy-workbench .cy-message-reasoning .ant-think-status-text,
+.cy-workbench .cy-message--system,
+.cy-workbench .cy-model-wait,
+.cy-workbench .cy-run-activity__empty {
+  color: #c9cdd4;
+}
+
+.cy-workbench .cy-run-activity__header:hover,
+.cy-workbench .cy-agent-round__header:hover {
+  color: #f097b8;
+}
+
+.cy-workbench .cy-message-reasoning .cy-message-markdown,
+.cy-workbench .cy-run-activity__process {
+  color: #9aa0a8;
+}
+
+.cy-workbench .cy-run-activity__process {
+  border-left-color: rgb(141 180 245 / 45%);
+}
+
+/* 状态小点（--uib-color 原为深海军蓝 #183153，深底上不可见） */
+.cy-workbench .cy-dot-spinner {
+  --uib-color: #8db4f5;
+}
+
+.cy-workbench .cy-dot-spinner__dot::before {
+  box-shadow: 0 0 8px rgb(141 180 245 / 35%);
+}
+
+/* 工具调用 ThoughtChain：antd-x 浅色 token 标题/描述 */
+.cy-workbench .ant-thought-chain-item-title,
+.cy-workbench .ant-thought-chain-item-description {
+  color: #c9cdd4;
+}
+
+.cy-workbench .cy-tool-executions__detail {
+  border-color: rgb(255 255 255 / 14%);
+  background: rgb(255 255 255 / 8%);
+  color: #d3a6bd;
+}
+
+.cy-workbench .cy-tool-executions__result,
+.cy-workbench .cy-message-markdown-fallback {
+  border-color: #2f3238;
+  background: #16171a;
+  color: #aab0ba;
+}
+
+/* 消息操作按钮（复制/语音等 antd 图标按钮浅色 token 偏黑） */
+.cy-workbench .cy-message-actions .cy-copy-button {
+  color: #9aa0a8;
+}
+
+.cy-workbench .cy-message-actions .cy-copy-button:hover {
+  color: #e8e8e8;
+  background: #2f3238;
+}
