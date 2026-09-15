@@ -2,7 +2,7 @@
 // 从 ChatPage（work/code 模式）进入；会话消息与发送沿用 ChatPage 的运行时，
 // 这里不做任何独立的 run 控制——单事实来源，避免双控制器。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Editor from "@monaco-editor/react";
 import * as monacoNs from "monaco-editor";
@@ -92,7 +92,10 @@ export function WorkbenchPage({
   const autoSnapshotTimer = useRef<number | null>(null);
   // buffers 的最新镜像：openFile/saveFile 的异步回调里读取，避免依赖闭包里的旧状态
   const buffersRef = useRef<Record<string, BufferEntry>>({});
-  buffersRef.current = buffers;
+  // 只在提交后的布局阶段同步 ref：渲染体保持纯净（StrictMode/并发渲染安全）
+  useLayoutEffect(() => {
+    buffersRef.current = buffers;
+  }, [buffers]);
 
   // 快照动作的 ref 化：Monaco 命令 / window 快捷键读到的是最新实现
   const saveActiveRef = useRef<() => void>(() => {});

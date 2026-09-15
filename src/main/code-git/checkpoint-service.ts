@@ -72,6 +72,13 @@ export interface CheckpointGitClient {
   checkoutTree(hash: string): Promise<void>;
   /** 目标快照包含的全部文件路径 */
   listTreeFiles(hash: string): Promise<string[]>;
+  /**
+   * 回退冲突检测：目标快照中存在、当前磁盘上也存在（文件或符号链接），
+   * 但现在被 gitignore 忽略的路径。
+   * 这类路径不进任何快照（含回退前的 pre-restore 保底快照），
+   * checkout-index -f 会不问一声直接覆盖，必须在回退前拦下。
+   */
+  findIgnoredCollisions(hash: string): Promise<string[]>;
   /** 当前磁盘上的文件集合（tracked + untracked，不含 gitignore 与 .git） */
   listWorkspaceFiles(): Promise<string[]>;
   deleteWorkspaceFiles(paths: string[]): Promise<void>;
@@ -209,6 +216,9 @@ export function createCheckpointService(deps: CheckpointServiceDeps): Checkpoint
       if (!records.some((record) => record.hash === hash)) {
         throw new Error("快照不存在或已被清理");
       }
+      // 冲突检测必须在 pre-restore 保底快照之前：中止时不写任何快照、不动工作区
+      const conflicts = await client.findIgnoredCollisions(hash);
+      if (conflicts.length) throw new Error(buildRestoreConflictMessage(conflicts));
       const preRestore = await snapshot(sessionId, "pre-restore");
       await client.checkoutTree(hash);
       const targetFiles = new Set(await client.listTreeFiles(hash));
@@ -231,6 +241,29 @@ export function createCheckpointService(deps: CheckpointServiceDeps): Checkpoint
  */
 export function computeFilesToDelete(currentFiles: string[], targetFiles: Set<string>): string[] {
   return currentFiles.filter((file) => !targetFiles.has(file));
+}
+
+/** 冲突报错里最多点名的文件数，其余折叠为"另有 N 个" */
+const MAX_CONFLICT_PATHS_SHOWN = 10;
+
+/**
+ * 构造回退冲突的中止错误文案：明确告诉用户哪些文件挡路、为什么危险、怎么处理。
+ */
+export function buildRestoreConflictMessage(conflicts: string[]): string {
+  const shown = conflicts
+    .slice(0, MAX_CONFLICT_PATHS_SHOWN)
+    .map((file) => `  - ${file}`)
+    .join("\n");
+  const more =
+    conflicts.length > MAX_CONFLICT_PATHS_SHOWN
+      ? `\n  ……另有 ${conflicts.length - MAX_CONFLICT_PATHS_SHOWN} 个文件`
+      : "";
+  return [
+    `回退已中止：检测到 ${conflicts.length} 个会被静默覆盖的文件。`,
+    "这些文件目前被 .gitignore 忽略（不会进入任何快照，覆盖后无法恢复），但目标快照中存在同名文件：",
+    `${shown}${more}`,
+    "请先把它们移出目录、改名或取消忽略，再重新回退。",
+  ].join("\n");
 }
 
 /**
@@ -281,6 +314,9 @@ function createRealCheckpointClient(input: { workspaceRoot: string; executable: 
    * 用命令级 -c 覆盖，不写入仓库或用户的 git config。
    */
   const NO_CRLF = ["-c", "core.autocrlf=false"] as const;
+
+  /** check-ignore 单批路径数：防止 Windows 命令行长度超限（约 32k 字符） */
+  const CHECK_IGNORE_BATCH = 100;
 
   function newTempIndexPath(): string {
     return path.join(os.tmpdir(), `cyrene-checkpoint-${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -407,6 +443,36 @@ function createRealCheckpointClient(input: { workspaceRoot: string; executable: 
       // -z：NUL 分隔的原始路径，中文等非 ASCII 文件名不被 quotepath 转义
       const output = await git.raw(["ls-tree", "-r", "-z", "--name-only", hash]);
       return splitNulOutput(output);
+    },
+
+    async findIgnoredCollisions(hash) {
+      // 第一步：目标树里的文件，只保留磁盘上真实存在的（文件/符号链接）
+      const treeFiles = await this.listTreeFiles(hash);
+      const existing: string[] = [];
+      await Promise.all(
+        treeFiles.map(async (relative) => {
+          try {
+            const stat = await fs.promises.lstat(path.resolve(input.workspaceRoot, relative));
+            if (stat.isFile() || stat.isSymbolicLink()) existing.push(relative);
+          } catch {
+            // 磁盘上不存在：checkout 是新建而非覆盖，无碰撞
+          }
+        }),
+      );
+      // 第二步：批量问 git 哪些路径当前被忽略（已跟踪文件 git 自动不报，
+      // 那些文件的内容在用户自己的 git 历史里可达，不属于数据丢失场景）
+      const conflicts = new Set<string>();
+      for (let index = 0; index < existing.length; index += CHECK_IGNORE_BATCH) {
+        const batch = existing.slice(index, index + CHECK_IGNORE_BATCH);
+        // 无匹配时 check-ignore 退出码为 1，simple-git 会 reject，按"本批无冲突"处理
+        const output = await git
+          .raw(["-c", "core.quotepath=false", "check-ignore", "--", ...batch])
+          .catch(() => "");
+        for (const line of output.split("\n")) {
+          if (line.length > 0) conflicts.add(line.replace(/\r$/, ""));
+        }
+      }
+      return [...conflicts].sort();
     },
 
     async listWorkspaceFiles() {

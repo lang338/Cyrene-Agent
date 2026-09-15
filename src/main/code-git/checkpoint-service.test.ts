@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import type { ChatSession } from "../../shared/chat-types";
 import type { ResolvedGitExecutable } from "./git-executable";
 import {
+  buildRestoreConflictMessage,
   computeFilesToDelete,
   createCheckpointService,
   splitNulOutput,
@@ -37,6 +38,7 @@ interface FakeClientOptions {
   log?: CheckpointLogRecord[];
   treeFiles?: string[];
   workspaceFiles?: string[];
+  ignoredConflicts?: string[];
 }
 
 function createFakeClient(options: FakeClientOptions = {}) {
@@ -61,6 +63,7 @@ function createFakeClient(options: FakeClientOptions = {}) {
     })),
     checkoutTree: vi.fn(async () => undefined),
     listTreeFiles: vi.fn(async () => options.treeFiles ?? []),
+    findIgnoredCollisions: vi.fn(async () => options.ignoredConflicts ?? []),
     listWorkspaceFiles: vi.fn(async () => options.workspaceFiles ?? []),
     deleteWorkspaceFiles: vi.fn(async () => undefined),
   };
@@ -187,6 +190,38 @@ describe("checkpoint-service", () => {
     expect((client.writeWorkspaceTree as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 
+  it("restore：存在被忽略的同名文件时中止，点名且零副作用", async () => {
+    const hashOld = "0".repeat(40);
+    const { client } = createFakeClient({
+      last: { hash: "top", tree: "tree-top" },
+      nextTree: "tree-backup",
+      log: [
+        { hash: "top".padEnd(40, "a"), timestamp: "2026-09-15T10:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+        { hash: hashOld, timestamp: "2026-09-15T09:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+      ],
+      ignoredConflicts: ["secret.local.txt", "密钥.env"],
+    });
+    const service = createCheckpointService(createDeps(client));
+    await expect(service.restore("s1", hashOld)).rejects.toThrow("回退已中止");
+    await expect(service.restore("s1", hashOld)).rejects.toThrow("secret.local.txt");
+    await expect(service.restore("s1", hashOld)).rejects.toThrow("密钥.env");
+    // 保底快照没打、checkout 没执行、多余文件也没删——工作区原封不动
+    expect((client.writeWorkspaceTree as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+    expect((client.checkoutTree as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+    expect((client.deleteWorkspaceFiles as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it("buildRestoreConflictMessage：点名文件并给出处理指引，超过上限折叠数量", () => {
+    const one = buildRestoreConflictMessage(["secret.txt"]);
+    expect(one).toContain("1 个");
+    expect(one).toContain("secret.txt");
+    expect(one).toContain(".gitignore");
+    const many = buildRestoreConflictMessage(Array.from({ length: 12 }, (_, i) => `f${i}.txt`));
+    expect(many).toContain("12 个");
+    expect(many).toContain("另有 2 个文件");
+    expect(many).not.toContain("f11.txt"); // 只显示前 10 个
+  });
+
   it("会话校验：非 code 模式与未绑定工作区都拒绝", async () => {
     const { client } = createFakeClient({});
     const service = createCheckpointService({
@@ -298,5 +333,44 @@ describe("real git 集成：普通文件夹自动 init + 中文路径 + 固定 i
     await service.restore("s1", first!.hash);
     expect(fs.readFileSync(path.join(root, "你好.txt"), "utf8")).toBe("第一版\n");
     expect(fs.existsSync(path.join(root, "临时文件.md"))).toBe(false);
+  });
+
+  it("回退冲突：快照后被 gitignore 忽略的同名文件会中止回退、点名且零副作用；解除忽略后可正常回退", async () => {
+    if (!available) return;
+    fs.writeFileSync(path.join(root, "secret.txt"), "快照里的原始内容\n");
+    fs.writeFileSync(path.join(root, "密钥.txt"), "原始密钥\n");
+    const service = createCheckpointService({
+      getSession: vi.fn(() => fakeSession(root)),
+      resolveExecutable: vi.fn(async () => SYSTEM_GIT),
+    });
+
+    const first = await service.snapshot("s1", "auto");
+    expect(first).not.toBeNull();
+
+    // 之后把这两个文件加入忽略，并在本地写入"任何快照都没有"的私有内容
+    fs.writeFileSync(path.join(root, ".gitignore"), "secret.txt\n密钥.txt\n");
+    fs.writeFileSync(path.join(root, "secret.txt"), "仅存在于本地的私有配置\n");
+    fs.writeFileSync(path.join(root, "密钥.txt"), "私有密钥内容\n");
+
+    const abort = service.restore("s1", first!.hash).then(
+      () => {
+        throw new Error("应当中止回退");
+      },
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    await expect(abort).resolves.toMatch(/回退已中止/);
+    const message = await abort;
+    expect(message).toContain("secret.txt");
+    expect(message).toContain("密钥.txt"); // 中文路径经 quotepath=false 原样输出
+    // 私有内容原样保留，且没有偷偷写 pre-restore 快照
+    expect(fs.readFileSync(path.join(root, "secret.txt"), "utf8")).toBe("仅存在于本地的私有配置\n");
+    expect(fs.readFileSync(path.join(root, "密钥.txt"), "utf8")).toBe("私有密钥内容\n");
+    await expect(service.list("s1")).resolves.toHaveLength(1);
+
+    // 用户处理冲突（删掉 .gitignore 取消忽略）后，回退恢复成功
+    fs.rmSync(path.join(root, ".gitignore"));
+    await service.restore("s1", first!.hash);
+    expect(fs.readFileSync(path.join(root, "secret.txt"), "utf8")).toBe("快照里的原始内容\n");
+    expect(fs.readFileSync(path.join(root, "密钥.txt"), "utf8")).toBe("原始密钥\n");
   });
 });
