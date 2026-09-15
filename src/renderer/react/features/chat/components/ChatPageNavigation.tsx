@@ -35,6 +35,8 @@ export interface ChatPageNavigationProps {
   onMaximize: () => void;
   onCloseWindow: () => void;
   onOpenSettings: () => void;
+  /** 打开代码工作台（仅 work/code 模式且已选会话时提供） */
+  onOpenWorkbench?: () => void;
 }
 
 export function ChatPageNavigation({
@@ -56,7 +58,9 @@ export function ChatPageNavigation({
   onMaximize,
   onCloseWindow,
   onOpenSettings,
+  onOpenWorkbench,
 }: ChatPageNavigationProps) {
+  const { t } = useTranslation();
   const hasOpenPanel = activePanel !== null;
 
   return (
@@ -73,6 +77,19 @@ export function ChatPageNavigation({
       <div className="cy-page-sidebar">
         <div className="cy-page-newtask">
           <NewTaskButton onClick={onNewTask} />
+          {onOpenWorkbench && (
+            <button
+              type="button"
+              className="cy-side-action"
+              onClick={onOpenWorkbench}
+              title={t("workbench.open")}
+            >
+              <span className="cy-side-action-icon">
+                <code style={{ fontSize: 12, fontWeight: 600 }}>{"</>"}</code>
+              </span>
+              <span className="cy-side-action-label">{t("workbench.open")}</span>
+            </button>
+          )}
           <ToolModeButton active={activePanel === "tool"} onClick={() => onTogglePanel("tool")} />
           <SkillModeButton active={activePanel === "skill"} onClick={() => onTogglePanel("skill")} />
           <ModelModeButton active={activePanel === "model"} onClick={() => onTogglePanel("model")} />

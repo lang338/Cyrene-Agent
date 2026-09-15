@@ -94,6 +94,15 @@ export const IPC = {
   CODE_GIT_COMMIT: "code-git:commit",
   CODE_GIT_PUSH: "code-git:push",
 
+  // Code 工作台（checkpoint 时间机器 + 工作区文件；全部限定会话绑定的工作区内）
+  WORKBENCH_CHECKPOINT_SNAPSHOT: "workbench:checkpoint-snapshot",
+  WORKBENCH_CHECKPOINT_LIST: "workbench:checkpoint-list",
+  WORKBENCH_CHECKPOINT_DIFF: "workbench:checkpoint-diff",
+  WORKBENCH_CHECKPOINT_RESTORE: "workbench:checkpoint-restore",
+  WORKBENCH_FILE_LIST: "workbench:file-list",
+  WORKBENCH_FILE_READ: "workbench:file-read",
+  WORKBENCH_FILE_WRITE: "workbench:file-write",
+
   // sidebar window (status / schedule / settings entry)
   SIDEBAR_MINIMIZE: "sidebar:minimize",
   SIDEBAR_CLOSE: "sidebar:close",

@@ -1,0 +1,603 @@
+/* 工作台全屏覆盖层：三栏可拖拽布局（文件树 | 代码/历史 | 对话流）。
+   z-index 900：低于 antd Modal（1000），保证回退确认弹窗浮在工作台之上。 */
+
+.cy-workbench {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  background: #1b1d21;
+  color: #d4d4d4;
+  color-scheme: dark;
+}
+
+.cy-workbench--column-resizing,
+.cy-workbench--column-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/* ── 顶栏 ─────────────────────────────────────────────── */
+
+.cy-workbench__topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 42px;
+  padding: 0 12px;
+  background: #232529;
+  border-bottom: 1px solid #2f3238;
+  flex: none;
+}
+
+.cy-workbench__topbar-left,
+.cy-workbench__topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.cy-workbench__back {
+  background: none;
+  border: none;
+  color: #9aa0a8;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.cy-workbench__back:hover {
+  background: #2f3238;
+  color: #e8e8e8;
+}
+
+.cy-workbench__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e8e8e8;
+}
+
+.cy-workbench__error {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: #3a2626;
+  border: 1px solid #5c3535;
+  color: #e5a3a3;
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.cy-workbench__action {
+  background: #2f3238;
+  border: 1px solid #3c4046;
+  color: #d4d4d4;
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+  flex: none;
+}
+
+.cy-workbench__action:hover:not(:disabled) {
+  background: #3a3e45;
+}
+
+.cy-workbench__action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.cy-workbench__action.is-send {
+  background: #2f6feb;
+  border-color: #2f6feb;
+  color: #fff;
+}
+
+.cy-workbench__action.is-send:hover:not(:disabled) {
+  background: #3d7bf0;
+}
+
+.cy-workbench__action.is-stop {
+  background: #5c3535;
+  border-color: #7a4545;
+  color: #e5a3a3;
+}
+
+/* ── 三栏 ─────────────────────────────────────────────── */
+
+.cy-workbench__body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.cy-workbench__col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #1e2024;
+}
+
+.cy-workbench__col--left {
+  flex: none;
+  background: #1c1e22;
+  border-right: none;
+}
+
+.cy-workbench__col--middle {
+  flex: none;
+  background: #1e2024;
+}
+
+.cy-workbench__col--right {
+  flex: 1;
+  background: #202226;
+}
+
+.cy-workbench__col-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: #9aa0a8;
+  border-bottom: 1px solid #2f3238;
+  flex: none;
+}
+
+.cy-workbench__col-header--tabs {
+  padding: 0 6px;
+}
+
+.cy-workbench__col-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.cy-workbench__resizer {
+  width: 5px;
+  cursor: col-resize;
+  background: #26282d;
+  flex: none;
+  transition: background 0.15s;
+}
+
+.cy-workbench__resizer:hover {
+  background: #2f6feb;
+}
+
+/* ── 中栏页签 ─────────────────────────────────────────── */
+
+.cy-workbench__tab {
+  background: none;
+  border: none;
+  color: #9aa0a8;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.cy-workbench__tab:hover {
+  color: #e8e8e8;
+  background: #2f3238;
+}
+
+.cy-workbench__tab.is-active {
+  color: #e8e8e8;
+  background: #2f3238;
+}
+
+.cy-workbench__save {
+  margin-left: auto;
+}
+
+/* ── 文件页签条 ───────────────────────────────────────── */
+
+.cy-workbench__editor-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.cy-workbench__file-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px 6px;
+  border-bottom: 1px solid #2f3238;
+  flex: none;
+  max-height: 64px;
+  overflow-y: auto;
+}
+
+.cy-workbench__file-tab {
+  display: inline-flex;
+  align-items: center;
+  background: #232529;
+  border: 1px solid #2f3238;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.cy-workbench__file-tab.is-active {
+  border-color: #2f6feb;
+  background: #262a33;
+}
+
+.cy-workbench__file-tab-name {
+  background: none;
+  border: none;
+  color: #c9cdd4;
+  font-size: 12px;
+  padding: 3px 6px 3px 10px;
+  cursor: pointer;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cy-workbench__file-tab-close {
+  background: none;
+  border: none;
+  color: #6d737b;
+  font-size: 13px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.cy-workbench__file-tab-close:hover {
+  color: #e8e8e8;
+}
+
+.cy-workbench__editor-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6d737b;
+  font-size: 13px;
+}
+
+.cy-workbench__editor-empty.is-error {
+  color: #e5a3a3;
+}
+
+.cy-workbench__editor-notice {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #d8b26a;
+  background: #322b1e;
+  border-bottom: 1px solid #4a4028;
+  flex: none;
+}
+
+/* Monaco 容器撑满剩余空间 */
+.cy-workbench__editor-body .cy-monaco-fill {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── 左栏文件树 ───────────────────────────────────────── */
+
+.cy-workbench-tree {
+  padding: 6px 4px;
+  font-size: 13px;
+}
+
+.cy-workbench-tree__row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: #c9cdd4;
+  font-size: 13px;
+  text-align: left;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.cy-workbench-tree__row:hover {
+  background: #2a2d33;
+}
+
+.cy-workbench-tree__row.is-active {
+  background: #2b3550;
+  color: #e8e8e8;
+}
+
+.cy-workbench-tree__chevron {
+  width: 12px;
+  flex: none;
+  color: #6d737b;
+  font-size: 10px;
+}
+
+.cy-workbench-tree__dot {
+  width: 12px;
+  flex: none;
+}
+
+.cy-workbench-tree__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cy-workbench-tree__error,
+.cy-workbench-tree__empty,
+.cy-workbench-history__error,
+.cy-workbench-history__empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #6d737b;
+}
+
+.cy-workbench-tree__error,
+.cy-workbench-history__error {
+  color: #e5a3a3;
+}
+
+/* ── 历史时间线 ───────────────────────────────────────── */
+
+.cy-workbench-history {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.cy-workbench-history__list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 4px;
+  border-bottom: 1px solid #2f3238;
+  flex: none;
+  max-height: 40%;
+  overflow-y: auto;
+}
+
+.cy-workbench-history__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+
+.cy-workbench-history__item:hover {
+  background: #2a2d33;
+}
+
+.cy-workbench-history__item.is-selected {
+  background: #2b3550;
+}
+
+.cy-workbench-history__open {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  color: #c9cdd4;
+  font-size: 12px;
+  padding: 4px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.cy-workbench-history__open time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cy-workbench-history__kind {
+  flex: none;
+  font-size: 11px;
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: #2f3238;
+  color: #9aa0a8;
+}
+
+.cy-workbench-history__kind.is-manual {
+  background: #243a5e;
+  color: #8db4f5;
+}
+
+.cy-workbench-history__kind.is-pre-restore {
+  background: #3a2d24;
+  color: #d8b26a;
+}
+
+.cy-workbench-history__restore {
+  flex: none;
+  background: none;
+  border: 1px solid #3c4046;
+  color: #9aa0a8;
+  font-size: 11px;
+  border-radius: 5px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.cy-workbench-history__restore:hover:not(:disabled) {
+  color: #e8e8e8;
+  border-color: #565b63;
+}
+
+.cy-workbench-history__restore:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.cy-workbench-history__detail {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px;
+}
+
+.cy-workbench-history__summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #9aa0a8;
+  padding-bottom: 6px;
+}
+
+.cy-workbench-history__summary em {
+  color: #d8b26a;
+  font-style: normal;
+}
+
+.cy-workbench-diff__ins { color: #7dc47d; }
+.cy-workbench-diff__del { color: #e58a8a; }
+
+.cy-workbench-diff__files {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  font-size: 12px;
+}
+
+.cy-workbench-diff__files li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.cy-workbench-diff__files code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #c9cdd4;
+  background: none;
+}
+
+.cy-workbench-diff {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  background: #16171a;
+  border: 1px solid #2f3238;
+  border-radius: 8px;
+  padding: 8px;
+  overflow: auto;
+  white-space: pre;
+}
+
+.cy-workbench-diff__line { color: #8a9099; }
+.cy-workbench-diff__line.is-add { color: #7dc47d; background: rgba(125, 196, 125, 0.08); }
+.cy-workbench-diff__line.is-del { color: #e58a8a; background: rgba(229, 138, 138, 0.08); }
+.cy-workbench-diff__line.is-hunk { color: #7aa5d8; }
+.cy-workbench-diff__line.is-meta { color: #5c626b; }
+
+/* ── 回退确认弹窗（antd Modal 局部样式） ──────────────── */
+
+.cy-workbench-modal__hint {
+  font-size: 13px;
+  color: #d4d4d4;
+}
+
+.cy-workbench-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.cy-workbench-modal__actions button {
+  border-radius: 6px;
+  padding: 5px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  background: #2f3238;
+  border: 1px solid #3c4046;
+  color: #d4d4d4;
+}
+
+.cy-workbench-modal__actions button.is-primary {
+  background: #2f6feb;
+  border-color: #2f6feb;
+  color: #fff;
+}
+
+/* ── 右栏对话流 ───────────────────────────────────────── */
+
+.cy-workbench__chat-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.cy-workbench__chat-body > .cy-message-list,
+.cy-workbench__chat-body > div:not(.cy-workbench__chat-composer):not(.cy-workbench__chat-empty) {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.cy-workbench__chat-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6d737b;
+  font-size: 13px;
+}
+
+.cy-workbench__chat-composer {
+  flex: none;
+  border-top: 1px solid #2f3238;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #232529;
+}
+
+.cy-workbench__chat-input {
+  width: 100%;
+  min-height: 56px;
+  max-height: 140px;
+  resize: vertical;
+  background: #1b1d21;
+  border: 1px solid #2f3238;
+  border-radius: 8px;
+  color: #d4d4d4;
+  font-size: 13px;
+  font-family: inherit;
+  padding: 8px 10px;
+  box-sizing: border-box;
+}
+
+.cy-workbench__chat-input:focus {
+  outline: none;
+  border-color: #2f6feb;
+}
+
+.cy-workbench__chat-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

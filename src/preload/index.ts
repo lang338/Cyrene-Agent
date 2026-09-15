@@ -783,6 +783,22 @@ const codeGitApi = {
 };
 contextBridge.exposeInMainWorld("codeGit", codeGitApi);
 
+// Code 工作台：checkpoint 时间机器 + 工作区文件（全部限定在会话绑定的工作区内）
+const workbenchApi = {
+  snapshot: (sessionId: string, kind: "auto" | "pre-restore" | "manual" = "manual") =>
+    ipcRenderer.invoke(IPC.WORKBENCH_CHECKPOINT_SNAPSHOT, { sessionId, kind }),
+  listCheckpoints: (sessionId: string) => ipcRenderer.invoke(IPC.WORKBENCH_CHECKPOINT_LIST, sessionId),
+  diffCheckpoint: (sessionId: string, hash: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_CHECKPOINT_DIFF, { sessionId, hash }),
+  restoreCheckpoint: (sessionId: string, hash: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_CHECKPOINT_RESTORE, { sessionId, hash }),
+  listDir: (sessionId: string, path = "") => ipcRenderer.invoke(IPC.WORKBENCH_FILE_LIST, { sessionId, path }),
+  readFile: (sessionId: string, path: string) => ipcRenderer.invoke(IPC.WORKBENCH_FILE_READ, { sessionId, path }),
+  writeFile: (sessionId: string, path: string, content: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_FILE_WRITE, { sessionId, path, content }),
+};
+contextBridge.exposeInMainWorld("workbench", workbenchApi);
+
 // Token 用量查询（设置中心 Token 面板用）
 const tokenUsageApi = {
   get: (days: number) => ipcRenderer.invoke(IPC.TOKEN_USAGE_GET, days),

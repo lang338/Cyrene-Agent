@@ -108,6 +108,8 @@ export function ChatPage() {
   const [inspectorTab, setInspectorTab] = useState<"diff" | "plan">("plan");
   const [mode, setMode] = useState<ConversationMode>(getInitialMode);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // 代码工作台（work/code 模式入口）：全屏覆盖层，会话消息与发送仍走本页运行时
+  const [workbenchOpen, setWorkbenchOpen] = useState(false);
 
   const [workspaceNames, setWorkspaceNames] = useState<Partial<Record<ConversationMode, string>>>({});
   const [pendingWorkspaceByMode, setPendingWorkspaceByMode] = useState<
@@ -1550,6 +1552,22 @@ export function ChatPage() {
           }
         }}
       />
+      {workbenchOpen && activeSessionId && (
+        <WorkbenchPage
+          sessionId={activeSessionId}
+          mode={mode}
+          messages={messages}
+          busy={isSessionBusy(activeSessionId)}
+          preferredAddress={preferredAddress}
+          stickerSize={stickerSize}
+          onTtsCacheKey={(messageId, cacheKey, converterVersion) => {
+            void handleTtsCacheKey(activeSessionId, messageId, cacheKey, converterVersion);
+          }}
+          onSendText={async (text) => (await submitTextToSession({ sessionId: activeSessionId, mode, text })).ok}
+          onCancelRun={() => void cancelCurrentRun()}
+          onClose={() => setWorkbenchOpen(false)}
+        />
+      )}
     </div>
   );
 }

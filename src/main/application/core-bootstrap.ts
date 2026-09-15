@@ -20,6 +20,8 @@ import type { TtsSessionService } from "../tts/tts-session-service";
 import type { EmbeddingIndexService } from "../services/embedding/embedding-index-service";
 import type { ProactiveLifecycle } from "../proactive/proactive-lifecycle";
 import type { GitService } from "../code-git/git-service";
+import type { CheckpointService } from "../code-git/checkpoint-service";
+import type { WorkspaceFileService } from "../code-git/workspace-files";
 import type { LspManager } from "../lsp/manager";
 import type { ScreenshotService } from "../screenshot/screenshot-lifecycle";
 import type { MusicBootstrap } from "../music/bootstrap";
@@ -43,6 +45,8 @@ export interface CoreServices {
   embedding: EmbeddingIndexService;
   proactive: ProactiveLifecycle;
   git: GitService;
+  checkpoint: CheckpointService;
+  workspaceFiles: WorkspaceFileService;
   lsp: LspManager;
   screenshot: ScreenshotService;
   music: MusicBootstrap;
