@@ -1,9 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { ChatSession } from "../../shared/chat-types";
 import type { ResolvedGitExecutable } from "./git-executable";
 import {
   computeFilesToDelete,
   createCheckpointService,
+  splitNulOutput,
   type CheckpointGitClient,
   type CheckpointLogRecord,
   type CheckpointStat,
@@ -201,5 +207,96 @@ describe("checkpoint-service", () => {
   it("computeFilesToDelete：目标快照里没有的才删", () => {
     expect(computeFilesToDelete(["a", "b", "c"], new Set(["a"]))).toEqual(["b", "c"]);
     expect(computeFilesToDelete(["a"], new Set(["a", "new.ts"]))).toEqual([]);
+  });
+
+  it("computeFilesToDelete：中文等非 ASCII 路径按原值精确匹配（不经 quotepath 转义）", () => {
+    // 回归：ls-files 默认把 "你好.ts" 转义成八进制串，按转义串会匹配失败而误删
+    const current = ["src/你好.ts", "src/保留.md", "目录/旧文件.txt"];
+    const target = new Set(["src/你好.ts", "src/保留.md"]);
+    expect(computeFilesToDelete(current, target)).toEqual(["目录/旧文件.txt"]);
+  });
+
+  it("restore：中文文件名的多余文件也能被正确识别删除", async () => {
+    const hashOld = "0".repeat(40);
+    const { client } = createFakeClient({
+      last: { hash: "top", tree: "tree-top" },
+      nextTree: "tree-backup",
+      log: [
+        { hash: "top".padEnd(40, "a"), timestamp: "2026-09-15T10:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+        { hash: hashOld, timestamp: "2026-09-15T09:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+      ],
+      treeFiles: ["src/你好.ts"],
+      workspaceFiles: ["src/你好.ts", "废弃的文件.js"],
+    });
+    const service = createCheckpointService(createDeps(client));
+    const result = await service.restore("s1", hashOld);
+    expect(result.restoredHash).toBe(hashOld);
+    expect((client.deleteWorkspaceFiles as ReturnType<typeof vi.fn>).mock.calls[0][0]).toEqual(["废弃的文件.js"]);
+  });
+});
+
+describe("splitNulOutput（git -z NUL 分隔解析）", () => {
+  it("按 NUL 拆分多个路径", () => {
+    expect(splitNulOutput("src/a.ts\u0000src/b.ts\u0000")).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  it("非 ASCII 路径保持原样，不出现八进制转义", () => {
+    const output = "src/你好.ts\u0000目录/文件.md\u0000";
+    expect(splitNulOutput(output)).toEqual(["src/你好.ts", "目录/文件.md"]);
+  });
+
+  it("空输出与只有结尾 NUL 都得到空数组", () => {
+    expect(splitNulOutput("")).toEqual([]);
+    expect(splitNulOutput("\u0000")).toEqual([]);
+  });
+});
+
+const execFileAsync = promisify(execFile);
+async function systemGitAvailable(): Promise<boolean> {
+  try {
+    await execFileAsync("git", ["--version"], { windowsHide: true, timeout: 5_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe("real git 集成：普通文件夹自动 init + 中文路径 + 固定 ident", () => {
+  const SYSTEM_GIT: ResolvedGitExecutable = { command: "git", source: "system", version: "test" };
+  let root = "";
+  let available = false;
+
+  beforeEach(async () => {
+    available = await systemGitAvailable();
+    if (available) root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-cp-e2e-"));
+  });
+  afterEach(() => {
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("非 git 目录首次快照自动 init；中文文件可 diff；回退还原内容并删除多余文件", async () => {
+    if (!available) return;
+    fs.writeFileSync(path.join(root, "你好.txt"), "第一版\n");
+    const service = createCheckpointService({
+      getSession: vi.fn(() => fakeSession(root)),
+      resolveExecutable: vi.fn(async () => SYSTEM_GIT),
+    });
+
+    const first = await service.snapshot("s1", "auto");
+    expect(first).not.toBeNull();
+    expect(fs.existsSync(path.join(root, ".git"))).toBe(true); // 自动初始化
+    await expect(service.list("s1")).resolves.toHaveLength(1);
+
+    const diff1 = await service.diff("s1", first!.hash);
+    expect(diff1.perFile.some((f) => f.file === "你好.txt")).toBe(true); // 中文路径不被转义
+
+    fs.writeFileSync(path.join(root, "你好.txt"), "第二版内容\n");
+    fs.writeFileSync(path.join(root, "临时文件.md"), "# temp\n");
+    const second = await service.snapshot("s1", "manual");
+    expect(second).not.toBeNull();
+
+    await service.restore("s1", first!.hash);
+    expect(fs.readFileSync(path.join(root, "你好.txt"), "utf8")).toBe("第一版\n");
+    expect(fs.existsSync(path.join(root, "临时文件.md"))).toBe(false);
   });
 });

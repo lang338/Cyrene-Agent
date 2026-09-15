@@ -1,6 +1,6 @@
 // 工作台中栏"历史"页签：checkpoint 时间线 + 单条 diff 查看 + 一键回退。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Modal } from "antd";
 import { useTranslation } from "../../i18n";
 import type { CheckpointDiff, CheckpointEntry } from "../../../../shared/code-workbench-types";
@@ -46,6 +46,8 @@ export function CheckpointTimeline({ sessionId, refreshToken, busy, onBusyChange
   const [selected, setSelected] = useState<CheckpointDiff | null>(null);
   const [selectedLoading, setSelectedLoading] = useState(false);
   const [restoreTarget, setRestoreTarget] = useState<CheckpointEntry | null>(null);
+  // diff 请求序号：快速连点/刷新时，只接受最新一次的响应，慢返回的旧请求不覆盖 UI
+  const diffSeq = useRef(0);
 
   const load = useCallback(async () => {
     const api = workbenchApi();
@@ -61,18 +63,23 @@ export function CheckpointTimeline({ sessionId, refreshToken, busy, onBusyChange
   useEffect(() => {
     void load();
     setSelected(null);
+    diffSeq.current += 1; // 列表刷新：所有在飞的旧 diff 响应作废
   }, [load, refreshToken]);
 
   async function openDiff(entry: CheckpointEntry) {
     const api = workbenchApi();
     if (!api) return;
+    const seq = ++diffSeq.current;
     setSelectedLoading(true);
     try {
-      setSelected(await api.diffCheckpoint(sessionId, entry.hash) as CheckpointDiff);
+      const diff = (await api.diffCheckpoint(sessionId, entry.hash)) as CheckpointDiff;
+      if (seq !== diffSeq.current) return; // 更新的选择已发起
+      setSelected(diff);
     } catch (cause) {
+      if (seq !== diffSeq.current) return;
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setSelectedLoading(false);
+      if (seq === diffSeq.current) setSelectedLoading(false);
     }
   }
 

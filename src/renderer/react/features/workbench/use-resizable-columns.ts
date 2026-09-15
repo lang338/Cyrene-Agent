@@ -26,7 +26,13 @@ export function useResizableColumns(options: ResizableColumnsOptions): Resizable
       const raw = localStorage.getItem(storageKey);
       if (raw) {
         const parsed = JSON.parse(raw) as [number, number];
-        if (Array.isArray(parsed) && parsed.length === 2 && parsed.every((value) => typeof value === "number" && value >= 120)) {
+        // 恢复值按各自配置的最小宽度校验，不用硬编码阈值
+        if (
+          Array.isArray(parsed)
+          && parsed.length === 2
+          && typeof parsed[0] === "number" && parsed[0] >= min[0]
+          && typeof parsed[1] === "number" && parsed[1] >= min[1]
+        ) {
           return parsed;
         }
       }
@@ -55,10 +61,12 @@ export function useResizableColumns(options: ResizableColumnsOptions): Resizable
         return next;
       });
     }
-    function onUp() {
+    // persist=false 用于 pointercancel：复位拖拽态但本次宽度不落 localStorage
+    function endDrag(persist: boolean) {
       if (!dragState.current) return;
       dragState.current = null;
       document.body.classList.remove("cy-workbench--column-resizing");
+      if (!persist) return;
       setSizes((current) => {
         try {
           localStorage.setItem(storageKey, JSON.stringify(current));
@@ -68,11 +76,18 @@ export function useResizableColumns(options: ResizableColumnsOptions): Resizable
         return current;
       });
     }
+    const onUp = () => endDrag(true);
+    const onCancel = () => endDrag(false);
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
     return () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      // 工作台在拖拽中途卸载：清掉残留的全局拖拽态与 body 样式
+      dragState.current = null;
+      document.body.classList.remove("cy-workbench--column-resizing");
     };
   }, [min, storageKey]);
 

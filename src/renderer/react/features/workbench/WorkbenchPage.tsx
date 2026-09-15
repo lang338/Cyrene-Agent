@@ -90,6 +90,9 @@ export function WorkbenchPage({
 
   const editorRef = useRef<monacoNs.editor.IStandaloneCodeEditor | null>(null);
   const autoSnapshotTimer = useRef<number | null>(null);
+  // buffers 的最新镜像：openFile/saveFile 的异步回调里读取，避免依赖闭包里的旧状态
+  const buffersRef = useRef<Record<string, BufferEntry>>({});
+  buffersRef.current = buffers;
 
   // 快照动作的 ref 化：Monaco 命令 / window 快捷键读到的是最新实现
   const saveActiveRef = useRef<() => void>(() => {});
@@ -128,57 +131,70 @@ export function WorkbenchPage({
     }, 5000);
   }, [sessionId]);
 
-  const openFile = useCallback(async (path: string) => {
-    setActivePath(path);
-    setBuffers((current) => {
-      if (current[path]) return current;
-      return { ...current, [path]: { content: "", binary: false, truncated: false, dirty: false, loading: true, error: null } };
-    });
+  const openFile = useCallback(async (filePath: string) => {
+    setActivePath(filePath);
     setMiddleTab("code");
-    if (buffers[path]) return;
-    setOpenTabs((current) => (current.includes(path) ? current : [...current, path]));
+    // 已打开（含脏缓冲）：只切过去，绝不重新读盘覆盖未保存修改
+    if (buffersRef.current[filePath]) return;
+    setOpenTabs((current) => (current.includes(filePath) ? current : [...current, filePath]));
+    setBuffers((current) => {
+      if (current[filePath]) return current;
+      return { ...current, [filePath]: { content: "", binary: false, truncated: false, dirty: false, loading: true, error: null } };
+    });
     const api = workbenchApi();
     if (!api) return;
     try {
-      const file = (await api.readFile(sessionId, path)) as WorkbenchFileContent;
-      setBuffers((current) => ({
-        ...current,
-        [path]: { content: file.content, binary: file.binary, truncated: file.truncated, dirty: false, loading: false, error: null },
-      }));
+      const file = (await api.readFile(sessionId, filePath)) as WorkbenchFileContent;
+      setBuffers((current) => {
+        // 响应飞行期间标签可能已被关闭：只有仍是 loading 占位时才落内容
+        const existing = current[filePath];
+        if (!existing || !existing.loading) return current;
+        return {
+          ...current,
+          [filePath]: { content: file.content, binary: file.binary, truncated: file.truncated, dirty: false, loading: false, error: null },
+        };
+      });
     } catch (cause) {
-      setBuffers((current) => ({
-        ...current,
-        [path]: {
-          content: "",
-          binary: false,
-          truncated: false,
-          dirty: false,
-          loading: false,
-          error: cause instanceof Error ? cause.message : String(cause),
-        },
-      }));
+      setBuffers((current) => {
+        const existing = current[filePath];
+        if (!existing || !existing.loading) return current;
+        return {
+          ...current,
+          [filePath]: {
+            content: "",
+            binary: false,
+            truncated: false,
+            dirty: false,
+            loading: false,
+            error: cause instanceof Error ? cause.message : String(cause),
+          },
+        };
+      });
     }
-    // buffers 读取只为去重判断，故意不进依赖
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  const saveFile = useCallback(async (path: string) => {
-    const entry = buffers[path];
+  const saveFile = useCallback(async (filePath: string) => {
+    const entry = buffersRef.current[filePath];
     if (!entry || entry.binary || entry.truncated || entry.loading || entry.error) return;
     const api = workbenchApi();
     if (!api) return;
+    // 记住本次写盘的内容：响应回来前若用户继续打字，新内容必须保持 dirty
+    const savedContent = entry.content;
     try {
-      await api.writeFile(sessionId, path, entry.content);
-      setBuffers((current) => ({ ...current, [path]: { ...current[path], dirty: false } }));
+      await api.writeFile(sessionId, filePath, savedContent);
+      setBuffers((current) => {
+        const latest = current[filePath];
+        if (!latest) return current;
+        if (latest.content !== savedContent) return current; // 保存飞行中又有新编辑：保留 dirty
+        return { ...current, [filePath]: { ...latest, dirty: false } };
+      });
       setTreeRefresh((value) => value + 1);
       setError(null);
       scheduleAutoSnapshot();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
-    // buffers 读取为当前草稿，属必要依赖
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [buffers, scheduleAutoSnapshot, sessionId]);
+  }, [scheduleAutoSnapshot, sessionId]);
 
   saveActiveRef.current = () => {
     if (activePath) void saveFile(activePath);

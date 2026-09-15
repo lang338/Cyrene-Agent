@@ -30,8 +30,10 @@ export function WorkspaceTree({ sessionId, refreshToken, activePath, onOpenFile 
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [children, setChildren] = useState<Map<string, WorkbenchFileEntry[]>>(new Map());
   const [error, setError] = useState<string | null>(null);
+  // 根目录请求是否已完成：区分"还在加载"与"工作区真的是空的"
+  const [rootLoaded, setRootLoaded] = useState(false);
 
-  const loadDir = useCallback(async (dirPath: string) => {
+  const loadDir = useCallback(async (dirPath: string, isRoot = false) => {
     const api = workbenchApi();
     if (!api) return;
     try {
@@ -41,15 +43,17 @@ export function WorkspaceTree({ sessionId, refreshToken, activePath, onOpenFile 
         next.set(dirPath, entries);
         return next;
       });
+      if (isRoot) setRootLoaded(true);
       setError(null);
     } catch (cause) {
+      if (isRoot) setRootLoaded(true);
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   }, [sessionId]);
 
   useEffect(() => {
     // 首次与外部变更令牌变化时：刷新根目录 + 已展开目录
-    void loadDir("");
+    void loadDir("", true);
     for (const dir of expanded) void loadDir(dir);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, refreshToken]);
@@ -109,7 +113,10 @@ export function WorkspaceTree({ sessionId, refreshToken, activePath, onOpenFile 
   return (
     <div className="cy-workbench-tree" aria-label={t("workbench.treeAria")}>
       {error && <div className="cy-workbench-tree__error">{error}</div>}
-      {!error && rootEntries.length === 0 && <div className="cy-workbench-tree__empty">{t("workbench.treeLoading")}</div>}
+      {!error && !rootLoaded && <div className="cy-workbench-tree__empty">{t("workbench.treeLoading")}</div>}
+      {!error && rootLoaded && rootEntries.length === 0 && (
+        <div className="cy-workbench-tree__empty">{t("workbench.treeEmpty")}</div>
+      )}
       {renderEntries(rootEntries, 0)}
     </div>
   );

@@ -27,6 +27,13 @@ import type { ResolvedGitExecutable } from "./git-executable";
 export const CHECKPOINT_REF = "refs/cyrene-checkpoints/head";
 /** git 空树的固定 hash，用于计算首条快照的 diff */
 const EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+/**
+ * checkpoint 提交与用户身份无关，固定内部 ident。
+ * 自带 Git 运行时屏蔽了系统/全局配置（GIT_CONFIG_NOSYSTEM / GIT_CONFIG_GLOBAL=NUL），
+ * 用户机器也可能从没配过 user.name/email，不固定身份 commit-tree 会直接失败。
+ */
+const CHECKPOINT_IDENT_NAME = "Cyrene Checkpoint";
+const CHECKPOINT_IDENT_EMAIL = "checkpoint@cyrene.local";
 const MESSAGE_FIELD_SEP = "\u001f";
 const RECORD_SEP = "\u001e";
 /** diff patch 最多保留行数，超出截断 */
@@ -226,6 +233,16 @@ export function computeFilesToDelete(currentFiles: string[], targetFiles: Set<st
   return currentFiles.filter((file) => !targetFiles.has(file));
 }
 
+/**
+ * 解析 `git -z`（NUL 分隔）输出。
+ * 默认 git 会按 core.quotepath 把非 ASCII 路径转义成八进制串（如 "你好.ts" →
+ * "\344\275\240..."），按行 split 后拿到的是假文件名；-z 输出原始字节路径，
+ * 用 NUL 分隔才不会在回退删文件时 ENOENT。
+ */
+export function splitNulOutput(output: string): string[] {
+  return output.split("\0").filter((entry) => entry.length > 0);
+}
+
 function assertHash(hash: string): void {
   if (!/^[0-9a-fA-F]{40}$/.test(hash)) throw new Error("快照标识不合法");
 }
@@ -257,8 +274,29 @@ function createRealCheckpointClient(input: { workspaceRoot: string; executable: 
     return instance.env({ ...baseEnv, GIT_INDEX_FILE: indexFile });
   }
 
+  /**
+   * checkpoint 追求字节级快照/还原，必须关掉 git 的换行符转换：
+   * Windows 上 Git for Windows 默认 core.autocrlf=true，会在 add 时 CRLF→LF、
+   * checkout 时 LF→CRLF，导致回退后文件内容与快照那一刻不完全一致。
+   * 用命令级 -c 覆盖，不写入仓库或用户的 git config。
+   */
+  const NO_CRLF = ["-c", "core.autocrlf=false"] as const;
+
   function newTempIndexPath(): string {
     return path.join(os.tmpdir(), `cyrene-checkpoint-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  }
+
+  /**
+   * 时间机器对"普通文件夹"也要可用：工作区不是 git 仓库时，首次写操作前静默 git init。
+   * init 只在该目录建 .git（文件树对用户隐藏 .git），不提交、不动用户文件；
+   * 提交身份走固定 ident 环境变量，不依赖也不污染用户的 git 配置。
+   */
+  let repoReady = false;
+  async function ensureRepo(): Promise<void> {
+    if (repoReady) return;
+    const inside = (await git.raw(["rev-parse", "--is-inside-work-tree"]).catch(() => "")).trim();
+    if (inside !== "true") await git.raw(["init", "--quiet"]);
+    repoReady = true;
   }
 
   return {
@@ -270,10 +308,11 @@ function createRealCheckpointClient(input: { workspaceRoot: string; executable: 
     },
 
     async writeWorkspaceTree() {
+      await ensureRepo();
       const indexFile = newTempIndexPath();
       try {
         const tmp = gitWithTempIndex(indexFile);
-        await tmp.raw(["add", "-A"]);
+        await tmp.raw([...NO_CRLF, "add", "-A"]);
         return (await tmp.raw(["write-tree"])).trim();
       } finally {
         rmTempIndex(indexFile);
@@ -284,7 +323,19 @@ function createRealCheckpointClient(input: { workspaceRoot: string; executable: 
       const args = parentHash
         ? ["commit-tree", tree, "-p", parentHash, "-m", message]
         : ["commit-tree", tree, "-m", message];
-      return (await git.raw(args)).trim();
+      // 独立实例注入固定 ident：不依赖用户/系统 git 配置（自带运行时已屏蔽它们）
+      const identified = simpleGit({
+        baseDir: input.workspaceRoot,
+        binary: input.executable.command,
+        maxConcurrentProcesses: 1,
+      }).env({
+        ...baseEnv,
+        GIT_AUTHOR_NAME: CHECKPOINT_IDENT_NAME,
+        GIT_AUTHOR_EMAIL: CHECKPOINT_IDENT_EMAIL,
+        GIT_COMMITTER_NAME: CHECKPOINT_IDENT_NAME,
+        GIT_COMMITTER_EMAIL: CHECKPOINT_IDENT_EMAIL,
+      });
+      return (await identified.raw(args)).trim();
     },
 
     async updateRef(hash) {
@@ -311,9 +362,10 @@ function createRealCheckpointClient(input: { workspaceRoot: string; executable: 
       const parent = (await git.raw(["rev-parse", `${hash}^`]).catch(() => "")).trim();
       const from = parent || EMPTY_TREE_HASH;
       const range = `${from}..${hash}`;
+      // core.quotepath=false：非 ASCII 文件名在 numstat/patch 里保持原文，不转义成八进制串
       const [numstat, patch] = await Promise.all([
-        git.raw(["diff", "--numstat", range]),
-        git.raw(["diff", range]),
+        git.raw(["-c", "core.quotepath=false", "diff", "--numstat", range]),
+        git.raw(["-c", "core.quotepath=false", "diff", range]),
       ]);
       const files = numstat
         .split("\n")
@@ -345,15 +397,16 @@ function createRealCheckpointClient(input: { workspaceRoot: string; executable: 
       try {
         const tmp = gitWithTempIndex(indexFile);
         await tmp.raw(["read-tree", hash]);
-        await tmp.raw(["checkout-index", "-f", "-a"]);
+        await tmp.raw([...NO_CRLF, "checkout-index", "-f", "-a"]);
       } finally {
         rmTempIndex(indexFile);
       }
     },
 
     async listTreeFiles(hash) {
-      const output = await git.raw(["ls-tree", "-r", "--name-only", hash]);
-      return output.split("\n").map((line) => line.replace(/^"|"$/g, "")).filter(Boolean);
+      // -z：NUL 分隔的原始路径，中文等非 ASCII 文件名不被 quotepath 转义
+      const output = await git.raw(["ls-tree", "-r", "-z", "--name-only", hash]);
+      return splitNulOutput(output);
     },
 
     async listWorkspaceFiles() {
@@ -361,8 +414,8 @@ function createRealCheckpointClient(input: { workspaceRoot: string; executable: 
       try {
         const tmp = gitWithTempIndex(indexFile);
         await tmp.raw(["add", "-A"]);
-        const output = await tmp.raw(["ls-files", "--cached"]);
-        return output.split("\n").filter(Boolean);
+        const output = await tmp.raw(["ls-files", "-z", "--cached"]);
+        return splitNulOutput(output);
       } finally {
         rmTempIndex(indexFile);
       }
