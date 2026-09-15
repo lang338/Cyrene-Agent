@@ -396,46 +396,63 @@
   min-height: 0;
 }
 
-/* ── 左栏文件树 ───────────────────────────────────────── */
+/* ── 左栏文件树（VS Code/Trae 风格：紧凑行 + 缩进引导线 + 类型图标） ── */
 
 .cy-workbench-tree {
-  padding: 6px 4px;
+  padding: 4px 0 8px;
   font-size: 13px;
 }
 
 .cy-workbench-tree__row {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   width: 100%;
+  height: 22px;
   background: none;
   border: none;
-  color: #c9cdd4;
+  color: #c8ccd3;
   font-size: 13px;
+  line-height: 22px;
   text-align: left;
-  padding: 4px 8px;
-  border-radius: 6px;
+  /* 每层缩进 8px；箭头和图标各 16px，故文件/目录名天然对齐 */
+  padding: 0 8px 0 calc(8px + var(--tree-depth, 0) * 8px);
   cursor: pointer;
+  user-select: none;
 }
 
 .cy-workbench-tree__row:hover {
-  background: #2a2d33;
+  background: #282b31;
 }
 
 .cy-workbench-tree__row.is-active {
-  background: #2b3550;
-  color: #e8e8e8;
+  background: #2f4360;
+  color: #f2f4f8;
 }
 
-.cy-workbench-tree__chevron {
-  width: 12px;
+.cy-workbench-tree__twisty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
   flex: none;
-  color: #6d737b;
-  font-size: 10px;
+  color: #7e858f;
 }
 
-.cy-workbench-tree__dot {
-  width: 12px;
+.cy-workbench-tree__row.is-open .cy-workbench-tree__twisty svg {
+  transform: rotate(90deg);
+}
+
+.cy-workbench-tree__twisty svg {
+  transition: transform 0.12s ease;
+}
+
+/* 类型图标固定 16px，彩色徽标本身是 16x16 的 svg */
+.cy-workbench-tree__row > svg {
+  width: 16px;
+  height: 16px;
   flex: none;
 }
 
@@ -443,6 +460,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 缩进引导线：相对行定位，贯通整行高度，落在每一级箭头的正中 */
+.cy-workbench-tree__guides {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.cy-workbench-tree__guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.09);
 }
 
 .cy-workbench-tree__error,

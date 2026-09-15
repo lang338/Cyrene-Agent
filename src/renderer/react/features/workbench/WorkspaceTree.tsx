@@ -1,8 +1,9 @@
 // 工作台左栏：工作区文件树（懒加载目录）。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { useTranslation } from "../../i18n";
 import type { WorkbenchFileEntry } from "../../../../shared/code-workbench-types";
+import { FileTypeIcon } from "./file-type-icon";
 
 interface WorkbenchApi {
   listDir(sessionId: string, path?: string): Promise<WorkbenchFileEntry[]>;
@@ -70,8 +71,21 @@ export function WorkspaceTree({ sessionId, refreshToken, activePath, onOpenFile 
     });
   }
 
+  /** VS Code 风格的缩进引导线：每一级一条，落在祖先展开箭头的正中 */
+  function IndentGuides({ depth }: { depth: number }) {
+    if (depth === 0) return null;
+    return (
+      <span className="cy-workbench-tree__guides" aria-hidden="true">
+        {Array.from({ length: depth }, (_, i) => (
+          <span key={i} className="cy-workbench-tree__guide" style={{ left: 15.5 + i * 8 }} />
+        ))}
+      </span>
+    );
+  }
+
   function renderEntries(entries: WorkbenchFileEntry[], depth: number): React.ReactNode {
     return entries.map((entry) => {
+      const rowStyle = { "--tree-depth": depth } as CSSProperties;
       if (entry.type === "dir") {
         const isOpen = expanded.has(entry.path);
         return (
@@ -79,11 +93,24 @@ export function WorkspaceTree({ sessionId, refreshToken, activePath, onOpenFile 
             <button
               type="button"
               className={`cy-workbench-tree__row ${isOpen ? "is-open" : ""}`}
-              style={{ paddingLeft: 10 + depth * 14 }}
+              style={rowStyle}
               onClick={() => toggleDir(entry.path)}
             >
-              <span className="cy-workbench-tree__chevron">{isOpen ? "▾" : "▸"}</span>
-              <span className="cy-workbench-tree__name">{entry.name}</span>
+              <IndentGuides depth={depth} />
+              <span className="cy-workbench-tree__twisty">
+                <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                  <path
+                    d="M6 3.8l4.2 4.2L6 12.2"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+              <FileTypeIcon name={entry.name} isDir dirOpen={isOpen} />
+              <span className="cy-workbench-tree__name" title={entry.path}>{entry.name}</span>
             </button>
             {isOpen && children.has(entry.path) && (
               <div className="cy-workbench-tree__children">
@@ -98,10 +125,13 @@ export function WorkspaceTree({ sessionId, refreshToken, activePath, onOpenFile 
           key={entry.path}
           type="button"
           className={`cy-workbench-tree__row ${activePath === entry.path ? "is-active" : ""}`}
-          style={{ paddingLeft: 10 + depth * 14 + 14 }}
+          style={rowStyle}
           onClick={() => onOpenFile(entry.path)}
         >
-          <span className="cy-workbench-tree__dot" />
+          <IndentGuides depth={depth} />
+          {/* 文件保留一个空的箭头位，与目录名对齐 */}
+          <span className="cy-workbench-tree__twisty" aria-hidden="true" />
+          <FileTypeIcon name={entry.name} />
           <span className="cy-workbench-tree__name" title={entry.path}>{entry.name}</span>
         </button>
       );
