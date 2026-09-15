@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import type { ChatSession } from "../../shared/chat-types";
 import type { ResolvedGitExecutable } from "./git-executable";
 import {
+  buildInitPreflightMessage,
   buildRestoreConflictMessage,
   computeFilesToDelete,
   createCheckpointService,
@@ -222,6 +223,39 @@ describe("checkpoint-service", () => {
     expect(many).not.toContain("f11.txt"); // 只显示前 10 个
   });
 
+  it("buildInitPreflightMessage：三类预检失败都点名原因并给出指引", () => {
+    const system = buildInitPreflightMessage("D:\\", { kind: "system-location" });
+    expect(system).toContain("系统根目录");
+    expect(system).toContain("D:\\");
+    expect(system).toContain("具体的项目文件夹");
+
+    const nested = buildInitPreflightMessage("D:/ws", {
+      kind: "nested-repos",
+      repos: ["project-a/.git", "项目B/.git"],
+    });
+    expect(nested).toContain("2 个独立的 Git 仓库");
+    expect(nested).toContain("project-a/.git");
+    expect(nested).toContain("项目B/.git");
+    expect(nested).toContain("父文件夹");
+
+    const manyRepos = Array.from({ length: 7 }, (_, i) => `p${i}/.git`);
+    const nestedMany = buildInitPreflightMessage("D:/ws", { kind: "nested-repos", repos: manyRepos });
+    expect(nestedMany).toContain("7 个独立的 Git 仓库");
+    expect(nestedMany).toContain("另有 2 个");
+    expect(nestedMany).not.toContain("p6/.git"); // 只点名前 5 个
+
+    const tooLarge = buildInitPreflightMessage("D:/ws", {
+      kind: "too-large",
+      fileCount: 120_000,
+      totalBytes: 6_200_000_000,
+      scanLimitHit: true,
+    });
+    expect(tooLarge).toContain("120000");
+    expect(tooLarge).toContain("6.2 GB");
+    expect(tooLarge).toContain("提前停止");
+    expect(tooLarge).toContain("git init");
+  });
+
   it("会话校验：非 code 模式与未绑定工作区都拒绝", async () => {
     const { client } = createFakeClient({});
     const service = createCheckpointService({
@@ -372,5 +406,41 @@ describe("real git 集成：普通文件夹自动 init + 中文路径 + 固定 i
     await service.restore("s1", first!.hash);
     expect(fs.readFileSync(path.join(root, "secret.txt"), "utf8")).toBe("快照里的原始内容\n");
     expect(fs.readFileSync(path.join(root, "密钥.txt"), "utf8")).toBe("原始密钥\n");
+  });
+
+  it("预检：非 git 父目录内含独立仓库时中止快照、点名且不创建 .git", async () => {
+    if (!available) return;
+    // 父目录下放两个嵌套项目（含中文名），各自是独立 git 仓库——正是"绑定错父目录"的场景
+    const projectA = path.join(root, "project-a");
+    const projectB = path.join(root, "项目B");
+    fs.mkdirSync(projectA, { recursive: true });
+    fs.mkdirSync(projectB, { recursive: true });
+    fs.writeFileSync(path.join(projectA, "index.js"), "console.log(1)\n");
+    fs.writeFileSync(path.join(projectB, "main.ts"), "export const x = 1;\n");
+    await execFileAsync("git", ["init", "--quiet"], { cwd: projectA, windowsHide: true });
+    await execFileAsync("git", ["init", "--quiet"], { cwd: projectB, windowsHide: true });
+    fs.writeFileSync(path.join(root, "笔记.txt"), "父目录散文件\n");
+
+    const service = createCheckpointService({
+      getSession: vi.fn(() => fakeSession(root)),
+      resolveExecutable: vi.fn(async () => SYSTEM_GIT),
+    });
+
+    const attempt = service.snapshot("s1", "auto").then(
+      () => {
+        throw new Error("应当中止快照");
+      },
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    await expect(attempt).resolves.toMatch(/时间机器已中止/);
+    const message = await attempt;
+    expect(message).toContain("2 个独立的 Git 仓库");
+    expect(message).toContain("project-a/.git");
+    expect(message).toContain("项目B/.git");
+    // 关键：父目录没有被静默 init，子仓库也没被动过
+    expect(fs.existsSync(path.join(root, ".git"))).toBe(false);
+    expect(fs.existsSync(path.join(projectA, ".git"))).toBe(true);
+    expect(fs.existsSync(path.join(projectB, ".git"))).toBe(true);
+    expect(fs.readFileSync(path.join(root, "笔记.txt"), "utf8")).toBe("父目录散文件\n");
   });
 });

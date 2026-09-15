@@ -266,6 +266,57 @@ export function buildRestoreConflictMessage(conflicts: string[]): string {
   ].join("\n");
 }
 
+// ── 自动 git init 前的工作区预检 ─────────────────────────────────
+/**
+ * 非 git 目录允许全量快照的规模上限。
+ * 真正的代码项目一般本身就是 git 仓库（走 .gitignore，快照只跟踪源码）；
+ * 走到"自动 init"分支的普通文件夹不该到这个量级。
+ */
+const PREFLIGHT_MAX_FILES = 50_000;
+const PREFLIGHT_MAX_TOTAL_BYTES = 1_500_000_000;
+/** 目录扫描条目上限：超过即判规模过大并提前停止，避免在巨目录上长时间遍历 */
+const PREFLIGHT_SCAN_LIMIT = 60_000;
+/** 嵌套仓库报错里最多点名的路径数 */
+const MAX_NESTED_REPO_PATHS_SHOWN = 5;
+
+export type InitPreflightFinding =
+  | { kind: "system-location" }
+  | { kind: "nested-repos"; repos: string[] }
+  | { kind: "too-large"; fileCount: number; totalBytes: number; scanLimitHit: boolean };
+
+/**
+ * 构造自动 init 预检失败的中止文案：明确点名问题、解释风险、给出处理方向。
+ */
+export function buildInitPreflightMessage(root: string, finding: InitPreflightFinding): string {
+  if (finding.kind === "system-location") {
+    return [
+      "时间机器已中止：不能把系统根目录或用户主目录作为项目工作区。",
+      `当前绑定：${root}`,
+      "这里包含操作系统或用户的海量文件，全量快照会占满磁盘且极其缓慢。请在底栏项目选择器中绑定具体的项目文件夹。",
+    ].join("\n");
+  }
+  if (finding.kind === "nested-repos") {
+    const shown = finding.repos
+      .slice(0, MAX_NESTED_REPO_PATHS_SHOWN)
+      .map((repo) => `  - ${repo}`)
+      .join("\n");
+    const more = finding.repos.length > MAX_NESTED_REPO_PATHS_SHOWN
+      ? `\n  ……另有 ${finding.repos.length - MAX_NESTED_REPO_PATHS_SHOWN} 个`
+      : "";
+    return [
+      `时间机器已中止：该文件夹内含 ${finding.repos.length} 个独立的 Git 仓库，快照只能把它们记成占位符，无法保存仓库内部的文件改动：`,
+      `${shown}${more}`,
+      "请直接绑定具体的项目目录，而不是多个项目的父文件夹。",
+    ].join("\n");
+  }
+  const gb = (finding.totalBytes / 1_000_000_000).toFixed(1);
+  const scanNote = finding.scanLimitHit ? "（文件过多，统计在扫描上限处提前停止）" : "";
+  return [
+    `时间机器已中止：文件夹规模过大（约 ${finding.fileCount} 个文件 / ${gb} GB）${scanNote}，全量快照会非常缓慢并占用大量磁盘。`,
+    "请绑定更具体的项目目录。如果目录里主要是 node_modules 等可重建的依赖，请先在该目录执行 git init 并配置 .gitignore，再使用时间机器。",
+  ].join("\n");
+}
+
 /**
  * 解析 `git -z`（NUL 分隔）输出。
  * 默认 git 会按 core.quotepath 把非 ASCII 路径转义成八进制串（如 "你好.ts" →
@@ -282,6 +333,104 @@ function assertHash(hash: string): void {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
+}
+
+/** 大小写不敏感、去掉结尾分隔符的路径比较（Windows 盘符/用户目录可能写法不一） */
+function normalizeForCompare(target: string): string {
+  return path.resolve(target).replace(/[\\/]+$/, "").toLowerCase();
+}
+
+/**
+ * 绝不允许作为时间机器工作区的位置：盘符根、用户主目录、系统与程序安装目录。
+ * 只匹配目录本身；子目录由规模上限兜底。
+ */
+function findDeniedSystemLocation(root: string): boolean {
+  const target = normalizeForCompare(root);
+  const candidates = [
+    path.parse(root).root,
+    os.homedir(),
+    process.env.SystemRoot,
+    process.env.ProgramFiles,
+    process.env["ProgramFiles(x86)"],
+    process.env.ProgramData,
+  ]
+    .filter((candidate): candidate is string => Boolean(candidate))
+    .map(normalizeForCompare);
+  return candidates.includes(target);
+}
+
+function toPosix(relative: string): string {
+  return relative.split(path.sep).join("/");
+}
+
+/**
+ * 对"即将自动 git init 的非 git 目录"做体检，返回需要中止的原因；null 表示可以 init。
+ * 拦三类典型误绑定（任一都不静默继续）：
+ * 1. 系统根/用户主目录；
+ * 2. 内含独立 .git 的父目录——git 只会把内部仓库记成占位符（gitlink），
+ *    用户的代码改动一条都进不了快照，是"看似在保护、实际没保护"的陷阱；
+ * 3. 规模失控的目录（如安装好的应用本体）——全量 add 会产出 GB 级 .git、快照长期卡顿。
+ * 扫描有条目数上限，绝不跟随符号链接（防环、防越出工作区）。
+ */
+async function preflightNonGitFolder(root: string): Promise<InitPreflightFinding | null> {
+  if (findDeniedSystemLocation(root)) return { kind: "system-location" };
+
+  const nestedRepos: string[] = [];
+  let fileCount = 0;
+  let totalBytes = 0;
+  let scanned = 0;
+  let scanLimitHit = false;
+  let overLimit = false;
+
+  async function walk(dir: string, depth: number): Promise<void> {
+    if (scanLimitHit) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      // 单个目录无权限/被删：跳过，不因预检本身阻断流程（git add 阶段会再报错）
+      return;
+    }
+    for (const entry of entries) {
+      if (scanLimitHit) return;
+      scanned += 1;
+      if (scanned > PREFLIGHT_SCAN_LIMIT) {
+        scanLimitHit = true;
+        return;
+      }
+      const full = path.join(dir, entry.name);
+      // 任何层级的 .git 都不进入扫描；depth>0 的属于嵌套仓库，需要点名
+      if (entry.name === ".git") {
+        if (depth > 0) nestedRepos.push(toPosix(path.relative(root, full)));
+        continue;
+      }
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        await walk(full, depth + 1);
+      } else if (entry.isFile()) {
+        fileCount += 1;
+        // 已确认超规模后不再逐个 stat，继续走目录只为了发现嵌套 .git
+        if (!overLimit) {
+          try {
+            totalBytes += (await fs.promises.lstat(full)).size;
+          } catch {
+            // 扫描期间文件被删/锁定：忽略单个 stat 失败
+          }
+          if (fileCount > PREFLIGHT_MAX_FILES || totalBytes > PREFLIGHT_MAX_TOTAL_BYTES) {
+            overLimit = true;
+          }
+        }
+      }
+    }
+  }
+
+  await walk(root, 0);
+
+  if (scanLimitHit || overLimit) {
+    return { kind: "too-large", fileCount, totalBytes, scanLimitHit };
+  }
+  if (nestedRepos.length > 0) return { kind: "nested-repos", repos: nestedRepos };
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,12 +475,18 @@ function createRealCheckpointClient(input: { workspaceRoot: string; executable: 
    * 时间机器对"普通文件夹"也要可用：工作区不是 git 仓库时，首次写操作前静默 git init。
    * init 只在该目录建 .git（文件树对用户隐藏 .git），不提交、不动用户文件；
    * 提交身份走固定 ident 环境变量，不依赖也不污染用户的 git 配置。
+   * init 之前必须过预检：系统目录/嵌套仓库/超规模目录一律中止并点名，
+   * 绝不静默 init 出 GB 级无用仓库（见 preflightNonGitFolder）。
    */
   let repoReady = false;
   async function ensureRepo(): Promise<void> {
     if (repoReady) return;
     const inside = (await git.raw(["rev-parse", "--is-inside-work-tree"]).catch(() => "")).trim();
-    if (inside !== "true") await git.raw(["init", "--quiet"]);
+    if (inside !== "true") {
+      const finding = await preflightNonGitFolder(input.workspaceRoot);
+      if (finding) throw new Error(buildInitPreflightMessage(input.workspaceRoot, finding));
+      await git.raw(["init", "--quiet"]);
+    }
     repoReady = true;
   }
 
