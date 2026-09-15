@@ -128,35 +128,35 @@ export function FileTypeIcon({ name, isDir, dirOpen }: FileTypeIconProps) {
       return <ReactAtom />;
     case "json":
     case "jsonc":
-      return <Glyph label="{}" color="#d7ba7d" fontSize="7.8" />;
+      return <Glyph label="{}" color="#d7ba7d" fontSize={7.8} />;
     case "html":
     case "htm":
     case "xml":
     case "vue":
-      return <Glyph label="<>" color="#ef8b52" fontSize="7" />;
+      return <Glyph label="<>" color="#ef8b52" fontSize={7} />;
     case "css":
-      return <Glyph label="#" color="#61afef" fontSize="9.4" />;
+      return <Glyph label="#" color="#61afef" fontSize={9.4} />;
     case "scss":
     case "sass":
-      return <Glyph label="#" color="#e287b6" fontSize="9.4" />;
+      return <Glyph label="#" color="#e287b6" fontSize={9.4} />;
     case "less":
-      return <Glyph label="#" color="#5b9bd5" fontSize="9.4" />;
+      return <Glyph label="#" color="#5b9bd5" fontSize={9.4} />;
     case "md":
     case "mdx":
-      return <Glyph label="M" color="#63a6e8" fontSize="9" />;
+      return <Glyph label="M" color="#63a6e8" fontSize={9} />;
     case "sh":
     case "bash":
     case "zsh":
-      return <Glyph label=">_" color="#8fd16a" fontSize="6.6" />;
+      return <Glyph label=">_" color="#8fd16a" fontSize={6.6} />;
     case "ps1":
-      return <Badge label="PS" bg="#5a7fc7" color="#ffffff" fontSize="5.8" />;
+      return <Badge label="PS" bg="#5a7fc7" color="#ffffff" fontSize={5.8} />;
     case "bat":
     case "cmd":
-      return <Glyph label=">_" color="#c9cdd4" fontSize="6.6" />;
+      return <Glyph label=">_" color="#c9cdd4" fontSize={6.6} />;
     case "py":
-      return <Badge label="PY" bg="#4b8bbe" color="#ffffff" fontSize="5.8" />;
+      return <Badge label="PY" bg="#4b8bbe" color="#ffffff" fontSize={5.8} />;
     case "go":
-      return <Badge label="GO" bg="#29a6d3" color="#ffffff" fontSize="5.8" />;
+      return <Badge label="GO" bg="#29a6d3" color="#ffffff" fontSize={5.8} />;
     case "png":
     case "jpg":
     case "jpeg":

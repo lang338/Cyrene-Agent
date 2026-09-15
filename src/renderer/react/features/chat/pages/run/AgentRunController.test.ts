@@ -17,8 +17,14 @@ import type { EarlyTtsPlaybackQueue } from "../../tts/early-tts-queue";
  */
 
 interface FakeApi extends AguiApi {
-  emit: (event: AguiEvent) => void;
+  emit: (event: TestAguiEvent) => void;
 }
+
+/**
+ * 测试事件：RUN_FINISHED 实际携带 result（{status}），但渲染桥的 AguiEvent
+ * 为协议事件的精简声明、未包含该字段。测试本地补上，不改生产接口。
+ */
+type TestAguiEvent = AguiEvent & { result?: { status: string } };
 
 /** 假桥：onEvent 注册监听器，run 返回测试控制的 ack，emit 广播事件。 */
 function createFakeApi(ack: { success: boolean; runId: string; error?: string }): FakeApi {
@@ -52,7 +58,9 @@ function createFakeStore() {
 function createRecordingHost() {
   let todoState: TodoStateBySession = {};
   const earlyTtsQueue = { append: vi.fn(), cancel: vi.fn() } as unknown as EarlyTtsPlaybackQueue;
-  const host: AgentRunHost & Record<string, ReturnType<typeof vi.fn>> = {
+  // 记录型宿主：AgentRunHost 的具名函数类型会压过 Record 索引签名，
+  // 测试要读 requestTakeover.mock.calls，故单独把它显式声明为 Mock。
+  const host = {
     patchMessage: vi.fn(),
     setInteraction: vi.fn(),
     clearInteraction: vi.fn(),
@@ -67,6 +75,9 @@ function createRecordingHost() {
     clearTakeover: vi.fn(),
     earlyTts: { start: vi.fn(() => earlyTtsQueue), finish: vi.fn() },
     onRunFinished: vi.fn(),
+  } as unknown as AgentRunHost & {
+    requestTakeover: ReturnType<typeof vi.fn>;
+    earlyTts: { start: ReturnType<typeof vi.fn>; finish: ReturnType<typeof vi.fn> };
   };
   return { host, earlyTtsQueue, readTodoState: () => todoState };
 }

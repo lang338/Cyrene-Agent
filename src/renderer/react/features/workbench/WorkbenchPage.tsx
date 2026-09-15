@@ -65,6 +65,20 @@ function fileBaseName(path: string): string {
 /** "发送时带上当前文件"开关的持久化键；缺省为开 */
 const INCLUDE_ACTIVE_FILE_KEY = "cy-workbench-include-active-file";
 
+/**
+ * 窗口控制桥：preload 挂在 window.chat（与 ChatPage 同款）。
+ * 仓库没有全局 Window.chat 声明，按既有惯例（useComposerAttachments 等）显式 cast。
+ */
+function windowControls(): {
+  minimize?: () => void;
+  toggleMaximize?: () => void;
+  close?: () => void;
+} | undefined {
+  return (window as typeof window & {
+    chat?: { minimize?: () => void; toggleMaximize?: () => void; close?: () => void };
+  }).chat;
+}
+
 function readIncludeActiveFile(): boolean {
   try {
     return localStorage.getItem(INCLUDE_ACTIVE_FILE_KEY) !== "0";
@@ -354,7 +368,7 @@ export function WorkbenchPage({
             <button
               type="button"
               className="cy-workbench__win-btn"
-              onClick={() => window.chat?.minimize()}
+              onClick={() => windowControls()?.minimize()}
               aria-label={t("ui.minimize")}
               title={t("ui.minimize")}
             >
@@ -365,7 +379,7 @@ export function WorkbenchPage({
             <button
               type="button"
               className="cy-workbench__win-btn"
-              onClick={() => window.chat?.toggleMaximize()}
+              onClick={() => windowControls()?.toggleMaximize()}
               aria-label={t("ui.maximizeOrRestore")}
               title={t("ui.maximizeOrRestore")}
             >
@@ -376,7 +390,7 @@ export function WorkbenchPage({
             <button
               type="button"
               className="cy-workbench__win-btn cy-workbench__win-btn--close"
-              onClick={() => window.chat?.close()}
+              onClick={() => windowControls()?.close()}
               aria-label={t("ui.closeChatWindow")}
               title={t("ui.closeChatWindow")}
             >
