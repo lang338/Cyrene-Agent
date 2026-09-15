@@ -15,6 +15,7 @@ import {
 } from "../components/run-presentation";
 import { ChatMessageList } from "../components/ChatMessageList";
 import { ChatPageNavigation, type ChatPagePanel } from "../components/ChatPageNavigation";
+import { WorkbenchPage } from "../../workbench/WorkbenchPage";
 import {
   ContextCompressionNotice,
   FileDropOverlay,
