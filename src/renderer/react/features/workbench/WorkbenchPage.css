@@ -5,8 +5,10 @@
   /* 分隔线：主窗口是透明窗体 + .cy-page 自绘圆角；工作台被 portal 到 body，
      在 .cy-page 之外，必须自己再画一次圆角，否则深色底会盖住窗口圆角、四角变直角。
      内部各功能分区共用这两条亮线，避免整块深色糊成一团。 */
-  --cy-wb-line: rgba(255, 255, 255, 0.10);
-  --cy-wb-line-strong: rgba(255, 255, 255, 0.18);
+  /* 分区线用 2px：1px 低透明线在深色底上几乎看不见（试过 1px/0.10，仍然糊） */
+  --cy-wb-line: rgba(255, 255, 255, 0.17);
+  --cy-wb-line-strong: rgba(255, 255, 255, 0.28);
+  --cy-wb-line-w: 2px;
 
   position: fixed;
   inset: 0;
@@ -14,7 +16,7 @@
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
-  border: 1px solid var(--cy-wb-line-strong);
+  border: var(--cy-wb-line-w) solid var(--cy-wb-line-strong);
   border-radius: var(--cy-window-radius, 24px);
   overflow: hidden;
   background: #1b1d21;
@@ -38,7 +40,7 @@
   height: 42px;
   padding: 0 0 0 12px;
   background: #232529;
-  border-bottom: 1px solid var(--cy-wb-line-strong);
+  border-bottom: var(--cy-wb-line-w) solid var(--cy-wb-line-strong);
   flex: none;
   /* 工作台是全屏覆盖层、盖住了系统标题栏：顶栏承担拖拽移动窗口的职责 */
   -webkit-app-region: drag;
@@ -236,7 +238,7 @@
   font-size: 12px;
   color: #9aa0a8;
   background: #202329;
-  border-bottom: 1px solid var(--cy-wb-line);
+  border-bottom: var(--cy-wb-line-w) solid var(--cy-wb-line);
   flex: none;
 }
 
@@ -264,8 +266,10 @@
   content: "";
   position: absolute;
   inset: 0 auto 0 50%;
-  width: 1px;
+  width: var(--cy-wb-line-w);
   background: var(--cy-wb-line);
+  /* 居中对齐：宽度变化时用半宽反向位移，始终压在中线上 */
+  transform: translateX(calc(var(--cy-wb-line-w) / -2));
   transition: background 0.15s, width 0.15s, transform 0.15s;
 }
 
@@ -274,8 +278,8 @@
 }
 
 .cy-workbench__resizer:hover::after {
-  width: 2px;
-  transform: translateX(-0.5px);
+  width: 3px;
+  transform: translateX(-1.5px);
   background: #2f6feb;
 }
 
@@ -318,7 +322,7 @@
   flex-wrap: wrap;
   gap: 2px;
   padding: 4px 6px;
-  border-bottom: 1px solid var(--cy-wb-line);
+  border-bottom: var(--cy-wb-line-w) solid var(--cy-wb-line);
   flex: none;
   max-height: 64px;
   overflow-y: auto;
@@ -382,7 +386,7 @@
   font-size: 12px;
   color: #d8b26a;
   background: #322b1e;
-  border-bottom: 1px solid var(--cy-wb-line);
+  border-bottom: var(--cy-wb-line-w) solid var(--cy-wb-line);
   flex: none;
 }
 
@@ -467,7 +471,7 @@
   list-style: none;
   margin: 0;
   padding: 6px 4px;
-  border-bottom: 1px solid var(--cy-wb-line);
+  border-bottom: var(--cy-wb-line-w) solid var(--cy-wb-line);
   flex: none;
   max-height: 40%;
   overflow-y: auto;
@@ -671,7 +675,7 @@
 
 .cy-workbench__chat-composer {
   flex: none;
-  border-top: 1px solid var(--cy-wb-line);
+  border-top: var(--cy-wb-line-w) solid var(--cy-wb-line);
   padding: 8px;
   display: flex;
   flex-direction: column;
