@@ -412,6 +412,27 @@
   flex: none;
 }
 
+/* 跟随昔涟被未保存改动挡下：只告知，不覆盖用户手里的草稿 */
+.cy-workbench__editor-notice.is-blocked {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #e5a3a3;
+  background: #3a2626;
+}
+
+.cy-workbench__editor-notice.is-blocked button {
+  flex: none;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
 /* Monaco 容器撑满剩余空间 */
 .cy-workbench__editor-body .cy-monaco-fill {
   flex: 1;

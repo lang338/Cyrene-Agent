@@ -51,6 +51,8 @@
     "emptyEditor": "Pick a file on the left to start editing",
     "binaryFile": "Binary file: view-only, cannot edit",
     "truncatedFile": "File too large: only the first part is loaded; editing disabled",
+    "followDirtyNotice": "Cyrene changed {{name}}, but you have unsaved edits: your version was kept, and saving will overwrite Cyrene's changes",
+    "dismissNotice": "Dismiss",
     "chatHeader": "Chat",
     "chatEmpty": "No messages yet. Say something to Cyrene",
     "chatPlaceholder": "Chat about this project… (Enter to send, Shift+Enter for newline)",

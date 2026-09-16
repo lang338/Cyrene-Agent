@@ -16,12 +16,15 @@ import { monacoLanguageFor, setupMonaco } from "./monaco-setup";
 import { buildActiveFileContext, type ActiveFileSelection } from "./active-file-context";
 import { useResizableColumns } from "./use-resizable-columns";
 import { workbenchApi, WorkspaceTree } from "./WorkspaceTree";
+import { advanceAiFileChangeBaseline, type AiFileChangeBaseline } from "./follow-changes";
 import { CheckpointTimeline } from "./CheckpointTimeline";
 import "./WorkbenchPage.css";
 
 export interface WorkbenchPageProps extends ComposerInteractionCallbacks {
   sessionId: string;
   mode: ConversationMode;
+  /** 会话绑定的工作区根目录；用于把昔涟改动证据里的路径解析回工作区相对路径 */
+  workspaceRoot?: string;
   /** 当前会话的渲染态消息（ChatPage useSessionMessages 提供，保持实时） */
   messages: ChatMessageItem[];
   busy: boolean;
@@ -107,6 +110,7 @@ function persistIncludeActiveFile(value: boolean): void {
 export function WorkbenchPage({
   sessionId,
   mode,
+  workspaceRoot,
   messages,
   busy,
   preferredAddress,
@@ -131,6 +135,10 @@ export function WorkbenchPage({
   const [buffers, setBuffers] = useState<Record<string, BufferEntry>>({});
   const [treeRefresh, setTreeRefresh] = useState(0);
   const [timelineRefresh, setTimelineRefresh] = useState(0);
+  // 昔涟刚改动的文件：文件树据此展开到它并把行滚进视野
+  const [revealPath, setRevealPath] = useState<string | null>(null);
+  // 昔涟改动的文件正好有未保存改动：内容不覆盖，只提示（值是那个文件路径）
+  const [followBlockedPath, setFollowBlockedPath] = useState<string | null>(null);
   const [snapshotBusy, setSnapshotBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [chatDraft, setChatDraft] = useState("");
@@ -164,11 +172,13 @@ export function WorkbenchPage({
       });
   }, [sessionId]);
 
-  // 快照落盘广播（AI 回合结束 / 编辑器保存防抖 / 回退保底）→ 时间线自动跟上
+  // 快照落盘广播（AI 回合结束 / 编辑器保存防抖 / 回退保底）→ 时间线自动跟上，
+  // 文件树也一起刷新：快照意味着工作区内容变了，其中包含不经写文件工具的改动（如 shell 建文件）
   useEffect(() => {
     const unsubscribe = workbenchApi()?.onCheckpointChanged?.((payload) => {
       if (payload.sessionId !== sessionId) return;
       setTimelineRefresh((value) => value + 1);
+      setTreeRefresh((value) => value + 1);
     });
     return unsubscribe;
   }, [sessionId]);
@@ -191,30 +201,41 @@ export function WorkbenchPage({
     }, 5000);
   }, [sessionId]);
 
-  const openFile = useCallback(async (filePath: string) => {
-    setActivePath(filePath);
-    setMiddleTab("code");
-    // 已打开（含脏缓冲）：只切过去，绝不重新读盘覆盖未保存修改
-    if (buffersRef.current[filePath]) return;
-    setOpenTabs((current) => (current.includes(filePath) ? current : [...current, filePath]));
-    setBuffers((current) => {
-      if (current[filePath]) return current;
-      return { ...current, [filePath]: { content: "", binary: false, truncated: false, dirty: false, loading: true, error: null } };
-    });
+  /**
+   * 从磁盘装载文件内容。
+   * - fresh：首次打开，先落 loading 占位，失败落 error 让编辑器显示原因；
+   * - silent：昔涟改动后刷新已打开的文件，不闪占位；期间缓冲被关闭或被用户编辑
+   *   则放弃本次结果，保住用户手里的版本。
+   * 返回 false 表示没读成（跟随场景据此不留一个报错标签）。
+   */
+  const loadBuffer = useCallback(async (filePath: string, mode: "fresh" | "silent"): Promise<boolean> => {
     const api = workbenchApi();
-    if (!api) return;
+    if (!api) return false;
+    const before = buffersRef.current[filePath]?.content;
+    if (mode === "fresh") {
+      setBuffers((current) => ({
+        ...current,
+        [filePath]: { content: "", binary: false, truncated: false, dirty: false, loading: true, error: null },
+      }));
+    }
     try {
       const file = (await api.readFile(sessionId, filePath)) as WorkbenchFileContent;
       setBuffers((current) => {
-        // 响应飞行期间标签可能已被关闭：只有仍是 loading 占位时才落内容
         const existing = current[filePath];
-        if (!existing || !existing.loading) return current;
+        if (mode === "fresh") {
+          // 响应飞行期间标签可能已被关闭：只有仍是 loading 占位时才落内容
+          if (!existing || !existing.loading) return current;
+        } else if (!existing || existing.loading || existing.dirty || existing.content !== before) {
+          return current;
+        }
         return {
           ...current,
           [filePath]: { content: file.content, binary: file.binary, truncated: file.truncated, dirty: false, loading: false, error: null },
         };
       });
+      return true;
     } catch (cause) {
+      if (mode === "silent") return false;
       setBuffers((current) => {
         const existing = current[filePath];
         if (!existing || !existing.loading) return current;
@@ -230,8 +251,58 @@ export function WorkbenchPage({
           },
         };
       });
+      return false;
     }
   }, [sessionId]);
+
+  /** 用户点开文件：已打开（含脏缓冲）只切过去，绝不重新读盘覆盖未保存修改 */
+  const openFile = useCallback(async (filePath: string) => {
+    setActivePath(filePath);
+    setMiddleTab("code");
+    if (buffersRef.current[filePath]) return;
+    setOpenTabs((current) => (current.includes(filePath) ? current : [...current, filePath]));
+    await loadBuffer(filePath, "fresh");
+  }, [loadBuffer]);
+
+  /**
+   * 跟随昔涟：它刚改动了某个工作区文件，切过去并刷新内容。
+   * 未保存的改动不可被覆盖——那是编辑器里唯一不能让的约束：只提示，不重载。
+   */
+  const followFile = useCallback(async (filePath: string) => {
+    setMiddleTab("code");
+    setActivePath(filePath);
+    const entry = buffersRef.current[filePath];
+    if (entry?.dirty) {
+      setFollowBlockedPath(filePath);
+      return;
+    }
+    if (entry?.loading) return; // 首次读盘还在飞行：落地的就是最新内容
+    setOpenTabs((current) => (current.includes(filePath) ? current : [...current, filePath]));
+    const loaded = await loadBuffer(filePath, entry ? "silent" : "fresh");
+    if (loaded || entry) return;
+    // 路径其实不在工作区、或文件已被删：撤掉这个标签，不把用户丢在报错页上
+    setOpenTabs((current) => current.filter((item) => item !== filePath));
+    setActivePath((active) => (active === filePath ? null : active));
+    setBuffers((current) => {
+      const next = { ...current };
+      delete next[filePath];
+      return next;
+    });
+  }, [loadBuffer]);
+
+  // 跟随昔涟：消息里出现新的文件变更证据就刷新文件树并跳到该文件
+  const seenAiChangesRef = useRef<AiFileChangeBaseline | null>(null);
+  useEffect(() => {
+    const advanced = advanceAiFileChangeBaseline(seenAiChangesRef.current, sessionId, messages, workspaceRoot);
+    seenAiChangesRef.current = advanced.baseline;
+    if (advanced.fresh.length === 0) return;
+    setTreeRefresh((value) => value + 1);
+    // 一次可能改多个文件：跳到最后一个（本批最后落定的一份）；删除的文件只刷树不跳
+    const target = [...advanced.fresh].reverse().find((change) => change.kind !== "deleted");
+    if (!target) return;
+    setRevealPath(target.path);
+    void followFile(target.path);
+  }, [followFile, messages, sessionId, workspaceRoot]);
 
   const saveFile = useCallback(async (filePath: string) => {
     const entry = buffersRef.current[filePath];
@@ -250,6 +321,8 @@ export function WorkbenchPage({
       });
       setTreeRefresh((value) => value + 1);
       setError(null);
+      // 用户已用保存做出选择：跟随被挡下的提示不再成立
+      setFollowBlockedPath((current) => (current === filePath ? null : current));
       scheduleAutoSnapshot();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -297,6 +370,7 @@ export function WorkbenchPage({
     setOpenTabs([]);
     setActivePath(null);
     setBuffers({});
+    setFollowBlockedPath(null);
     setTreeRefresh((value) => value + 1);
   }, []);
 
@@ -432,6 +506,7 @@ export function WorkbenchPage({
               sessionId={sessionId}
               refreshToken={treeRefresh}
               activePath={activePath}
+              revealPath={revealPath}
               onOpenFile={(path) => void openFile(path)}
             />
           </div>
@@ -506,6 +581,21 @@ export function WorkbenchPage({
                       </button>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {/* 昔涟刚改了这个文件，但缓冲里有未保存改动：内容以你的版本为准，只告知 */}
+              {followBlockedPath && followBlockedPath === activePath && activeEntry?.dirty && (
+                <div className="cy-workbench__editor-notice is-blocked">
+                  <span>{t("workbench.followDirtyNotice", { name: fileBaseName(followBlockedPath) })}</span>
+                  <button
+                    type="button"
+                    onClick={() => setFollowBlockedPath(null)}
+                    title={t("workbench.dismissNotice")}
+                    aria-label={t("workbench.dismissNotice")}
+                  >
+                    ×
+                  </button>
                 </div>
               )}
 

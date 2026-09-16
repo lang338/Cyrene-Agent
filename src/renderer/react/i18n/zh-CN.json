@@ -676,6 +676,8 @@
     "emptyEditor": "从左侧选择一个文件开始编辑",
     "binaryFile": "二进制文件：只能查看，无法编辑",
     "truncatedFile": "文件过大：仅加载了前一部分，编辑已禁用",
+    "followDirtyNotice": "昔涟改动了 {{name}}，但你有未保存的修改：内容仍以你的版本为准，保存会覆盖它的改动",
+    "dismissNotice": "关闭提示",
     "chatHeader": "对话",
     "chatEmpty": "还没有消息，和昔涟说点什么吧",
     "chatPlaceholder": "和昔涟聊聊这个项目…（Enter 发送，Shift+Enter 换行）",

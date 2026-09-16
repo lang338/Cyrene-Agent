@@ -1,9 +1,10 @@
 // 工作台左栏：工作区文件树（懒加载目录）。
 
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "../../i18n";
 import type { WorkbenchFileEntry } from "../../../../shared/code-workbench-types";
 import { FileTypeIcon } from "./file-type-icon";
+import { ancestorDirs } from "./follow-changes";
 
 interface WorkbenchApi {
   listDir(sessionId: string, path?: string): Promise<WorkbenchFileEntry[]>;
@@ -25,16 +26,19 @@ interface WorkspaceTreeProps {
   sessionId: string;
   refreshToken: number;
   activePath: string | null;
+  /** 需要定位到的文件（昔涟刚改动的那个）：逐级展开父目录并滚进视野 */
+  revealPath?: string | null;
   onOpenFile: (path: string) => void;
 }
 
-export function WorkspaceTree({ sessionId, refreshToken, activePath, onOpenFile }: WorkspaceTreeProps) {
+export function WorkspaceTree({ sessionId, refreshToken, activePath, revealPath, onOpenFile }: WorkspaceTreeProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [children, setChildren] = useState<Map<string, WorkbenchFileEntry[]>>(new Map());
   const [error, setError] = useState<string | null>(null);
   // 根目录请求是否已完成：区分"还在加载"与"工作区真的是空的"
   const [rootLoaded, setRootLoaded] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const loadDir = useCallback(async (dirPath: string, isRoot = false) => {
     const api = workbenchApi();
@@ -60,6 +64,37 @@ export function WorkspaceTree({ sessionId, refreshToken, activePath, onOpenFile 
     for (const dir of expanded) void loadDir(dir);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, refreshToken]);
+
+  // 定位到昔涟刚改动的文件：展开各级父目录 → 等目录加载完 → 把该行滚进视野
+  useEffect(() => {
+    if (!revealPath) return;
+    const dirs = ancestorDirs(revealPath);
+    if (dirs.length > 0) {
+      setExpanded((current) => {
+        const next = new Set(current);
+        for (const dir of dirs) next.add(dir);
+        return next;
+      });
+    }
+    let active = true;
+    void Promise.all(dirs.map((dir) => loadDir(dir))).then(() => {
+      if (!active) return;
+      // 目录内容刚落地，等这一帧渲染出目标行再滚
+      window.requestAnimationFrame(() => {
+        const rows = containerRef.current?.querySelectorAll<HTMLElement>("[data-path]");
+        if (!rows) return;
+        for (const row of rows) {
+          if (row.dataset.path === revealPath) {
+            row.scrollIntoView({ block: "nearest" });
+            return;
+          }
+        }
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, [revealPath, loadDir]);
 
   function toggleDir(dirPath: string) {
     setExpanded((current) => {
@@ -126,6 +161,7 @@ export function WorkspaceTree({ sessionId, refreshToken, activePath, onOpenFile 
         <button
           key={entry.path}
           type="button"
+          data-path={entry.path}
           className={`cy-workbench-tree__row ${activePath === entry.path ? "is-active" : ""}`}
           style={rowStyle}
           onClick={() => onOpenFile(entry.path)}
@@ -143,7 +179,7 @@ export function WorkspaceTree({ sessionId, refreshToken, activePath, onOpenFile 
   const rootEntries = children.get("") ?? [];
 
   return (
-    <div className="cy-workbench-tree" aria-label={t("workbench.treeAria")}>
+    <div className="cy-workbench-tree" aria-label={t("workbench.treeAria")} ref={containerRef}>
       {error && <div className="cy-workbench-tree__error">{error}</div>}
       {!error && !rootLoaded && <div className="cy-workbench-tree__empty">{t("workbench.treeLoading")}</div>}
       {!error && rootLoaded && rootEntries.length === 0 && (

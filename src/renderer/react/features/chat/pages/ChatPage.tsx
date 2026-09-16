@@ -1596,6 +1596,7 @@ export function ChatPage() {
         <WorkbenchPage
           sessionId={activeSessionId}
           mode={mode}
+          workspaceRoot={activeSession?.workspaceBinding?.workspaceRoot}
           messages={messages}
           busy={isSessionBusy(activeSessionId)}
           preferredAddress={preferredAddress}
