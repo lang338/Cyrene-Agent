@@ -34,6 +34,14 @@ export interface ResizableColumns {
   beginDrag: (side: ColumnSide, event: React.PointerEvent) => void;
   /** 收起后点边缘箭头：恢复折叠前的宽度 */
   reveal: (side: ColumnSide) => void;
+  /**
+   * 键盘调整：delta 为像素增量（正 = 变宽）。
+   * 返回的 collapsed 表示这次操作把该栏收起了——调用方据此交接焦点
+   * （收起后分隔条会被卸载，焦点必须交给边缘的展开箭头，否则掉回 body）。
+   */
+  step: (side: ColumnSide, delta: number) => { collapsed: boolean };
+  /** 该栏当前的宽度边界，供 aria-valuemin/max 如实播报 */
+  boundsFor: (side: ColumnSide) => { min: number; max: number };
 }
 
 /** 两条分隔条的像素占宽 */
@@ -72,6 +80,38 @@ export function maxColumnWidth(
   otherWidth: number,
 ): number {
   return Math.max(0, containerWidth - RESIZER_TOTAL - minMiddle - otherWidth);
+}
+
+/** 键盘步进一次改变多少像素 */
+export const KEYBOARD_STEP = 20;
+
+/**
+ * 键盘按键 → 宽度增量。返回 null 表示这个键不归分隔条管（不吞事件）。
+ * 语义按"向外 = 变宽"：左栏 ArrowRight 变宽、右栏 ArrowLeft 变宽。
+ * Home/End 用 ±Infinity 表达"直接到两端"，由 resolveStep 的夹取落地。
+ */
+export function resizerKeyDelta(key: string, side: ColumnSide): number | null {
+  if (key === "Home") return Number.NEGATIVE_INFINITY;
+  if (key === "End") return Number.POSITIVE_INFINITY;
+  if (key === (side === "left" ? "ArrowRight" : "ArrowLeft")) return KEYBOARD_STEP;
+  if (key === (side === "left" ? "ArrowLeft" : "ArrowRight")) return -KEYBOARD_STEP;
+  return null;
+}
+
+/**
+ * 键盘调整后的宽度：先夹到 [0, max]，低于收起阈值则吸附为收起，
+ * 并保留调整前的宽度作为"展开时回到哪"的记忆值——和拖动时的语义完全一致。
+ */
+export function resolveStep(input: {
+  current: number;
+  delta: number;
+  max: number;
+  collapseAt: number;
+}): { width: number; collapsed: boolean } {
+  const clamped = Math.max(0, Math.min(input.current + input.delta, input.max));
+  // 窗口窄到放不下展开宽度时也吸附收起：与拖动路径的判断保持一致
+  const collapsed = clamped < input.collapseAt || input.max < input.collapseAt;
+  return { width: collapsed ? input.current : clamped, collapsed };
 }
 
 function applySide(
@@ -226,6 +266,30 @@ export function useResizableColumns(options: ResizableColumnsOptions): Resizable
     });
   }, [collapseAt.left, collapseAt.right, minMiddle, options.initial.left, options.initial.right, storageKey]);
 
+  /**
+   * 键盘步进：拿到该栏此刻的可用上限后走一步，走过头就吸附收起。
+   * 判定与持久化都复用拖动路径的同一套逻辑，两条入口不会走出两种行为。
+   */
+  const step = useCallback((side: ColumnSide, delta: number): { collapsed: boolean } => {
+    const other = applied[side === "left" ? "right" : "left"];
+    const max = maxColumnWidth(widthRef.current, minMiddle, other);
+    const result = resolveStep({ current: applied[side], delta, max, collapseAt: collapseAt[side] });
+    setLayout((current) => {
+      const next = applySide(current, side, { width: result.width, collapsed: result.collapsed });
+      persistLayout(storageKey, next);
+      return next;
+    });
+    return result;
+  }, [applied.left, applied.right, collapseAt.left, collapseAt.right, minMiddle, storageKey]);
+
+  const boundsFor = useCallback((side: ColumnSide) => {
+    const other = applied[side === "left" ? "right" : "left"];
+    return {
+      min: collapseAt[side],
+      max: maxColumnWidth(widthRef.current, minMiddle, other),
+    };
+  }, [applied.left, applied.right, collapseAt.left, collapseAt.right, minMiddle]);
+
   return {
     left: applied.left,
     right: applied.right,
@@ -235,5 +299,7 @@ export function useResizableColumns(options: ResizableColumnsOptions): Resizable
     bodyRef,
     beginDrag,
     reveal,
+    step,
+    boundsFor,
   };
 }

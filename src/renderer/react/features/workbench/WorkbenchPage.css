@@ -305,6 +305,19 @@
   background: #2f6feb;
 }
 
+/* 键盘焦点：这条缝只有 5px 宽，没有明显焦点环键盘用户会找不到自己在哪 */
+.cy-workbench__resizer:focus-visible {
+  outline: 2px solid #2f6feb;
+  outline-offset: -1px;
+  background: rgba(47, 111, 235, 0.12);
+}
+
+.cy-workbench__resizer:focus-visible::after {
+  width: 3px;
+  transform: translateX(-1.5px);
+  background: #2f6feb;
+}
+
 /* ── 中栏页签 ─────────────────────────────────────────── */
 
 .cy-workbench__tab {

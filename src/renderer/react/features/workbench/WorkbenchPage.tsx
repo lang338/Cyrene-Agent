@@ -3,6 +3,7 @@
 // 这里不做任何独立的 run 控制——单事实来源，避免双控制器。
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import Editor from "@monaco-editor/react";
 import * as monacoNs from "monaco-editor";
@@ -14,7 +15,7 @@ import { ComposerInteractionPanel, type ComposerInteractionCallbacks } from "../
 import type { ComposerInteraction } from "../chat/components/run-presentation";
 import { monacoLanguageFor, setupMonaco } from "./monaco-setup";
 import { buildActiveFileContext, type ActiveFileSelection } from "./active-file-context";
-import { useResizableColumns } from "./use-resizable-columns";
+import { resizerKeyDelta, useResizableColumns, type ColumnSide } from "./use-resizable-columns";
 import { workbenchApi, WorkspaceTree } from "./WorkspaceTree";
 import { advanceAiFileChangeBaseline, type AiFileChangeBaseline } from "./follow-changes";
 import { CheckpointTimeline } from "./CheckpointTimeline";
@@ -153,6 +154,9 @@ export function WorkbenchPage({
 
   const editorRef = useRef<monacoNs.editor.IStandaloneCodeEditor | null>(null);
   const autoSnapshotTimer = useRef<number | null>(null);
+  // 键盘收起那一侧后，分隔条会被卸载，焦点得交给这两个边缘箭头
+  const revealLeftRef = useRef<HTMLButtonElement | null>(null);
+  const revealRightRef = useRef<HTMLButtonElement | null>(null);
   // buffers 的最新镜像：openFile/saveFile 的异步回调里读取，避免依赖闭包里的旧状态
   const buffersRef = useRef<Record<string, BufferEntry>>({});
   // 只在提交后的布局阶段同步 ref：渲染体保持纯净（StrictMode/并发渲染安全）
@@ -474,6 +478,20 @@ export function WorkbenchPage({
 
   const activeEntry = activePath ? buffers[activePath] : undefined;
 
+  /**
+   * 分隔条键盘操作：←/→ 步进 20px，Home/End 直达两端，按过头即收起（与拖动同一阈值）。
+   * 收起后分隔条会随渲染卸载，所以必须把焦点显式交给边缘的展开箭头——
+   * 否则焦点掉回 body，键盘用户会"迷失"在页面里，这是无障碍里最忌讳的状态。
+   */
+  function onResizerKeyDown(event: ReactKeyboardEvent<HTMLDivElement>, side: ColumnSide) {
+    const delta = resizerKeyDelta(event.key, side);
+    if (delta === null) return;
+    event.preventDefault();
+    if (!columns.step(side, delta).collapsed) return;
+    if (side === "left") revealLeftRef.current?.focus();
+    else revealRightRef.current?.focus();
+  }
+
   return createPortal(
     <div className="cy-workbench" role="dialog" aria-label={t("workbench.title")}>
       <header className="cy-workbench__topbar">
@@ -554,7 +572,15 @@ export function WorkbenchPage({
           <div
             className="cy-workbench__resizer"
             title={t("workbench.resizerHint")}
+            role="separator"
+            tabIndex={0}
+            aria-orientation="vertical"
+            aria-label={t("workbench.resizerAriaLeft")}
+            aria-valuenow={columns.left}
+            aria-valuemin={columns.boundsFor("left").min}
+            aria-valuemax={columns.boundsFor("left").max}
             onPointerDown={(event) => columns.beginDrag("left", event)}
+            onKeyDown={(event) => onResizerKeyDown(event, "left")}
           />
         )}
 
@@ -697,7 +723,15 @@ export function WorkbenchPage({
           <div
             className="cy-workbench__resizer"
             title={t("workbench.resizerHint")}
+            role="separator"
+            tabIndex={0}
+            aria-orientation="vertical"
+            aria-label={t("workbench.resizerAriaRight")}
+            aria-valuenow={columns.right}
+            aria-valuemin={columns.boundsFor("right").min}
+            aria-valuemax={columns.boundsFor("right").max}
             onPointerDown={(event) => columns.beginDrag("right", event)}
+            onKeyDown={(event) => onResizerKeyDown(event, "right")}
           />
         )}
 
@@ -767,6 +801,7 @@ export function WorkbenchPage({
         {/* 收起后的找回入口：贴在窗口最左/最右边缘，鼠标移上去浮现箭头 */}
         {columns.leftCollapsed && (
           <button
+            ref={revealLeftRef}
             type="button"
             className="cy-workbench__reveal cy-workbench__reveal--left"
             onClick={() => columns.reveal("left")}
@@ -780,6 +815,7 @@ export function WorkbenchPage({
         )}
         {columns.rightCollapsed && (
           <button
+            ref={revealRightRef}
             type="button"
             className="cy-workbench__reveal cy-workbench__reveal--right"
             onClick={() => columns.reveal("right")}
