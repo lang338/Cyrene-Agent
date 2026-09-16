@@ -1391,7 +1391,7 @@ export function ChatPage() {
             mode={mode}
           />
         )}
-        {mode === "code" && activeSessionId && (
+        {mode === "code" && activeSessionId && !workbenchOpen && (
           <CodeGitPanel
             sessionId={activeSessionId}
             projectName={workspaceNames.code}
