@@ -48,8 +48,10 @@ export function buildActiveFileContext(
   const relativePath = input.relativePath.trim();
   if (!relativePath) return null;
 
-  const selectionText = input.selection?.text.trim() ?? "";
-  const hasSelection = selectionText.length > 0;
+  // trim 只用来判断"选区是否为空"：送给模型的必须是选中原文。
+  // 缩进和行尾空白在缩进敏感的代码里是有意义的信息，先 trim 再发会改变语义。
+  const selectionText = input.selection?.text ?? "";
+  const hasSelection = selectionText.trim().length > 0;
   const injectContent = input.dirty && !input.readOnly && !input.pending;
 
   const lines = ["[工作台当前打开的文件]", `路径（相对工作区根）：${relativePath}`];

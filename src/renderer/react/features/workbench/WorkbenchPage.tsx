@@ -430,7 +430,9 @@ export function WorkbenchPage({
   }, []);
 
   const sendChat = useCallback(async () => {
-    const text = chatDraft.trim();
+    // 记住提交时的原文：发送是异步的，这期间用户可能已经接着敲下一条
+    const submitted = chatDraft;
+    const text = submitted.trim();
     if (!text) return;
     // 上下文在"发送这一刻"构建：带上用户此刻真正在看的内容
     const entry = activePath ? buffersRef.current[activePath] : undefined;
@@ -446,7 +448,10 @@ export function WorkbenchPage({
         selection: readEditorSelection(),
       })
       : null;
-    if (await onSendText(text, context ? [context] : undefined)) setChatDraft("");
+    if (await onSendText(text, context ? [context] : undefined)) {
+      // 只在草稿仍是刚提交的那份时才清空：否则会把发送期间敲的新内容一起抹掉
+      setChatDraft((current) => (current === submitted ? "" : current));
+    }
   }, [activePath, chatDraft, includeActiveFile, onSendText, readEditorSelection]);
 
   const activeEntry = activePath ? buffers[activePath] : undefined;

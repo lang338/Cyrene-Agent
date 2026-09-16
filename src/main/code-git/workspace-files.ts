@@ -36,10 +36,13 @@ export function createWorkspaceFileService(deps: WorkspaceFileServiceDeps): Work
     if (relPath.includes("\0")) throw new Error("路径不合法");
     const normalized = normalizeRelPath(relPath);
     const absolute = path.resolve(workspaceRoot, normalized);
-    if (absolute !== path.resolve(workspaceRoot) && !absolute.startsWith(path.resolve(workspaceRoot) + path.sep)) {
+    const root = path.resolve(workspaceRoot);
+    if (absolute !== root && !absolute.startsWith(root + path.sep)) {
       throw new Error("路径越出了工作区");
     }
-    return absolute;
+    // 词法校验挡不住符号链接：工作区里放一个指向外部的软链，相对路径就能穿过它
+    // 落到工作区外（读、写、建目录都一样）。再按真实路径校验一次。
+    return await canonicalizeInsideWorkspace(absolute, root);
   }
 
   return {
@@ -89,6 +92,34 @@ export function createWorkspaceFileService(deps: WorkspaceFileServiceDeps): Work
       await fs.promises.writeFile(absolute, content, "utf8");
     },
   };
+}
+
+/**
+ * 把目标路径解析成真实路径，并确认解析后仍在工作区内。
+ * 只对"已存在的最深祖先"做 realpath（新建文件的父目录可能还不存在），
+ * 再把剩余路径段原样接回去：既能穿透符号链接，又不要求目标已存在。
+ */
+async function canonicalizeInsideWorkspace(target: string, root: string): Promise<string> {
+  const realRoot = await fs.promises.realpath(root);
+  let current = target;
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      const real = await fs.promises.realpath(current);
+      const canonical = tail.length > 0 ? path.join(real, ...tail) : real;
+      if (canonical !== realRoot && !canonical.startsWith(realRoot + path.sep)) {
+        throw new Error("路径越出了工作区");
+      }
+      return canonical;
+    } catch (err) {
+      // 只有"不存在"才继续往上找祖先；权限等其他错误原样抛出，不要静默放行
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      const parent = path.dirname(current);
+      if (parent === current) throw new Error("路径越出了工作区");
+      tail.unshift(path.basename(current));
+      current = parent;
+    }
+  }
 }
 
 /** 统一成正斜杠相对路径；拒绝绝对路径与 .. 段 */

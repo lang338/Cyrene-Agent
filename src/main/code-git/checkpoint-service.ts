@@ -119,12 +119,12 @@ export function createCheckpointService(deps: CheckpointServiceDeps): Checkpoint
   const warn = deps.warn ?? ((message: string) => console.warn(`[Checkpoint] ${message}`));
   const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** 每会话一条快照串行链，见 snapshot() 的说明 */
-  const snapshotChains = new Map<string, Promise<void>>();
+  const sessionChains = new Map<string, Promise<void>>();
 
   function dispose(): void {
     for (const timer of debounceTimers.values()) clearTimeout(timer);
     debounceTimers.clear();
-    snapshotChains.clear();
+    sessionChains.clear();
   }
 
   async function clientFor(sessionId: string): Promise<CheckpointGitClient> {
@@ -177,19 +177,23 @@ export function createCheckpointService(deps: CheckpointServiceDeps): Checkpoint
   }
 
   /**
-   * 快照入口：同一会话内串行执行。
+   * 同一会话的写操作统一排队（快照与回退共用一条链）。
    * 少了这层排队，"工作区变化防抖快照"会和"AI 回合结束快照"并发读到同一个链顶，
-   * 各自 commit-tree 后 updateRef，时间线上就会出现两条内容相同、parent 相同的分叉快照。
+   * 各自 commit-tree 后 updateRef，时间线上就会出现两条内容相同、parent 相同的分叉快照；
+   * 回退也必须排进来——它先打 pre-restore 快照、再 checkoutTree 并删除多余文件，
+   * 中间态若被一次并发快照提交，CHECKPOINT_REF 会被顶到"既不是旧状态也不是目标状态"的位置。
    */
-  function snapshot(sessionId: string, kind: CheckpointKind): Promise<CheckpointEntry | null> {
-    const previous = snapshotChains.get(sessionId) ?? Promise.resolve();
-    // 前一条快照失败也要继续跑，否则一次失败会把该会话的链永久卡死
-    const next = previous.then(
-      () => performSnapshot(sessionId, kind),
-      () => performSnapshot(sessionId, kind),
-    );
-    snapshotChains.set(sessionId, next.then(() => undefined, () => undefined));
+  function enqueueSessionOperation<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
+    const previous = sessionChains.get(sessionId) ?? Promise.resolve();
+    // 前一条失败也要继续跑，否则一次失败会把该会话的链永久卡死
+    const next = previous.then(run, run);
+    sessionChains.set(sessionId, next.then(() => undefined, () => undefined));
     return next;
+  }
+
+  /** 快照入口：排队执行；已在链上时（如回退内部）应直接用 performSnapshot，否则会自等 */
+  function snapshot(sessionId: string, kind: CheckpointKind): Promise<CheckpointEntry | null> {
+    return enqueueSessionOperation(sessionId, () => performSnapshot(sessionId, kind));
   }
 
   return {
@@ -241,24 +245,29 @@ export function createCheckpointService(deps: CheckpointServiceDeps): Checkpoint
 
     async restore(sessionId, hash) {
       assertHash(hash);
-      const client = await clientFor(sessionId);
-      const records = await client.log();
-      if (!records.some((record) => record.hash === hash)) {
-        throw new Error("快照不存在或已被清理");
-      }
-      // 冲突检测必须在 pre-restore 保底快照之前：中止时不写任何快照、不动工作区
-      const conflicts = await client.findIgnoredCollisions(hash);
-      if (conflicts.length) throw new Error(buildRestoreConflictMessage(conflicts));
-      const preRestore = await snapshot(sessionId, "pre-restore");
-      await client.checkoutTree(hash);
-      const targetFiles = new Set(await client.listTreeFiles(hash));
-      const currentFiles = await client.listWorkspaceFiles();
-      const stale = computeFilesToDelete(currentFiles, targetFiles);
-      if (stale.length) await client.deleteWorkspaceFiles(stale);
-      return {
-        preRestoreHash: preRestore?.hash ?? records[0].hash,
-        restoredHash: hash,
-      };
+      // 整段回退排进本会话操作链：从冲突检测到删多余文件必须原子，
+      // 中间态不能被并发快照看到并提交（见 enqueueSessionOperation 的说明）。
+      return await enqueueSessionOperation(sessionId, async () => {
+        const client = await clientFor(sessionId);
+        const records = await client.log();
+        if (!records.some((record) => record.hash === hash)) {
+          throw new Error("快照不存在或已被清理");
+        }
+        // 冲突检测必须在 pre-restore 保底快照之前：中止时不写任何快照、不动工作区
+        const conflicts = await client.findIgnoredCollisions(hash);
+        if (conflicts.length) throw new Error(buildRestoreConflictMessage(conflicts));
+        // 已在链上：这里必须直接调 performSnapshot，再走 snapshot() 会排队自等
+        const preRestore = await performSnapshot(sessionId, "pre-restore");
+        await client.checkoutTree(hash);
+        const targetFiles = new Set(await client.listTreeFiles(hash));
+        const currentFiles = await client.listWorkspaceFiles();
+        const stale = computeFilesToDelete(currentFiles, targetFiles);
+        if (stale.length) await client.deleteWorkspaceFiles(stale);
+        return {
+          preRestoreHash: preRestore?.hash ?? records[0].hash,
+          restoredHash: hash,
+        };
+      });
     },
 
     dispose,

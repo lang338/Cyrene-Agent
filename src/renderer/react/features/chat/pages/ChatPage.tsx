@@ -1616,6 +1616,10 @@ export function ChatPage() {
       />
       {workbenchOpen && activeSessionId && (
         <WorkbenchPage
+          // key 绑定会话：换会话时重建工作台实例。否则 React 复用旧实例，
+          // openTabs/buffers 会留在上一个会话的状态上，而 saveFile 已经拿到新 sessionId，
+          // 一保存就把旧会话的缓冲写进新会话的文件里。
+          key={activeSessionId}
           sessionId={activeSessionId}
           mode={mode}
           workspaceRoot={activeSession?.workspaceBinding?.workspaceRoot}

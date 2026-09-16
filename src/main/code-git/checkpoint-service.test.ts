@@ -354,6 +354,51 @@ describe("checkpoint-service", () => {
     expect(result.restoredHash).toBe(hashOld);
     expect((client.deleteWorkspaceFiles as ReturnType<typeof vi.fn>).mock.calls[0][0]).toEqual(["废弃的文件.js"]);
   });
+
+  it("restore 与 snapshot 并发：回退整段原子，快照不会提交回退的中间态", async () => {
+    const hashOld = "0".repeat(40);
+    const { client } = createFakeClient({
+      last: { hash: "top", tree: "tree-top" },
+      log: [
+        { hash: "top".padEnd(40, "a"), timestamp: "2026-09-15T10:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+        { hash: hashOld, timestamp: "2026-09-15T09:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+      ],
+      treeFiles: ["src/keep.ts"],
+      // 留一个目标快照里没有的文件，让回退走到 deleteWorkspaceFiles
+      workspaceFiles: ["src/keep.ts", "废弃.js"],
+    });
+
+    // 用真实先后顺序记录每一步：commit 按消息区分是 pre-restore 还是 auto
+    const timeline: string[] = [];
+    let seq = 0;
+    (client.writeWorkspaceTree as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      timeline.push(timeline.includes("checkout") ? "write-after-restore" : "write-before-restore");
+      return `tree-${++seq}`;
+    });
+    (client.commitTree as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_tree: string, _parent: string | null, message?: string) => {
+        timeline.push(String(message).includes("pre-restore") ? "commit-pre" : "commit-auto");
+        return "b".repeat(40);
+      },
+    );
+    (client.checkoutTree as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      timeline.push("checkout");
+    });
+    (client.deleteWorkspaceFiles as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      timeline.push("delete");
+    });
+
+    const service = createCheckpointService(createDeps(client));
+    await Promise.all([service.restore("s1", hashOld), service.snapshot("s1", "auto")]);
+
+    // 回退的原子性：checkout 与 delete 之间不能插进任何快照提交
+    const between = timeline.slice(timeline.indexOf("checkout"), timeline.indexOf("delete") + 1);
+    expect(between).toEqual(["checkout", "delete"]);
+    // 并发的那次快照必须等回退整段结束才落盘（否则会把中间态提交并顶掉 CHECKPOINT_REF）
+    expect(timeline.indexOf("commit-auto")).toBeGreaterThan(timeline.indexOf("delete"));
+    // 且回退自己的 pre-restore 保底快照仍在 checkout 之前
+    expect(timeline.indexOf("commit-pre")).toBeLessThan(timeline.indexOf("checkout"));
+  });
 });
 
 describe("mapWithConcurrency（有界并发）", () => {
