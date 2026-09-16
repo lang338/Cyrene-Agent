@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { AskUserPanel, PermissionPanel, PopQuizPanel } from "./InteractionPanel";
 import { resolveComposerSlot, type ComposerInteraction } from "./run-presentation";
-import type { PopQuizSubmission } from "../../../../../shared/pop-quiz";
+import type { PopQuizGradedQuestion, PopQuizSubmission } from "../../../../../shared/pop-quiz";
 import "./RunExperience.css";
 
 /**
@@ -13,7 +13,8 @@ export interface ComposerInteractionCallbacks {
   onAnswer?: (interactionId: string, answer: unknown) => void;
   onIgnore?: (interactionId: string) => void;
   onPermissionDecision?: (interactionId: string, allowed: boolean) => void;
-  onQuizSubmit?: (submission: PopQuizSubmission) => Promise<{ ok: boolean; error?: string; graded?: unknown[] }>;
+  // 判分结果的类型必须与 PopQuizPanel 的 onSubmit 一致（曾用 unknown[]，导致赋值不兼容）
+  onQuizSubmit?: (submission: PopQuizSubmission) => Promise<{ ok: boolean; error?: string; graded?: PopQuizGradedQuestion[] }>;
   onQuizSkip?: (quizId: string) => Promise<{ ok: boolean; error?: string }>;
 }
 

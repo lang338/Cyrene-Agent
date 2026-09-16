@@ -31,6 +31,16 @@ interface WorkspaceTreeProps {
   onOpenFile: (path: string) => void;
 }
 
+/** 在已渲染的行里找目标文件；返回 null 表示目录还没展开或数据还没到，下次再试 */
+function findRowElement(container: HTMLElement | null, path: string): HTMLElement | null {
+  const rows = container?.querySelectorAll<HTMLElement>("[data-path]");
+  if (!rows) return null;
+  for (const row of rows) {
+    if (row.dataset.path === path) return row;
+  }
+  return null;
+}
+
 export function WorkspaceTree({ sessionId, refreshToken, activePath, revealPath, onOpenFile }: WorkspaceTreeProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -65,7 +75,10 @@ export function WorkspaceTree({ sessionId, refreshToken, activePath, revealPath,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, refreshToken]);
 
-  // 定位到昔涟刚改动的文件：展开各级父目录 → 等目录加载完 → 把该行滚进视野
+  // 待滚动到的文件；滚到了就清空
+  const pendingRevealRef = useRef<string | null>(null);
+
+  // 定位到昔涟刚改动的文件：展开各级父目录并触发加载
   useEffect(() => {
     if (!revealPath) return;
     const dirs = ancestorDirs(revealPath);
@@ -76,25 +89,24 @@ export function WorkspaceTree({ sessionId, refreshToken, activePath, revealPath,
         return next;
       });
     }
-    let active = true;
-    void Promise.all(dirs.map((dir) => loadDir(dir))).then(() => {
-      if (!active) return;
-      // 目录内容刚落地，等这一帧渲染出目标行再滚
-      window.requestAnimationFrame(() => {
-        const rows = containerRef.current?.querySelectorAll<HTMLElement>("[data-path]");
-        if (!rows) return;
-        for (const row of rows) {
-          if (row.dataset.path === revealPath) {
-            row.scrollIntoView({ block: "nearest" });
-            return;
-          }
-        }
-      });
-    });
-    return () => {
-      active = false;
-    };
+    pendingRevealRef.current = revealPath;
+    for (const dir of dirs) void loadDir(dir);
   }, [revealPath, loadDir]);
+
+  /**
+   * 滚动到待定位的那一行：树数据或展开态一变就重试，找到即停。
+   * 不赌"等完哪几个 promise 之后 DOM 里就有那一行"——目录加载与真实渲染未必同帧
+   * （根级文件的父目录集合为空、刷新与跳转同帧发生时更是如此），
+   * 而 useEffect 在 DOM 提交之后运行，所以这里看到的就是真实渲染结果。
+   */
+  useEffect(() => {
+    const target = pendingRevealRef.current;
+    if (!target) return;
+    const row = findRowElement(containerRef.current, target);
+    if (!row) return;
+    row.scrollIntoView({ block: "nearest" });
+    pendingRevealRef.current = null;
+  }, [children, expanded]);
 
   function toggleDir(dirPath: string) {
     setExpanded((current) => {

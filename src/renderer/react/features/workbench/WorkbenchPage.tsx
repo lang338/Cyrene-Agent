@@ -54,6 +54,13 @@ interface BufferEntry {
   error: string | null;
 }
 
+/**
+ * loadBuffer 的三种结果。
+ * stale 必须和 failed 分开：它表示"磁盘读到了，但被丢弃了"——跟随场景要据此提醒用户
+ * （昔涟也改了这份文件，而你手里有更新的编辑），混成 false 会让这个提醒消失。
+ */
+type LoadOutcome = "ok" | "stale" | "failed";
+
 /** 编辑器走"微调"定位：不开补全、不渲染校验装饰（诊断在 monaco-setup 里全局关闭） */
 const EDITOR_OPTIONS = {
   automaticLayout: true,
@@ -221,11 +228,10 @@ export function WorkbenchPage({
    * - fresh：首次打开，先落 loading 占位，失败落 error 让编辑器显示原因；
    * - silent：昔涟改动后刷新已打开的文件，不闪占位；期间缓冲被关闭或被用户编辑
    *   则放弃本次结果，保住用户手里的版本。
-   * 返回 false 表示没读成（跟随场景据此不留一个报错标签）。
    */
-  const loadBuffer = useCallback(async (filePath: string, mode: "fresh" | "silent"): Promise<boolean> => {
+  const loadBuffer = useCallback(async (filePath: string, mode: "fresh" | "silent"): Promise<LoadOutcome> => {
     const api = workbenchApi();
-    if (!api) return false;
+    if (!api) return "failed";
     const before = buffersRef.current[filePath]?.content;
     if (mode === "fresh") {
       setBuffers((current) => ({
@@ -235,10 +241,17 @@ export function WorkbenchPage({
     }
     try {
       const file = (await api.readFile(sessionId, filePath)) as WorkbenchFileContent;
+      // 静默刷新是否作废，必须在提交前用 ref 判定：state updater 里赋的标志外面读不到
+      // （React 18 不会同步执行 updater），之前因此把"被丢弃"误报成"已落地"。
+      if (mode === "silent") {
+        const latest = buffersRef.current[filePath];
+        if (!latest || latest.loading || latest.dirty || latest.content !== before) return "stale";
+      }
       setBuffers((current) => {
         const existing = current[filePath];
+        // 兜底：响应飞行期间标签被关闭、或又被改动的，一律不覆盖
         if (mode === "fresh") {
-          // 响应飞行期间标签可能已被关闭：只有仍是 loading 占位时才落内容
+          // 只有仍是 loading 占位时才落内容
           if (!existing || !existing.loading) return current;
         } else if (!existing || existing.loading || existing.dirty || existing.content !== before) {
           return current;
@@ -248,9 +261,9 @@ export function WorkbenchPage({
           [filePath]: { content: file.content, binary: file.binary, truncated: file.truncated, dirty: false, loading: false, error: null },
         };
       });
-      return true;
+      return "ok";
     } catch (cause) {
-      if (mode === "silent") return false;
+      if (mode === "silent") return "failed";
       setBuffers((current) => {
         const existing = current[filePath];
         if (!existing || !existing.loading) return current;
@@ -266,7 +279,7 @@ export function WorkbenchPage({
           },
         };
       });
-      return false;
+      return "failed";
     }
   }, [sessionId]);
 
@@ -293,8 +306,13 @@ export function WorkbenchPage({
     }
     if (entry?.loading) return; // 首次读盘还在飞行：落地的就是最新内容
     setOpenTabs((current) => (current.includes(filePath) ? current : [...current, filePath]));
-    const loaded = await loadBuffer(filePath, entry ? "silent" : "fresh");
-    if (loaded || entry) return;
+    const outcome = await loadBuffer(filePath, entry ? "silent" : "fresh");
+    if (outcome === "stale") {
+      // 读盘期间用户改了这份文件：保住他手里的版本，并如实告知磁盘上也有新内容
+      setFollowBlockedPath(filePath);
+      return;
+    }
+    if (outcome === "ok" || entry) return;
     // 路径其实不在工作区、或文件已被删：撤掉这个标签，不把用户丢在报错页上
     setOpenTabs((current) => current.filter((item) => item !== filePath));
     setActivePath((active) => (active === filePath ? null : active));
