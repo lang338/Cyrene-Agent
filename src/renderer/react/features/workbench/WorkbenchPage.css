@@ -811,21 +811,13 @@
 }
 
 /* ── 右栏对话流紧凑布局 ─────────────────────────────────
-   ChatMessageList 的留白是为宽大主窗口调的（列表 padding 28px、气泡一侧预留 15%、
-   阅读宽度按 100vw 计算还有 640px 下限）。在可拖窄的工作台侧栏里这些层层叠加，
-   238px 宽的列正文只剩 ~87px（约 6 字/行）。这里只在工作台作用域内把它们收掉，
-   主窗口聊天的观感不受影响。 */
+   ChatMessageList 的留白是为宽大主窗口调的（列表 padding 28px）。在可拖窄的工作台侧栏里
+   会显得过松，这里只在工作台作用域内收紧；昔涟一侧的 15% 预留与阅读宽度已在全局移除。 */
 .cy-workbench .cy-message-list {
-  /* 阅读宽度改以列宽为唯一参照：去掉 100vw - 560px 与 640px 下限 */
-  --cy-message-reading-width: 100%;
   padding: 10px 8px 14px;
 }
 
-/* antd-x 默认给气泡一侧预留 15%（聊天气泡不贴边的惯例），侧栏里全部还回去 */
-.cy-workbench .ant-bubble-list .ant-bubble-start:not(.ant-bubble-divider):not(.ant-bubble-system) {
-  padding-inline-end: 0;
-}
-
+/* 用户消息（end）侧仍有 antd-x 默认的 15% 预留，侧栏里还回去 */
 .cy-workbench .ant-bubble-list .ant-bubble-end:not(.ant-bubble-divider):not(.ant-bubble-system) {
   padding-inline-start: 0;
 }
@@ -838,12 +830,6 @@
 /* 头像与正文之间的间距收一档 */
 .cy-workbench .cy-message .ant-bubble {
   column-gap: 8px;
-}
-
-/* 无气泡模式下全局规则固定预留 54px 右侧边距；侧栏里让正文吃掉头像以外的全部剩余 */
-:root[data-assistant-bubble="off"] .cy-workbench .cy-message--assistant .ant-bubble-body {
-  width: auto;
-  max-width: 100%;
 }
 
 /* ── 右栏对话流深色适配 ─────────────────────────────────
