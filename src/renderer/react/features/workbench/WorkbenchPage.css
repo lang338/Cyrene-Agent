@@ -193,21 +193,6 @@
   background: #202226;
 }
 
-/* 中间栏无内容（代码标签页且未打开文件）时：隐藏中间栏与右侧分隔条，
-   让右栏对话吃满中间+右侧的宽度，避免大片空深色把对话挤窄。 */
-.cy-workbench__body.is-chat-full .cy-workbench__col--middle {
-  display: none;
-}
-
-.cy-workbench__body.is-chat-full .cy-workbench__col--middle ~ .cy-workbench__resizer {
-  display: none;
-}
-
-.cy-workbench__body.is-chat-full .cy-workbench__col--right {
-  flex: 1 1 auto;
-  width: auto !important;
-}
-
 /* 收起后的展开箭头：贴边居中的小胶囊。
    不做整条全高热区——那会盖住中栏编辑器的滚动条与行号槽，只在中间留一小段。 */
 .cy-workbench__reveal {

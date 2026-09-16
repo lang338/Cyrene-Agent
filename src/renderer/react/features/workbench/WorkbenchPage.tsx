@@ -341,10 +341,6 @@ export function WorkbenchPage({
 
   const activeEntry = activePath ? buffers[activePath] : undefined;
 
-  // 中间栏无内容（代码标签页且未打开文件）时，把它藏起来，让右栏对话吃满宽度，
-  // 避免中间一大片空深色把对话挤窄。打开文件或切到历史标签页自动恢复三栏。
-  const middleEmpty = middleTab === "code" && !activePath;
-
   return createPortal(
     <div className="cy-workbench" role="dialog" aria-label={t("workbench.title")}>
       <header className="cy-workbench__topbar">
@@ -407,7 +403,7 @@ export function WorkbenchPage({
         </div>
       </header>
 
-      <div className={`cy-workbench__body${middleEmpty ? " is-chat-full" : ""}`} ref={columns.bodyRef}>
+      <div className="cy-workbench__body" ref={columns.bodyRef}>
         <aside className="cy-workbench__col cy-workbench__col--left" style={{ width: columns.left }}>
           <div className="cy-workbench__col-header">{t("workbench.filesHeader")}</div>
           <div className="cy-workbench__col-body">
