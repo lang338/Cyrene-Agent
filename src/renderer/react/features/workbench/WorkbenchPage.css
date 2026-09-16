@@ -190,17 +190,17 @@
   position: relative;
 }
 
-/* ── 停靠在中栏底部的交互卡（工具审批 / 向用户提问 / 小测验）──
+/* ── 停靠在中栏右下角的交互卡（工具审批 / 向用户提问 / 小测验）──
+   贴着右栏边缘：浮在编辑器正中会挡住正在读的那几行代码。
    固定宽度：卡片是"要不要继续"的决策点，宽度随窗口跳变会让人看漏按钮。
    浮在编辑器之上而非挤占布局，避免审批弹出时编辑器整个重排。 */
 .cy-workbench__interaction-dock {
   position: absolute;
+  right: 14px;
   bottom: 26px;
-  left: 50%;
-  transform: translateX(-50%);
   z-index: 6;
   width: 440px;
-  max-width: calc(100% - 32px);
+  max-width: calc(100% - 28px);
   max-height: min(64vh, 480px);
   overflow-y: auto;
 }

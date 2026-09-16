@@ -35,7 +35,7 @@ export interface WorkbenchPageProps extends ComposerInteractionCallbacks {
   onClose: () => void;
   /**
    * 工具审批 / 向用户提问 / 小测验卡片。
-   * 与聊天页共用同一套卡片与提交通道：AI 在工作台里请求审批时，卡片停靠在中间栏底部
+   * 与聊天页共用同一套卡片与提交通道：AI 在工作台里请求审批时，卡片停靠在中间栏右下角
    * （固定尺寸，不随栏宽伸缩），不必退出工作台回主界面点。
    */
   interaction?: ComposerInteraction;
@@ -553,7 +553,7 @@ export function WorkbenchPage({
             </div>
           )}
 
-          {/* 审批 / 提问 / 测验卡片：停靠在中栏底部，固定尺寸不随栏宽伸缩 */}
+          {/* 审批 / 提问 / 测验卡片：停靠中栏右下角，固定尺寸不随栏宽伸缩 */}
           {interaction && (
             <div className="cy-workbench__interaction-dock">
               <ComposerInteractionPanel
