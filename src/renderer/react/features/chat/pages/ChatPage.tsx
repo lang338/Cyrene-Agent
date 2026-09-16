@@ -4,7 +4,6 @@ import { DownOutlined } from "@ant-design/icons";
 import { ChatComposer, parseComposerMessage, type ComposerAttachment } from "../components/ChatComposer";
 import { ComposerSlot } from "../components/ComposerSlot";
 import { TodoPanel } from "../components/TodoPanel";
-import { CodeGitPanel } from "../components/CodeGitPanel";
 import type { PlanReviewPhase } from "../components/PlanReviewPanel";
 import { ChatPageInspector, type ChatPageInspectorTabId } from "../components/ChatPageInspector";
 import {
@@ -1389,18 +1388,6 @@ export function ChatPage() {
           <TodoPanel
             state={activeSessionId ? todoStateBySession[activeSessionId] : null}
             mode={mode}
-          />
-        )}
-        {mode === "code" && activeSessionId && (
-          <CodeGitPanel
-            sessionId={activeSessionId}
-            projectName={workspaceNames.code}
-            todoState={todoStateBySession[activeSessionId] ?? null}
-            planPhase={planReviewBySession[activeSessionId]?.phase}
-            onOpenPlan={() => {
-              setPlanDrawerOpen(true);
-              setInspectorTab("plan");
-            }}
           />
         )}
         <RunRecoveryNotices
