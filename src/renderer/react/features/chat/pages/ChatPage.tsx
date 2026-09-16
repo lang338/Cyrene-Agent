@@ -431,6 +431,28 @@ export function ChatPage() {
     });
   }, [bootstrapCompleted, mode]);
 
+  // 工作区换绑广播 → 重新取一次会话，让 activeSession 跟上新绑定。
+  // 为什么必须订阅：改绑工作区走的是 refreshSessions(mode, false)，只刷列表、不重选会话，
+  // activeSession 会停在旧绑定上。工作台正是拿它的 workspaceRoot 判断"改动文件在不在工作区内"，
+  // 旧根会把实际落在工作区里的文件判成越界丢掉（改绑后写的新文件不跟随，就是这个原因）。
+  useEffect(() => {
+    const store = chatStore();
+    if (!store?.onWorkspaceChanged) return;
+    const unsubscribe = store.onWorkspaceChanged((payload) => {
+      if (!payload?.sessionId) return;
+      const isActive = () => activeSessionIdsRef.current[activeModeRef.current] === payload.sessionId;
+      if (!isActive()) return;
+      void store.get(payload.sessionId).then((session) => {
+        // 取回期间用户可能已切走：只在它仍是当前会话时落地
+        if (!session || !isActive()) return;
+        setActiveSession(session);
+      }).catch((error) => {
+        console.error("[ChatPage] Failed to refresh session after workspace change:", error);
+      });
+    });
+    return unsubscribe;
+  }, []);
+
   // 合并 effect：注册 IPC → cold-start → finally 置 bootstrap + 通知 ready
   useEffect(() => {
     const store = chatStore();

@@ -183,6 +183,21 @@ export function WorkbenchPage({
     return unsubscribe;
   }, [sessionId]);
 
+  // 工作区换根：标签里存的是工作区相对路径，换根后同一条路径指向的是另一个文件。
+  // 旧缓冲必须丢弃——否则在那个标签上按保存，会把上一个工作区的正文写进新工作区的同名文件里。
+  const boundRootRef = useRef(workspaceRoot);
+  useEffect(() => {
+    if (boundRootRef.current === workspaceRoot) return;
+    boundRootRef.current = workspaceRoot;
+    setOpenTabs([]);
+    setActivePath(null);
+    setBuffers({});
+    setFollowBlockedPath(null);
+    setError(null);
+    // 根换了，左栏必须重列，否则还停在上一个工作区的目录快照上
+    setTreeRefresh((value) => value + 1);
+  }, [workspaceRoot]);
+
   // 卸载：清掉挂起的防抖快照
   useEffect(() => () => {
     if (autoSnapshotTimer.current !== null) window.clearTimeout(autoSnapshotTimer.current);
