@@ -13,6 +13,8 @@ interface WorkbenchApi {
   diffCheckpoint(sessionId: string, hash: string): Promise<unknown>;
   restoreCheckpoint(sessionId: string, hash: string): Promise<unknown>;
   snapshot(sessionId: string, kind?: "auto" | "pre-restore" | "manual"): Promise<unknown>;
+  /** 快照落盘广播订阅；返回退订函数 */
+  onCheckpointChanged?(callback: (payload: { sessionId: string }) => void): () => void;
 }
 
 export function workbenchApi(): WorkbenchApi | undefined {

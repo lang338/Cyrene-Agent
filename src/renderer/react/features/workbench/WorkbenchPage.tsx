@@ -10,6 +10,8 @@ import { useTranslation } from "../../i18n";
 import type { ConversationMode } from "../../../../shared/chat-types";
 import type { WorkbenchFileContent } from "../../../../shared/code-workbench-types";
 import { ChatMessageList, type ChatMessageItem } from "../chat/components/ChatMessageList";
+import { ComposerSlot, type ComposerInteractionCallbacks } from "../chat/components/ComposerSlot";
+import type { ComposerInteraction } from "../chat/components/run-presentation";
 import { monacoLanguageFor, setupMonaco } from "./monaco-setup";
 import { buildActiveFileContext, type ActiveFileSelection } from "./active-file-context";
 import { useResizableColumns } from "./use-resizable-columns";
@@ -17,7 +19,7 @@ import { workbenchApi, WorkspaceTree } from "./WorkspaceTree";
 import { CheckpointTimeline } from "./CheckpointTimeline";
 import "./WorkbenchPage.css";
 
-export interface WorkbenchPageProps {
+export interface WorkbenchPageProps extends ComposerInteractionCallbacks {
   sessionId: string;
   mode: ConversationMode;
   /** 当前会话的渲染态消息（ChatPage useSessionMessages 提供，保持实时） */
@@ -31,6 +33,13 @@ export interface WorkbenchPageProps {
   onSendText: (text: string, contextAttachments?: Array<{ name: string; text: string }>) => Promise<boolean>;
   onCancelRun: () => void;
   onClose: () => void;
+  /**
+   * 工具审批 / 向用户提问 / 小测验卡片。
+   * 与聊天页共用同一套卡片与提交通道：AI 在工作台里请求审批时，卡片直接出现在右栏输入框位置，
+   * 不必退出工作台回主界面点。
+   */
+  interaction?: ComposerInteraction;
+  interactionBusy?: boolean;
 }
 
 interface BufferEntry {
@@ -106,6 +115,13 @@ export function WorkbenchPage({
   onSendText,
   onCancelRun,
   onClose,
+  interaction,
+  interactionBusy,
+  onAnswer,
+  onIgnore,
+  onPermissionDecision,
+  onQuizSubmit,
+  onQuizSkip,
 }: WorkbenchPageProps) {
   const { t } = useTranslation();
   const columns = useResizableColumns({
@@ -150,6 +166,15 @@ export function WorkbenchPage({
       .catch(() => {
         // 未绑定工作区等场景静默：文件树会显示各自错误
       });
+  }, [sessionId]);
+
+  // 快照落盘广播（AI 回合结束 / 编辑器保存防抖 / 回退保底）→ 时间线自动跟上
+  useEffect(() => {
+    const unsubscribe = workbenchApi()?.onCheckpointChanged?.((payload) => {
+      if (payload.sessionId !== sessionId) return;
+      setTimelineRefresh((value) => value + 1);
+    });
+    return unsubscribe;
   }, [sessionId]);
 
   // 卸载：清掉挂起的防抖快照
@@ -557,7 +582,8 @@ export function WorkbenchPage({
             {messages.length === 0 && (
               <div className="cy-workbench__chat-empty">{t("workbench.chatEmpty")}</div>
             )}
-            <div className="cy-workbench__chat-composer">
+            <ComposerSlot
+              composer={<div className="cy-workbench__chat-composer">
               <button
                 type="button"
                 className={`cy-workbench__context-chip ${includeActiveFile && activePath ? "is-on" : ""}`}
@@ -600,7 +626,15 @@ export function WorkbenchPage({
                   {t("workbench.send")}
                 </button>
               </div>
-            </div>
+              </div>}
+              interaction={interaction}
+              interactionBusy={interactionBusy}
+              onAnswer={onAnswer}
+              onIgnore={onIgnore}
+              onPermissionDecision={onPermissionDecision}
+              onQuizSubmit={onQuizSubmit}
+              onQuizSkip={onQuizSkip}
+            />
           </div>
         </section>
 

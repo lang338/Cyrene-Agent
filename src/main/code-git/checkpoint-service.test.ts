@@ -104,6 +104,57 @@ describe("checkpoint-service", () => {
     expect(entry).toBeNull();
   });
 
+  it("快照落盘后通知 onSnapshot；无变化时不通知", async () => {
+    const onSnapshot = vi.fn();
+    const { client } = createFakeClient({ last: null, nextTree: "tree-1" });
+    const service = createCheckpointService(createDeps(client, { onSnapshot }));
+    const entry = await service.snapshot("s1", "auto");
+    expect(onSnapshot).toHaveBeenCalledTimes(1);
+    expect(onSnapshot).toHaveBeenCalledWith(entry);
+
+    const unchanged = createFakeClient({ last: { hash: "prev", tree: "same" }, nextTree: "same" });
+    const silent = vi.fn();
+    const serviceForUnchanged = createCheckpointService(createDeps(unchanged.client, { onSnapshot: silent }));
+    expect(await serviceForUnchanged.snapshot("s1", "auto")).toBeNull();
+    expect(silent).not.toHaveBeenCalled();
+  });
+
+  it("onSnapshot 抛错不影响快照结果", async () => {
+    const { client } = createFakeClient({ last: null, nextTree: "tree-1" });
+    const warn = vi.fn();
+    const service = createCheckpointService(createDeps(client, {
+      warn,
+      onSnapshot: () => {
+        throw new Error("broadcast down");
+      },
+    }));
+    const entry = await service.snapshot("s1", "auto");
+    expect(entry).toMatchObject({ hash: "hash-1" });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("快照通知失败"));
+  });
+
+  it("并发快照串行执行：第二次读到第一次的链顶，不产生分叉", async () => {
+    let tip: { hash: string; tree: string } | null = null;
+    let seq = 0;
+    const { client, calls } = createFakeClient();
+    (client.lastCheckpoint as ReturnType<typeof vi.fn>).mockImplementation(async () => tip);
+    (client.writeWorkspaceTree as ReturnType<typeof vi.fn>).mockImplementation(async () => `tree-${++seq}`);
+    (client.commitTree as ReturnType<typeof vi.fn>).mockImplementation(
+      async (tree: string, parentHash: string | null) => {
+        calls.push({ op: "commitTree", args: [tree, parentHash] });
+        const hash = `hash-${seq}`;
+        tip = { hash, tree };
+        return hash;
+      },
+    );
+
+    const service = createCheckpointService(createDeps(client));
+    await Promise.all([service.snapshot("s1", "auto"), service.snapshot("s1", "auto")]);
+
+    // 没有串行化时两次都会读到同一个链顶（parent 都是 null），时间线上出现分叉
+    expect(calls.map((call) => call.args?.[1])).toEqual([null, "hash-1"]);
+  });
+
   it("notifyActivity 防抖后自动快照，失败只告警不抛出", async () => {
     vi.useFakeTimers();
     try {

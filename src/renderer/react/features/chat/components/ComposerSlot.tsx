@@ -4,6 +4,19 @@ import { resolveComposerSlot, type ComposerInteraction } from "./run-presentatio
 import type { PopQuizSubmission } from "../../../../../shared/pop-quiz";
 import "./RunExperience.css";
 
+/**
+ * 交互卡的提交回调集合。
+ * 抽成独立类型是为了让别的宿主（如工作台右栏）能原样透传同一套入口，
+ * 而不是各自复制一份提交逻辑。
+ */
+export interface ComposerInteractionCallbacks {
+  onAnswer?: (interactionId: string, answer: unknown) => void;
+  onIgnore?: (interactionId: string) => void;
+  onPermissionDecision?: (interactionId: string, allowed: boolean) => void;
+  onQuizSubmit?: (submission: PopQuizSubmission) => Promise<{ ok: boolean; error?: string; graded?: unknown[] }>;
+  onQuizSkip?: (quizId: string) => Promise<{ ok: boolean; error?: string }>;
+}
+
 export function ComposerSlot({
   composer,
   interaction,
@@ -13,15 +26,10 @@ export function ComposerSlot({
   onPermissionDecision,
   onQuizSubmit,
   onQuizSkip,
-}: {
+}: ComposerInteractionCallbacks & {
   composer: ReactNode;
   interaction?: ComposerInteraction;
   interactionBusy?: boolean;
-  onAnswer?: (interactionId: string, answer: unknown) => void;
-  onIgnore?: (interactionId: string) => void;
-  onPermissionDecision?: (interactionId: string, allowed: boolean) => void;
-  onQuizSubmit?: (submission: PopQuizSubmission) => Promise<{ ok: boolean; error?: string; graded?: unknown[] }>;
-  onQuizSkip?: (quizId: string) => Promise<{ ok: boolean; error?: string }>;
 }) {
   const slot = resolveComposerSlot(interaction);
 

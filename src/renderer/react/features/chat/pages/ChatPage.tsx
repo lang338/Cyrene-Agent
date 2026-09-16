@@ -16,6 +16,7 @@ import {
 import { ChatMessageList } from "../components/ChatMessageList";
 import { ChatPageNavigation, type ChatPagePanel } from "../components/ChatPageNavigation";
 import { WorkbenchPage } from "../../workbench/WorkbenchPage";
+import { workbenchApi } from "../../workbench/WorkspaceTree";
 import {
   ContextCompressionNotice,
   FileDropOverlay,
@@ -26,6 +27,7 @@ import { EarlyTtsPlaybackQueue, type EarlyTtsSplitMode } from "../tts/early-tts-
 
 import type { ChatMessage, ChatSession, ChatSessionMeta, ConversationMode } from "../../../../../shared/chat-types";
 import { type ContextUsageSnapshot } from "../../../../../shared/context-usage";
+import type { PopQuizSubmission } from "../../../../../shared/pop-quiz";
 import { ChatPagePanelHost } from "../components/ChatPagePanelHost";
 import { useUserCallPreference } from "../../../hooks/useUserNickname";
 import { resolveRevisableLastTurn } from "../components/last-turn-actions";
@@ -308,6 +310,65 @@ export function ChatPage() {
   const activeInteraction = sessionInteraction(interactionsBySession, activeSessionId);
   const composerInteraction = activeInteraction?.interaction;
   const interactionBusy = activeInteraction?.busy ?? false;
+  // 交互卡（工具审批 / 向用户提问 / 小测验）的统一提交入口。
+  // 聊天页与工作台共用同一套：工作台内也能直接处理审批，不必退回主界面。
+  const interactionHandlers = {
+    onAnswer: (id: string, answer: unknown) => {
+      if (!activeSessionId) return;
+      const choice = choiceApi();
+      if (!choice) return;
+      setInteractionBusyForSession(activeSessionId, true);
+      void choice.resolve(id, answer).then((result) => {
+        // ok:false = pending 已在主进程被结算（超时/取消等）：卡片不可能再提交成功，直接清掉，
+        // 避免留下一张点多少次都没反应的僵尸卡。
+        if (result.ok) {
+          runCheckpointBySessionRef.current[activeSessionId]?.("running");
+        }
+        clearInteractionForSession(activeSessionId);
+        setInteractionBusyForSession(activeSessionId, false);
+      }).catch(() => setInteractionBusyForSession(activeSessionId, false));
+    },
+    onIgnore: (id: string) => {
+      if (!activeSessionId) return;
+      const choice = choiceApi();
+      if (!choice) return;
+      setInteractionBusyForSession(activeSessionId, true);
+      void choice.resolve(id, "").then((result) => {
+        // 同 onAnswer：ok:false 说明 pending 已被主进程结算，卡片清掉不留僵尸。
+        if (result.ok) {
+          runCheckpointBySessionRef.current[activeSessionId]?.("running");
+        }
+        clearInteractionForSession(activeSessionId);
+        setInteractionBusyForSession(activeSessionId, false);
+      }).catch(() => setInteractionBusyForSession(activeSessionId, false));
+    },
+    onPermissionDecision: (id: string, allowed: boolean) => {
+      if (!activeSessionId) return;
+      const settings = settingsApprovalApi();
+      if (!settings) return;
+      setInteractionBusyForSession(activeSessionId, true);
+      void settings.resolvePermissionApproval(id, allowed).then((result) => {
+        // ok:false = pending 已在主进程被结算（run 取消等）：卡片不可能再提交成功，直接清掉，
+        // 避免留下一张点多少次都没反应的僵尸卡。
+        if (result.ok) {
+          runCheckpointBySessionRef.current[activeSessionId]?.("running");
+        }
+        clearInteractionForSession(activeSessionId);
+        setInteractionBusyForSession(activeSessionId, false);
+      }).catch(() => setInteractionBusyForSession(activeSessionId, false));
+    },
+    onQuizSubmit: (submission: PopQuizSubmission) => {
+      const settings = settingsApprovalApi();
+      if (!settings) return Promise.resolve({ ok: false, error: "E_QUIZ_NO_BRIDGE" });
+      // 展示态切换由卡片组件处理，这里只透传判分结果
+      return settings.resolvePopQuiz(submission);
+    },
+    onQuizSkip: (quizId: string) => {
+      const settings = settingsApprovalApi();
+      if (!settings) return Promise.resolve({ ok: false, error: "E_QUIZ_NO_BRIDGE" });
+      return settings.skipPopQuiz(quizId);
+    },
+  };
   const hasMessages = messages.length > 0;
   const {
     attachments,
@@ -753,6 +814,12 @@ export function ChatPage() {
         },
         onRunFinished: ({ mode, sessionId }) => {
           void refreshSessions(mode, false);
+          // AI 一回合结束时立刻打一条工作区快照：这比 git 变化防抖更贴近"这一轮改了什么"的语义点。
+          // 服务端会按 tree 去重（没改文件就不产生快照），非 code 模式或未绑定工作区则直接拒绝，静默忽略。
+          if (mode === "code") {
+            const api = workbenchApi();
+            void api?.snapshot(sessionId, "auto").catch(() => undefined);
+          }
           // 当前 session 队列中的下一条消息自动消费
           const queue = pendingQueueBySessionRef.current[sessionId] ?? [];
           if (queue.length === 0) return;
@@ -1503,61 +1570,7 @@ export function ChatPage() {
             />}
             interaction={composerInteraction}
             interactionBusy={interactionBusy}
-            onAnswer={(id, answer) => {
-              if (!activeSessionId) return;
-              const choice = choiceApi();
-              if (!choice) return;
-              setInteractionBusyForSession(activeSessionId, true);
-              void choice.resolve(id, answer).then((result) => {
-                // ok:false = pending 已在主进程被结算（超时/取消等）：卡片不可能再提交成功，直接清掉，
-                // 避免留下一张点多少次都没反应的僵尸卡。
-                if (result.ok) {
-                  runCheckpointBySessionRef.current[activeSessionId]?.("running");
-                }
-                clearInteractionForSession(activeSessionId);
-                setInteractionBusyForSession(activeSessionId, false);
-              }).catch(() => setInteractionBusyForSession(activeSessionId, false));
-            }}
-            onIgnore={(id) => {
-              if (!activeSessionId) return;
-              const choice = choiceApi();
-              if (!choice) return;
-              setInteractionBusyForSession(activeSessionId, true);
-              void choice.resolve(id, "").then((result) => {
-                // 同 onAnswer：ok:false 说明 pending 已被主进程结算，卡片清掉不留僵尸。
-                if (result.ok) {
-                  runCheckpointBySessionRef.current[activeSessionId]?.("running");
-                }
-                clearInteractionForSession(activeSessionId);
-                setInteractionBusyForSession(activeSessionId, false);
-              }).catch(() => setInteractionBusyForSession(activeSessionId, false));
-            }}
-            onPermissionDecision={(id, allowed) => {
-              if (!activeSessionId) return;
-              const settings = settingsApprovalApi();
-              if (!settings) return;
-              setInteractionBusyForSession(activeSessionId, true);
-              void settings.resolvePermissionApproval(id, allowed).then((result) => {
-                // ok:false = pending 已在主进程被结算（run 取消等）：卡片不可能再提交成功，直接清掉，
-                // 避免留下一张点多少次都没反应的僵尸卡。
-                if (result.ok) {
-                  runCheckpointBySessionRef.current[activeSessionId]?.("running");
-                }
-                clearInteractionForSession(activeSessionId);
-                setInteractionBusyForSession(activeSessionId, false);
-              }).catch(() => setInteractionBusyForSession(activeSessionId, false));
-            }}
-            onQuizSubmit={(submission) => {
-              const settings = settingsApprovalApi();
-              if (!settings) return Promise.resolve({ ok: false, error: "E_QUIZ_NO_BRIDGE" });
-              // 展示态切换由卡片组件处理，这里只透传判分结果
-              return settings.resolvePopQuiz(submission);
-            }}
-            onQuizSkip={(quizId) => {
-              const settings = settingsApprovalApi();
-              if (!settings) return Promise.resolve({ ok: false, error: "E_QUIZ_NO_BRIDGE" });
-              return settings.skipPopQuiz(quizId);
-            }}
+            {...interactionHandlers}
           />
         </div>
         </>
@@ -1595,6 +1608,9 @@ export function ChatPage() {
           ).ok}
           onCancelRun={() => void cancelCurrentRun()}
           onClose={() => setWorkbenchOpen(false)}
+          interaction={composerInteraction}
+          interactionBusy={interactionBusy}
+          {...interactionHandlers}
         />
       )}
     </div>

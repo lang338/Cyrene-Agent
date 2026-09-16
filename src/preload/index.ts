@@ -806,6 +806,12 @@ const workbenchApi = {
   readFile: (sessionId: string, path: string) => ipcRenderer.invoke(IPC.WORKBENCH_FILE_READ, { sessionId, path }),
   writeFile: (sessionId: string, path: string, content: string) =>
     ipcRenderer.invoke(IPC.WORKBENCH_FILE_WRITE, { sessionId, path, content }),
+  // 快照落盘广播：时间线据此在防抖快照 / AI 回合结束快照后自动刷新
+  onCheckpointChanged: (callback: (payload: { sessionId: string }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { sessionId: string }) => callback(payload);
+    ipcRenderer.on(IPC.WORKBENCH_CHECKPOINT_CHANGED, listener);
+    return () => ipcRenderer.removeListener(IPC.WORKBENCH_CHECKPOINT_CHANGED, listener);
+  },
 };
 contextBridge.exposeInMainWorld("workbench", workbenchApi);
 

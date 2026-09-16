@@ -329,10 +329,18 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           resolveExecutable: resolveGitExecutableCached,
         });
 
-        // 工作台：checkpoint 时间机器（git 变化防抖自动快照）+ 工作区文件服务
+        // 工作台：checkpoint 时间机器（git 变化防抖自动快照 + AI 回合结束快照）+ 工作区文件服务
         const checkpoint = createCheckpointService({
           getSession: chatsStore.getSession,
           resolveExecutable: resolveGitExecutableCached,
+          // 任何来源的快照落盘后都广播一次，工作台时间线据此自动刷新
+          onSnapshot: (entry) => {
+            for (const win of BrowserWindow.getAllWindows()) {
+              if (!win.isDestroyed()) {
+                win.webContents.send(IPC.WORKBENCH_CHECKPOINT_CHANGED, { sessionId: entry.sessionId });
+              }
+            }
+          },
         });
         git.onChanged(({ sessionId }) => checkpoint.notifyActivity(sessionId));
         const workspaceFiles = createWorkspaceFileService({ getSession: chatsStore.getSession });

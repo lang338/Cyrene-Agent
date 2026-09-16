@@ -91,6 +91,11 @@ export interface CheckpointServiceDeps {
   createClient?: (input: { workspaceRoot: string; executable: ResolvedGitExecutable }) => CheckpointGitClient;
   /** 工作区变化到自动快照的防抖窗口，默认 5000ms */
   debounceMs?: number;
+  /**
+   * 快照确实落盘（内容有变化）后的通知，宿主据此把"时间线变了"广播给渲染端。
+   * 回调抛错只告警，不影响快照结果。
+   */
+  onSnapshot?: (entry: CheckpointEntry) => void;
   warn?: (message: string) => void;
 }
 
@@ -113,10 +118,13 @@ export function createCheckpointService(deps: CheckpointServiceDeps): Checkpoint
   const debounceMs = deps.debounceMs ?? 5_000;
   const warn = deps.warn ?? ((message: string) => console.warn(`[Checkpoint] ${message}`));
   const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 每会话一条快照串行链，见 snapshot() 的说明 */
+  const snapshotChains = new Map<string, Promise<void>>();
 
   function dispose(): void {
     for (const timer of debounceTimers.values()) clearTimeout(timer);
     debounceTimers.clear();
+    snapshotChains.clear();
   }
 
   async function clientFor(sessionId: string): Promise<CheckpointGitClient> {
@@ -141,7 +149,7 @@ export function createCheckpointService(deps: CheckpointServiceDeps): Checkpoint
     return { kind, sessionId };
   }
 
-  async function snapshot(sessionId: string, kind: CheckpointKind): Promise<CheckpointEntry | null> {
+  async function performSnapshot(sessionId: string, kind: CheckpointKind): Promise<CheckpointEntry | null> {
     const client = await clientFor(sessionId);
     const last = await client.lastCheckpoint().catch(() => null);
     const tree = await client.writeWorkspaceTree();
@@ -151,7 +159,7 @@ export function createCheckpointService(deps: CheckpointServiceDeps): Checkpoint
     const hash = await client.commitTree(tree, last?.hash ?? null, message);
     await client.updateRef(hash);
     const stat = await client.diffWithParent(hash);
-    return {
+    const entry: CheckpointEntry = {
       hash,
       kind,
       sessionId,
@@ -160,6 +168,28 @@ export function createCheckpointService(deps: CheckpointServiceDeps): Checkpoint
       insertions: stat.insertions,
       deletions: stat.deletions,
     };
+    try {
+      deps.onSnapshot?.(entry);
+    } catch (error) {
+      warn(`快照通知失败（会话 ${sessionId}）：${errorMessage(error)}`);
+    }
+    return entry;
+  }
+
+  /**
+   * 快照入口：同一会话内串行执行。
+   * 少了这层排队，"工作区变化防抖快照"会和"AI 回合结束快照"并发读到同一个链顶，
+   * 各自 commit-tree 后 updateRef，时间线上就会出现两条内容相同、parent 相同的分叉快照。
+   */
+  function snapshot(sessionId: string, kind: CheckpointKind): Promise<CheckpointEntry | null> {
+    const previous = snapshotChains.get(sessionId) ?? Promise.resolve();
+    // 前一条快照失败也要继续跑，否则一次失败会把该会话的链永久卡死
+    const next = previous.then(
+      () => performSnapshot(sessionId, kind),
+      () => performSnapshot(sessionId, kind),
+    );
+    snapshotChains.set(sessionId, next.then(() => undefined, () => undefined));
+    return next;
   }
 
   return {

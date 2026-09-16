@@ -99,6 +99,8 @@ export const IPC = {
   WORKBENCH_CHECKPOINT_LIST: "workbench:checkpoint-list",
   WORKBENCH_CHECKPOINT_DIFF: "workbench:checkpoint-diff",
   WORKBENCH_CHECKPOINT_RESTORE: "workbench:checkpoint-restore",
+  /** 快照落盘后的广播（任意来源：防抖 / AI 回合结束 / 手动 / 回退保底） */
+  WORKBENCH_CHECKPOINT_CHANGED: "workbench:checkpoint-changed",
   WORKBENCH_FILE_LIST: "workbench:file-list",
   WORKBENCH_FILE_READ: "workbench:file-read",
   WORKBENCH_FILE_WRITE: "workbench:file-write",
