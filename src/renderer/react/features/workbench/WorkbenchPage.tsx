@@ -10,7 +10,7 @@ import { useTranslation } from "../../i18n";
 import type { ConversationMode } from "../../../../shared/chat-types";
 import type { WorkbenchFileContent } from "../../../../shared/code-workbench-types";
 import { ChatMessageList, type ChatMessageItem } from "../chat/components/ChatMessageList";
-import { ComposerSlot, type ComposerInteractionCallbacks } from "../chat/components/ComposerSlot";
+import { ComposerInteractionPanel, type ComposerInteractionCallbacks } from "../chat/components/ComposerSlot";
 import type { ComposerInteraction } from "../chat/components/run-presentation";
 import { monacoLanguageFor, setupMonaco } from "./monaco-setup";
 import { buildActiveFileContext, type ActiveFileSelection } from "./active-file-context";
@@ -35,8 +35,8 @@ export interface WorkbenchPageProps extends ComposerInteractionCallbacks {
   onClose: () => void;
   /**
    * 工具审批 / 向用户提问 / 小测验卡片。
-   * 与聊天页共用同一套卡片与提交通道：AI 在工作台里请求审批时，卡片直接出现在右栏输入框位置，
-   * 不必退出工作台回主界面点。
+   * 与聊天页共用同一套卡片与提交通道：AI 在工作台里请求审批时，卡片停靠在中间栏底部
+   * （固定尺寸，不随栏宽伸缩），不必退出工作台回主界面点。
    */
   interaction?: ComposerInteraction;
   interactionBusy?: boolean;
@@ -117,11 +117,7 @@ export function WorkbenchPage({
   onClose,
   interaction,
   interactionBusy,
-  onAnswer,
-  onIgnore,
-  onPermissionDecision,
-  onQuizSubmit,
-  onQuizSkip,
+  ...interactionCallbacks
 }: WorkbenchPageProps) {
   const { t } = useTranslation();
   const columns = useResizableColumns({
@@ -556,6 +552,17 @@ export function WorkbenchPage({
               )}
             </div>
           )}
+
+          {/* 审批 / 提问 / 测验卡片：停靠在中栏底部，固定尺寸不随栏宽伸缩 */}
+          {interaction && (
+            <div className="cy-workbench__interaction-dock">
+              <ComposerInteractionPanel
+                interaction={interaction}
+                interactionBusy={interactionBusy}
+                {...interactionCallbacks}
+              />
+            </div>
+          )}
         </section>
 
         {!columns.rightCollapsed && (
@@ -582,8 +589,7 @@ export function WorkbenchPage({
             {messages.length === 0 && (
               <div className="cy-workbench__chat-empty">{t("workbench.chatEmpty")}</div>
             )}
-            <ComposerSlot
-              composer={<div className="cy-workbench__chat-composer">
+            <div className="cy-workbench__chat-composer">
               <button
                 type="button"
                 className={`cy-workbench__context-chip ${includeActiveFile && activePath ? "is-on" : ""}`}
@@ -626,15 +632,7 @@ export function WorkbenchPage({
                   {t("workbench.send")}
                 </button>
               </div>
-              </div>}
-              interaction={interaction}
-              interactionBusy={interactionBusy}
-              onAnswer={onAnswer}
-              onIgnore={onIgnore}
-              onPermissionDecision={onPermissionDecision}
-              onQuizSubmit={onQuizSubmit}
-              onQuizSkip={onQuizSkip}
-            />
+            </div>
           </div>
         </section>
 

@@ -186,6 +186,28 @@
 .cy-workbench__col--middle {
   flex: 1 1 auto;
   background: #1e2024;
+  /* 交互卡停靠位的定位上下文 */
+  position: relative;
+}
+
+/* ── 停靠在中栏底部的交互卡（工具审批 / 向用户提问 / 小测验）──
+   固定宽度：卡片是"要不要继续"的决策点，宽度随窗口跳变会让人看漏按钮。
+   浮在编辑器之上而非挤占布局，避免审批弹出时编辑器整个重排。 */
+.cy-workbench__interaction-dock {
+  position: absolute;
+  bottom: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  width: 440px;
+  max-width: calc(100% - 32px);
+  max-height: min(64vh, 480px);
+  overflow-y: auto;
+}
+
+/* 卡片跟随停靠位宽度，不吃聊天页那条 min(100%, 770px) */
+.cy-workbench__interaction-dock .cy-interaction-panel {
+  width: 100%;
 }
 
 .cy-workbench__col--right {
@@ -689,9 +711,8 @@
   overflow: hidden;
 }
 
-/* 消息流占满剩余高度；交互槽（ComposerSlot）和 composer 一样贴底，不参与拉伸 */
 .cy-workbench__chat-body > .cy-message-list,
-.cy-workbench__chat-body > div:not(.cy-workbench__chat-composer):not(.cy-workbench__chat-empty):not(.cy-composer-slot) {
+.cy-workbench__chat-body > div:not(.cy-workbench__chat-composer):not(.cy-workbench__chat-empty) {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -751,11 +772,6 @@
 .cy-workbench__context-chip:disabled {
   opacity: 0.5;
   cursor: default;
-}
-
-/* 通用交互槽内的子项：槽是 flex 居中容器，composer 需要显式撑满右栏宽度 */
-.cy-composer-slot__composer > .cy-workbench__chat-composer {
-  flex: 1;
 }
 
 .cy-workbench__chat-composer {
