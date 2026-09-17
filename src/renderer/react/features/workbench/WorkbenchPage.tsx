@@ -9,7 +9,7 @@ import Editor from "@monaco-editor/react";
 import * as monacoNs from "monaco-editor";
 import { useTranslation } from "../../i18n";
 import type { ConversationMode } from "../../../../shared/chat-types";
-import type { WorkbenchFileContent } from "../../../../shared/code-workbench-types";
+import type { WorkbenchFileContent, WorkbenchFileEntry } from "../../../../shared/code-workbench-types";
 import { ChatMessageList, type ChatMessageItem } from "../chat/components/ChatMessageList";
 import { ComposerInteractionPanel, type ComposerInteractionCallbacks } from "../chat/components/ComposerSlot";
 import type { ComposerInteraction } from "../chat/components/run-presentation";
@@ -17,7 +17,7 @@ import { monacoLanguageFor, setupMonaco } from "./monaco-setup";
 import { buildActiveFileContext, type ActiveFileSelection } from "./active-file-context";
 import { resizerKeyDelta, useResizableColumns, type ColumnSide } from "./use-resizable-columns";
 import { workbenchApi, WorkspaceTree } from "./WorkspaceTree";
-import { advanceAiFileChangeBaseline, type AiFileChangeBaseline } from "./follow-changes";
+import { advanceAiFileChangeBaseline, resolveWorkspaceRelative, type AiFileChangeBaseline } from "./follow-changes";
 import { CheckpointTimeline } from "./CheckpointTimeline";
 import "./WorkbenchPage.css";
 
@@ -157,6 +157,10 @@ export function WorkbenchPage({
   const [error, setError] = useState<string | null>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [includeActiveFile, setIncludeActiveFile] = useState(readIncludeActiveFile);
+  // 路径栏：null 表示"没在编辑，显示实际路径"；用户一敲键盘就与状态脱钩，
+  // 免得输入到一半被跟随昔涟之类的状态变化顶掉。
+  const [pathDraft, setPathDraft] = useState<string | null>(null);
+  const [pathError, setPathError] = useState<string | null>(null);
 
   const editorRef = useRef<monacoNs.editor.IStandaloneCodeEditor | null>(null);
   const autoSnapshotTimer = useRef<number | null>(null);
@@ -214,6 +218,12 @@ export function WorkbenchPage({
     // 根换了，左栏必须重列，否则还停在上一个工作区的目录快照上
     setTreeRefresh((value) => value + 1);
   }, [workspaceRoot]);
+
+  // 当前文件换了（树里点、昔涟跟随、切标签）：路径栏丢掉草稿与报错，回到显示实际路径
+  useEffect(() => {
+    setPathDraft(null);
+    setPathError(null);
+  }, [activePath]);
 
   // 卸载：清掉挂起的防抖快照
   useEffect(() => () => {
@@ -301,6 +311,56 @@ export function WorkbenchPage({
     setOpenTabs((current) => (current.includes(filePath) ? current : [...current, filePath]));
     await loadBuffer(filePath, "fresh");
   }, [loadBuffer]);
+
+  /**
+   * 路径栏里手输路径后跳转。
+   * 路径判定直接用跟随昔涟那套 resolveWorkspaceRelative：它已经处理好
+   * "反斜杠/相对/绝对"三种写法，并拒绝 .. 与工作区外的路径——两处口径一致，
+   * 不会出现"树里点得开、手输却打不开"的怪事。
+   * 存在性用父目录列表判，不用 readFile 试探：后者对不存在与目录只会抛底层错误
+   * （ENOENT / 这是一个目录），先开标签再报错会把用户丢在英文报错页上。
+   */
+  const openByPath = useCallback(async (raw: string) => {
+    const api = workbenchApi();
+    if (!api) return;
+    const target = resolveWorkspaceRelative(raw, workspaceRoot);
+    if (!target) {
+      setPathError(t("workbench.pathInvalid"));
+      return;
+    }
+    if (target === activePath) {
+      setPathDraft(null);
+      setPathError(null);
+      return;
+    }
+    const slash = target.lastIndexOf("/");
+    const parent = slash === -1 ? "" : target.slice(0, slash);
+    const name = slash === -1 ? target : target.slice(slash + 1);
+    let entries: WorkbenchFileEntry[];
+    try {
+      entries = await api.listDir(sessionId, parent);
+    } catch (cause) {
+      setPathError(cause instanceof Error ? cause.message : String(cause));
+      return;
+    }
+    // Windows 的文件名大小写不敏感：按原样找不到时再宽松匹配一次，并采用磁盘上的真实写法
+    const match =
+      entries.find((entry) => entry.name === name) ??
+      entries.find((entry) => entry.name.toLowerCase() === name.toLowerCase());
+    if (!match) {
+      setPathError(t("workbench.pathMissing"));
+      return;
+    }
+    if (match.type === "dir") {
+      setPathError(t("workbench.pathIsDir"));
+      return;
+    }
+    setPathError(null);
+    setPathDraft(null);
+    // 左栏也定位过去：既然用户明确指到了这个文件，树里看不到它会显得像没生效
+    setRevealPath(match.path);
+    await openFile(match.path);
+  }, [activePath, openFile, sessionId, t, workspaceRoot]);
 
   /**
    * 跟随昔涟：它刚改动了某个工作区文件，切过去并刷新内容。
@@ -653,6 +713,41 @@ export function WorkbenchPage({
                   ))}
                 </div>
               )}
+
+              {/* 路径栏：显示当前文件在工作区里的相对路径，也可直接改路径回车跳过去。
+                  失焦或 Esc 放弃这次输入（连同报错一起收掉），回到显示实际路径。 */}
+              <div className="cy-workbench__path-bar">
+                <input
+                  type="text"
+                  className={`cy-workbench__path-input ${pathError ? "is-invalid" : ""}`}
+                  value={pathDraft ?? activePath ?? ""}
+                  placeholder={t("workbench.pathPlaceholder")}
+                  spellCheck={false}
+                  aria-label={t("workbench.pathAria")}
+                  title={t("workbench.pathHint")}
+                  onChange={(event) => {
+                    setPathDraft(event.target.value);
+                    if (pathError) setPathError(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void openByPath(event.currentTarget.value);
+                      return;
+                    }
+                    if (event.key === "Escape") setPathDraft(null);
+                  }}
+                  onBlur={() => {
+                    setPathDraft(null);
+                    setPathError(null);
+                  }}
+                />
+                {pathError && (
+                  <span className="cy-workbench__path-error" title={pathError}>
+                    {pathError}
+                  </span>
+                )}
+              </div>
 
               {/* 昔涟刚改了这个文件，但缓冲里有未保存改动：内容以你的版本为准，只告知 */}
               {followBlockedPath && followBlockedPath === activePath && activeEntry?.dirty && (

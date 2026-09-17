@@ -413,6 +413,58 @@
   color: #e8e8e8;
 }
 
+/* ── 路径栏（文件页签下方：显示当前文件路径，可直接改路径跳转） ── */
+
+.cy-workbench__path-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 4px 8px;
+  border-bottom: var(--cy-wb-line-w) solid var(--cy-wb-line);
+}
+
+.cy-workbench__path-input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: #232529;
+  color: #c9cdd4;
+  /* 路径按等宽字体读更省力（对齐、区分 l/1/I），沿用 CodeHighlighter 的字族回退链 */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.cy-workbench__path-input:hover {
+  border-color: var(--cy-wb-line);
+}
+
+.cy-workbench__path-input:focus {
+  outline: none;
+  border-color: #2f6feb;
+  color: #e8e8e8;
+}
+
+.cy-workbench__path-input::placeholder {
+  color: #6d737b;
+}
+
+.cy-workbench__path-input.is-invalid {
+  border-color: #a35b5b;
+}
+
+.cy-workbench__path-error {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #e5a3a3;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .cy-workbench__editor-empty {
   flex: 1;
   display: flex;
