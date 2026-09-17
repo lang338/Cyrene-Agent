@@ -796,39 +796,42 @@ export function WorkbenchPage({
 
               {/* 路径栏：显示当前文件的完整路径（工作区内=工作区根 + 相对路径，工作区外=绝对路径），
                   也可直接改路径回车跳过去——相对路径与全盘绝对路径都接受。
-                  失焦或 Esc 放弃这次输入（连同报错一起收掉），回到显示实际路径。 */}
-              <div className="cy-workbench__path-bar">
-                <input
-                  type="text"
-                  className={`cy-workbench__path-input ${pathError ? "is-invalid" : ""}`}
-                  value={pathDraft ?? (activePath ? displayPathFor(activePath, workspaceRoot) : "")}
-                  placeholder={t("workbench.pathPlaceholder")}
-                  spellCheck={false}
-                  aria-label={t("workbench.pathAria")}
-                  title={t("workbench.pathHint")}
-                  onChange={(event) => {
-                    setPathDraft(event.target.value);
-                    if (pathError) setPathError(null);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      void openByPath(event.currentTarget.value);
-                      return;
-                    }
-                    if (event.key === "Escape") setPathDraft(null);
-                  }}
-                  onBlur={() => {
-                    setPathDraft(null);
-                    setPathError(null);
-                  }}
-                />
-                {pathError && (
-                  <span className="cy-workbench__path-error" title={pathError}>
-                    {pathError}
-                  </span>
-                )}
-              </div>
+                  失焦或 Esc 放弃这次输入（连同报错一起收掉），回到显示实际路径。
+                  没打开文件时整条不渲染：那时它只是一行空格子，徒占中栏高度。 */}
+              {activePath && (
+                <div className="cy-workbench__path-bar">
+                  <input
+                    type="text"
+                    className={`cy-workbench__path-input ${pathError ? "is-invalid" : ""}`}
+                    value={pathDraft ?? displayPathFor(activePath, workspaceRoot)}
+                    placeholder={t("workbench.pathPlaceholder")}
+                    spellCheck={false}
+                    aria-label={t("workbench.pathAria")}
+                    title={t("workbench.pathHint")}
+                    onChange={(event) => {
+                      setPathDraft(event.target.value);
+                      if (pathError) setPathError(null);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        void openByPath(event.currentTarget.value);
+                        return;
+                      }
+                      if (event.key === "Escape") setPathDraft(null);
+                    }}
+                    onBlur={() => {
+                      setPathDraft(null);
+                      setPathError(null);
+                    }}
+                  />
+                  {pathError && (
+                    <span className="cy-workbench__path-error" title={pathError}>
+                      {pathError}
+                    </span>
+                  )}
+                </div>
+              )}
 
               {/* 昔涟刚改了这个文件，但缓冲里有未保存改动：内容以你的版本为准，只告知 */}
               {followBlockedPath && followBlockedPath === activePath && activeEntry?.dirty && (
