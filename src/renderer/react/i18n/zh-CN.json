@@ -696,6 +696,7 @@
     "ledgerNoBaseline": "无更早版本",
     "ledgerSkippedBinary": "未存内容（二进制）",
     "ledgerSkippedLarge": "未存内容（过大）",
+    "ledgerSkippedUnreadable": "改动后没能读到内容，无法对比也不会被回退",
     "ledgerNoBaselineDetail": "这个文件没有更早的版本（记录从它被改动之后才开始），没法回退内容。",
     "ledgerDiffTitle": "改动对比：{{path}}",
     "restoreToBefore": "回到这一轮之前",

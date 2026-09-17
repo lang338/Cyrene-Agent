@@ -265,8 +265,12 @@ describe("change-ledger 配额与清理", () => {
     await ledger.record(change({ runId: "run-1", path: "a.ts", before: "aaa\n", after: "bbb\n" }));
     await ledger.record(change({ runId: "run-2", path: "c.ts", before: "ccc\n", after: "ddd\n" }));
 
+    const before = await ledger.usage();
     await ledger.pruneRounds("c1", ["run-1"]);
     expect((await ledger.listRounds("c1")).map((round) => round.roundId)).toEqual(["run-2"]);
+    // 占用是带缓存的：回收后必须失效，否则配额会一直按旧数字判断
+    const after = await ledger.usage();
+    expect(after.totalBytes).toBeLessThan(before.totalBytes);
     expect(await ledger.readContent(await hashOf("aaa\n"))).toBeNull();
     expect(await ledger.readContent(await hashOf("ddd\n"))).toBe("ddd\n");
   });
