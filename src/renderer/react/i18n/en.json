@@ -78,6 +78,7 @@
     "restoreConfirmBody": "Files recorded in this round and later are restored to their pre-change content. Files that were never recorded are left untouched, and files changed again after being recorded are skipped.",
     "restoreDone": "Restored {{restored}} file(s), deleted {{deleted}}",
     "restoreSkipped": "{{count}} skipped",
+    "restoreBlockedDirty": "{{count}} file(s) have unsaved edits: save or discard them before restoring, otherwise your edits have nowhere to go",
     "pruneRound": "Delete record",
     "pruneHint": "Deletes the record only; files in the workspace stay untouched",
     "pruneConfirmTitle": "Delete this round's record?",

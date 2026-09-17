@@ -22,8 +22,10 @@ interface ChangeTimelineProps {
   refreshToken: number;
   busy: boolean;
   onBusyChange: (busy: boolean) => void;
-  /** 回退成功后通知外层（清编辑缓冲、刷新文件树） */
-  onAfterRestore?: () => void;
+  /** 回退前的把关：返回 false 表示这次回退被拦下（原因由外层给出） */
+  onBeforeRestore?: (paths: string[]) => boolean;
+  /** 回退成功后通知外层（只清被动过的那些缓冲、刷新文件树） */
+  onAfterRestore?: (result: LedgerRestoreResult) => void;
 }
 
 function formatTime(at: number): string {
@@ -37,7 +39,7 @@ function formatMB(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function ChangeTimeline({ sessionId, refreshToken, busy, onBusyChange, onAfterRestore }: ChangeTimelineProps) {
+export function ChangeTimeline({ sessionId, refreshToken, busy, onBusyChange, onBeforeRestore, onAfterRestore }: ChangeTimelineProps) {
   const { t } = useTranslation();
   const [rounds, setRounds] = useState<LedgerRound[]>([]);
   const [usage, setUsage] = useState<LedgerUsage | null>(null);
@@ -99,6 +101,11 @@ export function ChangeTimeline({ sessionId, refreshToken, busy, onBusyChange, on
   async function restore(round: LedgerRound) {
     const api = workbenchApi();
     if (!api?.restoreLedgerRound) return;
+    // 有未保存改动的文件先拦下来：回退直接改磁盘，用户缓冲里那份改动没地方放
+    if (onBeforeRestore && !onBeforeRestore(round.files.map((file) => file.path))) {
+      setRestoreTarget(null);
+      return;
+    }
     onBusyChange(true);
     try {
       const result = await api.restoreLedgerRound(sessionId, round.roundId) as LedgerRestoreResult;
@@ -107,7 +114,7 @@ export function ChangeTimeline({ sessionId, refreshToken, busy, onBusyChange, on
         : "";
       setNotice(t("workbench.restoreDone", { restored: result.restored.length, deleted: result.deleted.length }) + skipped);
       setError(null);
-      onAfterRestore?.();
+      onAfterRestore?.(result);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {

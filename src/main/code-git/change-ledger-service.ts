@@ -292,9 +292,12 @@ export function createChangeLedger(deps: ChangeLedgerDeps): ChangeLedger {
       if (`${round.conversationId}:${round.roundId}` === newest) continue;
       if ((await totalBytes()) <= target) break;
       await pruneRoundsUnlocked(round.conversationId, [round.roundId]);
+      // 每淘汰一轮就立刻回收它的内容对象：
+      // 只删 jsonl 行的话，下一轮 totalBytes() 仍然把那些对象算进去，
+      // 判定永远不达标 → 循环会把历史一路删到只剩最新一轮（且跨所有会话）。
+      await collectGarbage();
       evicted.push({ conversationId: round.conversationId, roundId: round.roundId });
     }
-    if (evicted.length > 0) await collectGarbage();
     return evicted;
   }
 
@@ -542,6 +545,16 @@ export function createChangeLedger(deps: ChangeLedgerDeps): ChangeLedger {
       });
     },
   };
+}
+
+/**
+ * 只有 ENOENT 才代表"这个文件不存在"。
+ * 权限（EACCES）、句柄耗尽（EMFILE）等错误必须当成"暂时读不到"——否则账本会把
+ * 一个真实存在的文件记成"新建"（null 基线），回退时把它删掉。
+ * 放在这里而不是 workbench-ipc：本模块不依赖 electron，可以直接单测。
+ */
+export function isMissingFileError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
 /** 行数（末尾空行不计，与工具证据同一口径） */

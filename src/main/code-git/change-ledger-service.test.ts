@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createChangeLedger, type ChangeLedger } from "./change-ledger-service";
+import { createChangeLedger, isMissingFileError, type ChangeLedger } from "./change-ledger-service";
 
 let rootDir: string;
 let workspaceRoot: string;
@@ -218,6 +218,18 @@ describe("change-ledger 回退", () => {
   });
 });
 
+describe("isMissingFileError（只有 ENOENT 才算文件不存在）", () => {
+  it("ENOENT 为真，其余一律为假", () => {
+    expect(isMissingFileError(Object.assign(new Error("nope"), { code: "ENOENT" }))).toBe(true);
+    // 权限/句柄等暂时性错误绝不能当成"文件不存在"，否则回退会去删一个真实文件
+    expect(isMissingFileError(Object.assign(new Error("denied"), { code: "EACCES" }))).toBe(false);
+    expect(isMissingFileError(Object.assign(new Error("too many open files"), { code: "EMFILE" }))).toBe(false);
+    expect(isMissingFileError(new Error("plain"))).toBe(false);
+    expect(isMissingFileError(undefined)).toBe(false);
+    expect(isMissingFileError("ENOENT")).toBe(false);
+  });
+});
+
 describe("change-ledger 配额与清理", () => {
   it("超配额时按轮次从旧到新淘汰，但永远保留最新一轮", async () => {
     const small = createChangeLedger({ rootDir, limits: { maxTotalBytes: 1000 } });
@@ -229,6 +241,24 @@ describe("change-ledger 配额与清理", () => {
     expect(result.evicted.map((entry) => entry.roundId)).toEqual(["run-old"]);
     const rounds = await small.listRounds("c1");
     expect(rounds.map((round) => round.roundId)).toEqual(["run-new"]);
+  });
+
+  it("配额淘汰只删必要的轮次，不会一路删到只剩最新", async () => {
+    const small = createChangeLedger({ rootDir, limits: { maxTotalBytes: 1400 } });
+    const base = randomBytes(200).toString("base64");
+    const evicted: string[] = [];
+    for (const runId of ["r1", "r2", "r3", "r4"]) {
+      // 每轮内容不同（避免被内容去重），且不可压缩（否则测不出体积）
+      const result = await small.record({ ...change({ runId, path: `${runId}.ts` }), before: `${base}${runId}`, after: `${base}${runId}x` });
+      for (const entry of result.evicted) evicted.push(entry.roundId);
+    }
+
+    const rounds = await small.listRounds("c1");
+    expect(rounds.map((round) => round.roundId)).toContain("r4"); // 最新一轮永远保留
+    // 关键：不是"删到只剩最新"（回收没跟上的话会一路删光）
+    expect(rounds.length).toBeGreaterThanOrEqual(2);
+    expect(evicted[0]).toBe("r1"); // 从最旧的开始淘汰
+    expect((await small.usage()).totalBytes).toBeLessThanOrEqual(1400 * 0.7 + 300); // 回落到目标水位附近
   });
 
   it("按轮删除后回收对象", async () => {

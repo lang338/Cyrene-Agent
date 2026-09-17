@@ -703,6 +703,7 @@
     "restoreConfirmBody": "会把这一轮及之后记录过的文件恢复成改动前的内容；没有记录过的文件不会被碰；记录之后又被改过的文件会跳过。",
     "restoreDone": "已恢复 {{restored}} 个文件、删除 {{deleted}} 个",
     "restoreSkipped": "跳过 {{count}} 个",
+    "restoreBlockedDirty": "有 {{count}} 个文件存在未保存的改动：请先保存或撤销后再回退，否则你的改动会没有着落",
     "pruneRound": "删记录",
     "pruneHint": "只删记录，不动工作区里的文件",
     "pruneConfirmTitle": "删除这一轮的记录？",

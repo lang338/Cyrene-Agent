@@ -7,6 +7,7 @@ import { createIpcScope, type IpcScope, type IpcScopeMainLike } from "../applica
 import type { CheckpointKind } from "../../shared/code-workbench-types";
 import type { CheckpointService } from "./checkpoint-service";
 import type { ChangeLedger } from "./change-ledger-service";
+import { isMissingFileError } from "./change-ledger-service";
 import type { WorkspaceFileService } from "./workspace-files";
 
 interface IpcMainLike {
@@ -76,14 +77,16 @@ export function registerWorkbenchIpc(deps: RegisterWorkbenchIpcDeps): void {
     const content = input.content;
 
     // 先取旧内容：改动时间线要记"你改之前"的样子，否则这个文件回退不了。
-    // 读不到（二进制/被截断/不存在）时给 undefined，语义是"没有基线"，而不是"当时不存在"。
+    // ⚠️ 只有 ENOENT 才代表"文件不存在"（before=null → 回退时删除）；
+    // 权限/句柄耗尽等暂时性错误必须给 undefined（= 没有基线，回退跳过），
+    // 否则一次 EACCES 就会让回退去删一个用户真实存在的文件。
     let before: string | null | undefined;
     if (deps.ledger) {
       try {
         const existing = await deps.files.readFile(sessionId, relPath);
         before = existing.binary || existing.truncated ? undefined : existing.content;
-      } catch {
-        before = null; // 读不到就是当时不存在（新建文件）
+      } catch (error) {
+        before = isMissingFileError(error) ? null : undefined;
       }
     }
 
