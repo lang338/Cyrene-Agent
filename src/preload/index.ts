@@ -817,6 +817,20 @@ const workbenchApi = {
     ipcRenderer.on(IPC.WORKBENCH_CHECKPOINT_CHANGED, listener);
     return () => ipcRenderer.removeListener(IPC.WORKBENCH_CHECKPOINT_CHANGED, listener);
   },
+  // 改动账本（时间线）：只记被改动文件的内容，不要求工作区是 git 仓库
+  listLedgerRounds: (sessionId: string) => ipcRenderer.invoke(IPC.WORKBENCH_LEDGER_LIST, sessionId),
+  ledgerFileVersions: (sessionId: string, roundId: string, path: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_LEDGER_FILE, { sessionId, roundId, path }),
+  restoreLedgerRound: (sessionId: string, roundId: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_LEDGER_RESTORE, { sessionId, roundId }),
+  ledgerUsage: () => ipcRenderer.invoke(IPC.WORKBENCH_LEDGER_USAGE),
+  pruneLedgerRounds: (sessionId: string, roundIds: string[]) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_LEDGER_PRUNE, { sessionId, roundIds }),
+  onLedgerChanged: (callback: (payload: { sessionId: string }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { sessionId: string }) => callback(payload);
+    ipcRenderer.on(IPC.WORKBENCH_LEDGER_CHANGED, listener);
+    return () => ipcRenderer.removeListener(IPC.WORKBENCH_LEDGER_CHANGED, listener);
+  },
 };
 contextBridge.exposeInMainWorld("workbench", workbenchApi);
 

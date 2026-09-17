@@ -52,3 +52,65 @@ export interface WorkbenchFileContent {
   /** 超过大小上限被截断 */
   truncated: boolean;
 }
+
+// ── 改动账本（时间线的数据源） ────────────────────────────────
+//
+// 与 checkpoint 的区别：checkpoint 存"整个工作区的一棵树"（要求工作区是 git 仓库、规模受限）；
+// 账本只存"被改动过的文件的内容"，因此巨型目录、非 git 目录都能用。
+
+/** 一次改动的来源：ai=昔涟用写文件工具改的；user=你在工作台代码区保存的 */
+export type LedgerSource = "ai" | "user";
+
+export type LedgerChangeKind = "create" | "modify" | "delete";
+
+/** 内容未入库的原因（未入库时只记"被改过"，不能回退该文件内容） */
+export type LedgerSkipReason = "binary" | "too-large" | "unreadable";
+
+export interface LedgerFileChange {
+  /** 工作区相对路径（正斜杠） */
+  path: string;
+  kind: LedgerChangeKind;
+  source: LedgerSource;
+  insertions: number;
+  deletions: number;
+  /**
+   * 是否拿到了"改动前"的基线。
+   * false = 这次改动之前我们没见过这个文件（例如它由命令行或外部工具产生），
+   * 因此**无法回退它的内容**，界面上必须标明。
+   */
+  hasBaseline: boolean;
+  contentSkipped?: LedgerSkipReason;
+}
+
+/** 时间线上的一条：一次 AI 回合（或一次你的保存） */
+export interface LedgerRound {
+  roundId: string;
+  /** 归属会话 */
+  conversationId: string;
+  at: number;
+  /** 展示用标签：发起这一轮的用户消息（截断） */
+  label: string;
+  files: LedgerFileChange[];
+}
+
+export interface LedgerUsage {
+  totalBytes: number;
+  maxBytes: number;
+  /** 已超过提示线（默认 80%） */
+  warn: boolean;
+  roundCount: number;
+}
+
+export interface LedgerRestoreResult {
+  restored: string[];
+  deleted: string[];
+  /** 未处理并给出原因的文件（无基线 / 期间被外部改过） */
+  skipped: Array<{ path: string; reason: string }>;
+}
+
+/** 单个文件在某一轮前后的内容；null 表示当时不存在，undefined 表示内容未入库 */
+export interface LedgerFileVersions {
+  path: string;
+  before: string | null | undefined;
+  after: string | null | undefined;
+}

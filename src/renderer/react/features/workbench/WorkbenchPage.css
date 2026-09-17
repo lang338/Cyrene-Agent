@@ -992,6 +992,244 @@
   background: rgb(255 255 255 / 8%);
 }
 
+/* ── 历史 · 改动（改动账本时间线） ─────────────────────── */
+
+.cy-workbench__history-switch {
+  display: flex;
+  gap: 4px;
+  flex: none;
+  padding: 6px 8px 0;
+}
+
+.cy-workbench__history-tab {
+  flex: 1;
+  padding: 4px 0;
+  border: 1px solid var(--cy-wb-line);
+  border-radius: 6px;
+  background: transparent;
+  color: #9aa0a8;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cy-workbench__history-tab.is-active {
+  border-color: #2f6feb;
+  background: #262a33;
+  color: #e8e8e8;
+}
+
+.cy-changes {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  font-size: 12px;
+}
+
+.cy-changes__usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  color: #9aa0a8;
+}
+
+.cy-changes__usage.is-warn {
+  color: #d8b26a;
+}
+
+.cy-changes__usage-hint {
+  color: #d8b26a;
+}
+
+.cy-changes__hint {
+  margin: 6px 0 10px;
+  color: #6d737b;
+  line-height: 1.5;
+}
+
+.cy-changes__error {
+  margin-bottom: 8px;
+  color: #e5a3a3;
+}
+
+.cy-changes__notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #26332b;
+  color: #a8d5a8;
+}
+
+.cy-changes__notice button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.cy-changes__empty {
+  padding: 12px 0;
+  color: #6d737b;
+}
+
+.cy-changes__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cy-changes__round {
+  margin-bottom: 6px;
+  border: 1px solid var(--cy-wb-line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.cy-changes__round-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 6px;
+  background: #232529;
+}
+
+.cy-changes__round-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: #c9cdd4;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cy-changes__caret {
+  color: #6d737b;
+}
+
+.cy-changes__time {
+  flex: none;
+  color: #9aa0a8;
+}
+
+.cy-changes__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cy-changes__count {
+  flex: none;
+  color: #6d737b;
+}
+
+.cy-changes__round-actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.cy-changes__round-actions button {
+  padding: 2px 6px;
+  border: 1px solid var(--cy-wb-line);
+  border-radius: 4px;
+  background: transparent;
+  color: #9aa0a8;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.cy-changes__round-actions button:hover:not(:disabled) {
+  color: #e8e8e8;
+  border-color: #2f6feb;
+}
+
+.cy-changes__round-actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.cy-changes__files {
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+}
+
+.cy-changes__file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px;
+  border: 0;
+  background: transparent;
+  color: #c9cdd4;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cy-changes__file:hover {
+  background: rgb(255 255 255 / 5%);
+}
+
+.cy-changes__badge {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+/* 来源徽标：一眼分清这条是昔涟改的还是你改的 */
+.cy-changes__badge.is-ai {
+  background: #2b3a52;
+  color: #a9c7f0;
+}
+
+.cy-changes__badge.is-user {
+  background: #3c3320;
+  color: #e0c48a;
+}
+
+.cy-changes__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: ltr;
+}
+
+.cy-changes__kind {
+  flex: none;
+  color: #9aa0a8;
+}
+
+.cy-changes__stat {
+  flex: none;
+  color: #6d737b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.cy-changes__skipped {
+  flex: none;
+  color: #d8b26a;
+}
+
 /* 代码容器：去白底、窄栏折行（长路径/长 URL 不再撑出横向滚动条）、收紧行距 */
 .cy-workbench .ant-code-highlighter-code pre[class*="language-"],
 .cy-workbench .ant-code-highlighter-code code[class*="language-"] {

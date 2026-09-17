@@ -286,6 +286,8 @@ export interface HarnessInput {
   checkPermission?: (toolId: string, args: Record<string, unknown>) => Promise<boolean>;
   /** ExecutionLedger：可选的同进程工具去重缓存（用于副作用重复执行防护） */
   executionLedger?: import("../execution-ledger").ExecutionLedger;
+  /** 改动账本：默认取进程级配置实例，这里可显式覆盖（测试用） */
+  changeLedger?: import("../../code-git/change-ledger-service").ChangeLedger;
   /** ToolOutputStore：生产 Harness 注入的完整工具结果存储。 */
   toolOutputStore?: ToolOutputStore;
   /** 父会话注入的前台子任务执行器；子 Harness 不会继续注入它。 */

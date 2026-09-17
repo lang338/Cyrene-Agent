@@ -51,6 +51,7 @@ import {
   buildStableSystemPrefix,
   type PromptLayers,
 } from "../prompt-layers";
+import { getConfiguredChangeLedger } from "../../code-git/change-ledger-service";
 
 const LOG_PREFIX = "[CyreneHarness]";
 
@@ -247,6 +248,8 @@ function createRun(input: HarnessInput): HarnessRun {
       checkPermission: input.checkPermission,
       toolContext: input.toolContext,
       executionLedger: input.executionLedger,
+      // 改动账本：启动时配置的进程级实例（未配置则为 undefined，完全不记账）
+      changeLedger: input.changeLedger ?? getConfiguredChangeLedger(),
       taskExecutor: input.taskExecutor,
       deferOutputPersistence: true,
     },

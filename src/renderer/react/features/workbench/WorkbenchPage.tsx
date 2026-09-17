@@ -19,6 +19,7 @@ import { resizerKeyDelta, useResizableColumns, type ColumnSide } from "./use-res
 import { workbenchApi, WorkspaceTree } from "./WorkspaceTree";
 import { advanceAiFileChangeBaseline, resolveWorkspaceRelative, type AiFileChangeBaseline } from "./follow-changes";
 import { CheckpointTimeline } from "./CheckpointTimeline";
+import { ChangeTimeline } from "./ChangeTimeline";
 import "./WorkbenchPage.css";
 
 export interface WorkbenchPageProps extends ComposerInteractionCallbacks {
@@ -183,6 +184,8 @@ export function WorkbenchPage({
   });
 
   const [middleTab, setMiddleTab] = useState<"code" | "history">("code");
+  // 历史页签下再分两种来源：改动账本（默认，巨型目录也能用）/ 整区快照（要求工作区是 git 仓库）
+  const [historyView, setHistoryView] = useState<"changes" | "snapshots">("changes");
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
   const [buffers, setBuffers] = useState<Record<string, BufferEntry>>({});
@@ -761,13 +764,40 @@ export function WorkbenchPage({
 
           {middleTab === "history" ? (
             <div className="cy-workbench__col-body">
-              <CheckpointTimeline
-                sessionId={sessionId}
-                refreshToken={timelineRefresh}
-                busy={snapshotBusy}
-                onBusyChange={setSnapshotBusy}
-                onAfterRestore={handleRestore}
-              />
+              {/* 两种历史来源切换：改动账本（只记被改文件的内容，不要求 git 仓库）/ 整区快照 */}
+              <div className="cy-workbench__history-switch">
+                <button
+                  type="button"
+                  className={`cy-workbench__history-tab ${historyView === "changes" ? "is-active" : ""}`}
+                  onClick={() => setHistoryView("changes")}
+                >
+                  {t("workbench.ledgerTab")}
+                </button>
+                <button
+                  type="button"
+                  className={`cy-workbench__history-tab ${historyView === "snapshots" ? "is-active" : ""}`}
+                  onClick={() => setHistoryView("snapshots")}
+                >
+                  {t("workbench.snapshotsTab")}
+                </button>
+              </div>
+              {historyView === "changes" ? (
+                <ChangeTimeline
+                  sessionId={sessionId}
+                  refreshToken={timelineRefresh}
+                  busy={snapshotBusy}
+                  onBusyChange={setSnapshotBusy}
+                  onAfterRestore={handleRestore}
+                />
+              ) : (
+                <CheckpointTimeline
+                  sessionId={sessionId}
+                  refreshToken={timelineRefresh}
+                  busy={snapshotBusy}
+                  onBusyChange={setSnapshotBusy}
+                  onAfterRestore={handleRestore}
+                />
+              )}
             </div>
           ) : (
             <div className="cy-workbench__col-body cy-workbench__editor-body">
