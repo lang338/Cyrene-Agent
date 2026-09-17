@@ -107,8 +107,21 @@ export function ChangeTimeline({ sessionId, refreshToken, busy, onBusyChange, on
   async function restore(round: LedgerRound) {
     const api = workbenchApi();
     if (!api?.restoreLedgerRound) return;
+    // 守卫必须看到"本次回退真正会动的全部文件"：服务端影响的是目标轮**及其之后**每文件取
+    // 最早一条，只看 round.files 会漏掉后续轮次才改、缓冲里正有未保存改动的文件。
+    // 预检通道不在（旧 preload）时退回 round.files，绝不能因为拿不到清单就放开守卫。
+    let affectedPaths: string[];
+    try {
+      affectedPaths = api.ledgerRestoreAffected
+        ? await api.ledgerRestoreAffected(sessionId, round.roundId)
+        : round.files.map((file) => file.path);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      setRestoreTarget(null);
+      return;
+    }
     // 有未保存改动的文件先拦下来：回退直接改磁盘，用户缓冲里那份改动没地方放
-    if (onBeforeRestore && !onBeforeRestore(round.files.map((file) => file.path))) {
+    if (onBeforeRestore && !onBeforeRestore(affectedPaths)) {
       setRestoreTarget(null);
       return;
     }

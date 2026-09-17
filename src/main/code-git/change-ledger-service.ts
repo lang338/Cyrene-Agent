@@ -93,6 +93,12 @@ export interface ChangeLedger {
   record(input: RecordChangeInput): Promise<RecordChangeResult>;
   listRounds(conversationId: string): Promise<LedgerRound[]>;
   fileVersions(conversationId: string, roundId: string, relPath: string): Promise<LedgerFileVersions>;
+  /**
+   * 预览回退到某轮之前**实际会触及**的全部路径（只读）。
+   * 与 restore() 内部是同一份计算：目标轮及其之后每文件取最早一条，
+   * 供渲染端在回退前对"后续轮次才改动的文件"也做未保存改动把关。
+   */
+  restoreAffectedPaths(conversationId: string, roundId: string): Promise<string[]>;
   restore(conversationId: string, roundId: string, workspaceRoot: string): Promise<LedgerRestoreResult>;
   usage(): Promise<LedgerUsage>;
   /** 按轮删除（用户手动清理） */
@@ -212,34 +218,13 @@ export function createChangeLedger(deps: ChangeLedgerDeps): ChangeLedger {
     return cachedTotalBytes;
   }
 
-  async function scanTotalBytes(): Promise<number> {
-    let sum = 0;
-    async function walk(dir: string): Promise<void> {
-      let entries: fs.Dirent[];
-      try {
-        entries = await fs.promises.readdir(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const entry of entries) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) await walk(full);
-        else if (entry.isFile()) sum += (await fs.promises.stat(full)).size;
-      }
-    }
-    await walk(objectsDir);
-    return sum;
-  }
-
-  /** 把账本里的哈希与"被引用的内容"对齐：删掉没人引用的对象（按轮删除后回收空间） */
-  async function collectGarbage(): Promise<void> {
-    const referenced = new Set<string>();
-    for (const sessionId of await listSessionIds()) {
-      for (const line of await readLines(sessionId)) {
-        if (line.beforeHash) referenced.add(line.beforeHash);
-        if (line.afterHash) referenced.add(line.afterHash);
-      }
-    }
+  /**
+   * 走遍对象库，对每个文件回调（文件名即哈希、绝对路径、字节大小）。
+   * stat 失败给 null，由调用方决定怎么算——配额统计与垃圾回收都走这一份遍历。
+   */
+  async function walkObjectStore(
+    visit: (name: string, full: string, size: number | null) => Promise<void> | void,
+  ): Promise<void> {
     async function walk(dir: string): Promise<void> {
       let entries: fs.Dirent[];
       try {
@@ -253,10 +238,39 @@ export function createChangeLedger(deps: ChangeLedgerDeps): ChangeLedger {
           await walk(full);
           continue;
         }
-        if (!referenced.has(entry.name)) await fs.promises.rm(full, { force: true });
+        if (!entry.isFile()) continue;
+        let size: number | null = null;
+        try {
+          size = (await fs.promises.stat(full)).size;
+        } catch {
+          size = null;
+        }
+        await visit(entry.name, full, size);
       }
     }
     await walk(objectsDir);
+  }
+
+  async function scanTotalBytes(): Promise<number> {
+    let sum = 0;
+    await walkObjectStore((_name, _full, size) => {
+      if (size !== null) sum += size;
+    });
+    return sum;
+  }
+
+  /** 把账本里的哈希与"被引用的内容"对齐：删掉没人引用的对象（按轮删除后回收空间） */
+  async function collectGarbage(): Promise<void> {
+    const referenced = new Set<string>();
+    for (const sessionId of await listSessionIds()) {
+      for (const line of await readLines(sessionId)) {
+        if (line.beforeHash) referenced.add(line.beforeHash);
+        if (line.afterHash) referenced.add(line.afterHash);
+      }
+    }
+    await walkObjectStore((name, full) => {
+      if (!referenced.has(name)) return fs.promises.rm(full, { force: true });
+    });
     // 刚删过对象：缓存的占用数字不再可信，下次重新统计
     cachedTotalBytes = null;
   }
@@ -274,6 +288,15 @@ export function createChangeLedger(deps: ChangeLedgerDeps): ChangeLedger {
   }
 
   /**
+   * 回退到目标轮之前会触及的记录行：目标轮及其之后的全部记录，每文件取最早一条。
+   * restore() 与 restoreAffectedPaths() **必须共用这一个口径**——
+   * 前端把关的路径集合与真正被写/删的集合一旦不一致，守卫就是摆设。
+   */
+  function restoreAffectedLines(lines: LedgerLine[], targetIndex: number): LedgerLine[] {
+    return earliestPerPath(lines.slice(targetIndex));
+  }
+
+  /**
    * 读一个哈希字段的三态语义。
    * 缺字段 = 内容没入库（不可回退/不可比对）；null = 当时不存在；字符串 = 内容哈希。
    */
@@ -283,15 +306,34 @@ export function createChangeLedger(deps: ChangeLedgerDeps): ChangeLedger {
     return { known: true, hash: value };
   }
 
-  /** 配额检查：超了就按"轮次从旧到新"整轮淘汰，直到回落到目标水位 */
+  /**
+   * 配额检查：超了就按"轮次从旧到新"整轮淘汰，直到回落到目标水位。
+   *
+   * 性能口径（CodeRabbit 二轮意见）：整个淘汰过程**只 walk 一次对象库、读一遍账本**。
+   * 提前建好哈希引用计数与压缩对象大小表，删一轮只递减计数、计数归零才删对象并
+   * 增量扣减缓存总量——不能每淘汰一轮就 collectGarbage() 全库扫描一次，
+   * 500MB 配额（上万对象）下那会让一次保存触发上千次全盘扫描。
+   */
   async function enforceQuota(): Promise<Array<{ conversationId: string; roundId: string }>> {
     if ((await totalBytes()) <= limits.maxTotalBytes) return [];
+
+    // 1) 一遍账本：内存里留好每个会话的全部记录，同时建"哈希→被引用次数"
+    const linesBySession = new Map<string, LedgerLine[]>();
+    const refCounts = new Map<string, number>();
+    const addReference = (hash: string | null | undefined): void => {
+      // null=文件当时不存在、undefined=内容未入库：都不占对象库
+      if (typeof hash !== "string") return;
+      refCounts.set(hash, (refCounts.get(hash) ?? 0) + 1);
+    };
     // 收集所有会话的轮次，按该轮最早一条记录的时间排序
     const rounds: Array<{ conversationId: string; roundId: string; at: number }> = [];
     for (const sessionId of await listSessionIds()) {
       const lines = await readLines(sessionId);
+      linesBySession.set(sessionId, lines);
       const firstAt = new Map<string, number>();
       for (const line of lines) {
+        addReference(line.beforeHash);
+        addReference(line.afterHash);
         const seen = firstAt.get(line.runId);
         if (seen === undefined || line.at < seen) firstAt.set(line.runId, line.at);
       }
@@ -299,20 +341,63 @@ export function createChangeLedger(deps: ChangeLedgerDeps): ChangeLedger {
     }
     rounds.sort((left, right) => left.at - right.at);
 
+    // 2) 一次对象库遍历拿到大小表，并用磁盘真值校准缓存总量
+    const objectSizes = new Map<string, number>();
+    let trackedTotal = 0;
+    await walkObjectStore((name, _full, size) => {
+      if (size !== null) {
+        objectSizes.set(name, size);
+        trackedTotal += size;
+      }
+    });
+    cachedTotalBytes = trackedTotal;
+
     const target = limits.maxTotalBytes * EVICT_TARGET_RATIO;
-    const evicted: Array<{ conversationId: string; roundId: string }> = [];
     // 永远保留最新一轮：刚发生的改动不能刚写进来就被自己淘汰掉
     const newest = rounds.length > 0 ? `${rounds[rounds.length - 1].conversationId}:${rounds[rounds.length - 1].roundId}` : "";
+    const evicted: Array<{ conversationId: string; roundId: string }> = [];
+    const sessionsToRewrite = new Set<string>();
+    const deadHashes: string[] = [];
+    const releaseReference = (hash: string | null | undefined): void => {
+      if (typeof hash !== "string") return;
+      const remaining = (refCounts.get(hash) ?? 1) - 1;
+      if (remaining > 0) {
+        refCounts.set(hash, remaining);
+        return;
+      }
+      // 没人再引用：对象随本次淘汰删除，大小从内存总量里扣掉，循环判定靠这个数字
+      refCounts.delete(hash);
+      deadHashes.push(hash);
+      trackedTotal -= objectSizes.get(hash) ?? 0;
+      if (trackedTotal < 0) trackedTotal = 0;
+    };
+
     for (const round of rounds) {
       if (`${round.conversationId}:${round.roundId}` === newest) continue;
-      if ((await totalBytes()) <= target) break;
-      await pruneRoundsUnlocked(round.conversationId, [round.roundId]);
-      // 每淘汰一轮就立刻回收它的内容对象：
-      // 只删 jsonl 行的话，下一轮 totalBytes() 仍然把那些对象算进去，
-      // 判定永远不达标 → 循环会把历史一路删到只剩最新一轮（且跨所有会话）。
-      await collectGarbage();
+      if (trackedTotal <= target) break;
+      const sessionLines = linesBySession.get(round.conversationId) ?? [];
+      const remainingLines = sessionLines.filter((line) => line.runId !== round.roundId);
+      linesBySession.set(round.conversationId, remainingLines);
+      sessionsToRewrite.add(round.conversationId);
+      // 只释放这一轮独有的引用：被其他轮次共享的内容（同一版本反复出现）计数不归零、对象保留
+      for (const line of sessionLines) {
+        if (line.runId !== round.roundId) continue;
+        releaseReference(line.beforeHash);
+        releaseReference(line.afterHash);
+      }
       evicted.push({ conversationId: round.conversationId, roundId: round.roundId });
     }
+    if (evicted.length === 0) return [];
+
+    // 3) 先落账本再删对象：中途失败只会留下待 GC 的孤儿对象，绝不会出现"账本引用已删对象"
+    for (const sessionId of sessionsToRewrite) {
+      await writeLines(sessionId, linesBySession.get(sessionId) ?? []);
+    }
+    for (const hash of deadHashes) {
+      await fs.promises.rm(objectPath(hash), { force: true });
+    }
+    // 删除按引用计数精确执行，缓存总量直接采用循环中的增量账，不再扫库确认
+    cachedTotalBytes = trackedTotal;
     return evicted;
   }
 
@@ -428,13 +513,22 @@ export function createChangeLedger(deps: ChangeLedgerDeps): ChangeLedger {
       return readContentByHash(hash);
     },
 
+    async restoreAffectedPaths(conversationId, roundId) {
+      return enqueue(async () => {
+        const lines = await readLines(conversationId);
+        const targetIndex = lines.findIndex((line) => line.runId === roundId);
+        if (targetIndex < 0) throw new Error("找不到这一轮的记录");
+        return restoreAffectedLines(lines, targetIndex).map((line) => line.path);
+      });
+    },
+
     async restore(conversationId, roundId, workspaceRoot) {
       return enqueue(async () => {
         const lines = await readLines(conversationId);
         const targetIndex = lines.findIndex((line) => line.runId === roundId);
         if (targetIndex < 0) throw new Error("找不到这一轮的记录");
         // 目标轮及其之后的所有改动：每个文件取"最早一次"的 before 作为要恢复到的内容
-        const affected = earliestPerPath(lines.slice(targetIndex));
+        const affected = restoreAffectedLines(lines, targetIndex);
         // 每个文件"最新一次记录"的 after：回退前用它比对磁盘，判断期间有没有被外部改过
         const lastByPath = new Map<string, LedgerLine>();
         for (const line of lines.slice(targetIndex)) lastByPath.set(line.path, line);

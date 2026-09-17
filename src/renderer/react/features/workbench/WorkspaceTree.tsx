@@ -22,6 +22,8 @@ interface WorkbenchApi {
   /** 改动账本（时间线）：不要求工作区是 git 仓库，巨型目录同样可用 */
   listLedgerRounds?(sessionId: string): Promise<unknown>;
   ledgerFileVersions?(sessionId: string, roundId: string, path: string): Promise<unknown>;
+  /** 回退前预检：本次回退实际触及的全部相对路径（目标轮及之后，脏缓冲把关用） */
+  ledgerRestoreAffected?(sessionId: string, roundId: string): Promise<string[]>;
   restoreLedgerRound?(sessionId: string, roundId: string): Promise<unknown>;
   ledgerUsage?(): Promise<unknown>;
   pruneLedgerRounds?(sessionId: string, roundIds: string[]): Promise<unknown>;

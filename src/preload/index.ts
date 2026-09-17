@@ -821,6 +821,8 @@ const workbenchApi = {
   listLedgerRounds: (sessionId: string) => ipcRenderer.invoke(IPC.WORKBENCH_LEDGER_LIST, sessionId),
   ledgerFileVersions: (sessionId: string, roundId: string, path: string) =>
     ipcRenderer.invoke(IPC.WORKBENCH_LEDGER_FILE, { sessionId, roundId, path }),
+  ledgerRestoreAffected: (sessionId: string, roundId: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_LEDGER_RESTORE_AFFECTED, { sessionId, roundId }),
   restoreLedgerRound: (sessionId: string, roundId: string) =>
     ipcRenderer.invoke(IPC.WORKBENCH_LEDGER_RESTORE, { sessionId, roundId }),
   ledgerUsage: () => ipcRenderer.invoke(IPC.WORKBENCH_LEDGER_USAGE),
