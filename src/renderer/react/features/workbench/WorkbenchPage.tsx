@@ -9,7 +9,7 @@ import Editor from "@monaco-editor/react";
 import * as monacoNs from "monaco-editor";
 import { useTranslation } from "../../i18n";
 import type { ConversationMode } from "../../../../shared/chat-types";
-import type { WorkbenchFileContent, WorkbenchFileEntry } from "../../../../shared/code-workbench-types";
+import type { LedgerRestoreResult, WorkbenchFileContent, WorkbenchFileEntry } from "../../../../shared/code-workbench-types";
 import { ChatMessageList, type ChatMessageItem } from "../chat/components/ChatMessageList";
 import { ComposerInteractionPanel, type ComposerInteractionCallbacks } from "../chat/components/ComposerSlot";
 import type { ComposerInteraction } from "../chat/components/run-presentation";
@@ -549,14 +549,44 @@ export function WorkbenchPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [buffers]);
 
-  const handleRestore = useCallback(() => {
-    // 回退后磁盘内容已变：丢弃所有打开的缓冲，避免旧草稿覆盖新状态
-    setOpenTabs([]);
-    setActivePath(null);
-    setBuffers({});
-    setFollowBlockedPath(null);
+  /**
+   * 回退完成后的收尾。
+   * - 整区快照回退（不带 result）：整个工作区都可能变，丢弃全部缓冲最稳
+   * - 改动账本回退（带 result）：**只影响它动过的那些文件**，所以只清这些路径——
+   *   无端清空其余缓冲会丢掉用户正在看的、与本次回退无关的内容
+   */
+  const handleRestore = useCallback((result?: LedgerRestoreResult) => {
+    if (!result) {
+      setOpenTabs([]);
+      setActivePath(null);
+      setBuffers({});
+      setFollowBlockedPath(null);
+      setTreeRefresh((value) => value + 1);
+      return;
+    }
+    const touched = new Set([...result.restored, ...result.deleted]);
+    setBuffers((current) => {
+      const next = { ...current };
+      for (const path of touched) delete next[path];
+      return next;
+    });
+    setOpenTabs((current) => current.filter((path) => !touched.has(path)));
+    setActivePath((active) => (active && touched.has(active) ? null : active));
+    setFollowBlockedPath((current) => (current && touched.has(current) ? null : current));
     setTreeRefresh((value) => value + 1);
   }, []);
+
+  /**
+   * 回退前的把关：**有未保存改动的文件不许被回退**。
+   * 账本回退是直接改磁盘的，而用户缓冲里那份改动无处安放——先让他保存或撤销，
+   * 比"回退完再告诉他草稿没了"诚实得多。
+   */
+  const canRestorePaths = useCallback((paths: string[]) => {
+    const dirty = paths.filter((path) => buffersRef.current[path]?.dirty);
+    if (dirty.length === 0) return true;
+    setError(t("workbench.restoreBlockedDirty", { count: dirty.length }));
+    return false;
+  }, [t]);
 
   const manualSnapshot = useCallback(async () => {
     const api = workbenchApi();
@@ -785,8 +815,10 @@ export function WorkbenchPage({
                 <ChangeTimeline
                   sessionId={sessionId}
                   refreshToken={timelineRefresh}
-                  busy={snapshotBusy}
+                  // AI 正在跑的时候不许回退：它的写文件和账本回退会互相覆盖（账本只串行自己的操作）
+                  busy={busy || snapshotBusy}
                   onBusyChange={setSnapshotBusy}
+                  onBeforeRestore={canRestorePaths}
                   onAfterRestore={handleRestore}
                 />
               ) : (
