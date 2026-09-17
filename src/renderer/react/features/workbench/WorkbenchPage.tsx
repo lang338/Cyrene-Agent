@@ -88,6 +88,45 @@ function fileBaseName(path: string): string {
   return normalized.split("/").pop() ?? path;
 }
 
+/**
+ * 键是不是工作区外的文件。
+ * 工作区内的键是相对路径（`src/a.ts`），工作区外是绝对路径（`C:/Users/...`）——
+ * 两者靠"有没有盘符/前导斜杠"区分，不需要额外字段。
+ */
+function isExternalPath(key: string): boolean {
+  return /^[a-zA-Z]:\//.test(key) || key.startsWith("/");
+}
+
+/**
+ * 路径栏展示用：把内部键还原成磁盘上的完整路径（Windows 反斜杠）。
+ * 工作区内是"工作区根 + 相对路径"，工作区外本身就是绝对路径。
+ */
+function displayPathFor(key: string, workspaceRoot?: string): string {
+  const slashed = key.replace(/\//g, "\\");
+  if (isExternalPath(key)) return slashed;
+  if (!workspaceRoot) return slashed;
+  const root = workspaceRoot.replace(/\//g, "\\").replace(/\\+$/, "");
+  return root ? `${root}\\${slashed}` : slashed;
+}
+
+/**
+ * 输入看起来是全盘绝对路径时，归一成内部键形态（正斜杠）；否则返回 null。
+ * 只换分隔符：`..`、重复斜杠这些交给主进程 path.resolve，并采用它回传的路径当标签键，
+ * 因此 `C:\a\..\b` 与 `C:/b` 会收敛成同一个标签。
+ */
+function absolutePathInput(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes("\0")) return null;
+  const slashed = trimmed.replace(/\\/g, "/");
+  return /^[a-zA-Z]:\//.test(slashed) || slashed.startsWith("/") ? slashed : null;
+}
+
+/** IPC 抛回来的错误会被 Electron 包一层前缀（Error invoking remote method '...': Error: …），展示前剥掉 */
+function cleanIpcError(cause: unknown): string {
+  const raw = cause instanceof Error ? cause.message : String(cause);
+  return raw.replace(/^Error invoking remote method '[^']*':\s*/, "").replace(/^Error:\s*/, "");
+}
+
 /** "发送时带上当前文件"开关的持久化键；缺省为开 */
 const INCLUDE_ACTIVE_FILE_KEY = "cy-workbench-include-active-file";
 
@@ -313,53 +352,87 @@ export function WorkbenchPage({
   }, [loadBuffer]);
 
   /**
-   * 路径栏里手输路径后跳转。
-   * 路径判定直接用跟随昔涟那套 resolveWorkspaceRelative：它已经处理好
-   * "反斜杠/相对/绝对"三种写法，并拒绝 .. 与工作区外的路径——两处口径一致，
-   * 不会出现"树里点得开、手输却打不开"的怪事。
-   * 存在性用父目录列表判，不用 readFile 试探：后者对不存在与目录只会抛底层错误
-   * （ENOENT / 这是一个目录），先开标签再报错会把用户丢在英文报错页上。
+   * 路径栏里手输路径后跳转。两种写法都接受：
+   * - 工作区相对路径（判定复用跟随昔涟那套 resolveWorkspaceRelative，绝对路径只要落在工作区内也走这条）
+   * - 全盘绝对路径 → 工作区外的文件
+   *
+   * 存在性判定分两路，都是为了"别把用户丢进英文报错页"：
+   * 工作区内可枚举父目录列表；工作区外没法枚举，就直接读一次——读到的内容顺手当装载结果，不读第二遍。
    */
   const openByPath = useCallback(async (raw: string) => {
     const api = workbenchApi();
     if (!api) return;
-    const target = resolveWorkspaceRelative(raw, workspaceRoot);
-    if (!target) {
+    const insidePath = resolveWorkspaceRelative(raw, workspaceRoot);
+    const outsidePath = insidePath ? null : absolutePathInput(raw);
+    if (!insidePath && !outsidePath) {
       setPathError(t("workbench.pathInvalid"));
       return;
     }
-    if (target === activePath) {
-      setPathDraft(null);
+
+    if (insidePath) {
+      if (insidePath === activePath) {
+        setPathDraft(null);
+        setPathError(null);
+        return;
+      }
+      const slash = insidePath.lastIndexOf("/");
+      const parent = slash === -1 ? "" : insidePath.slice(0, slash);
+      const name = slash === -1 ? insidePath : insidePath.slice(slash + 1);
+      let entries: WorkbenchFileEntry[];
+      try {
+        entries = await api.listDir(sessionId, parent);
+      } catch (cause) {
+        setPathError(cleanIpcError(cause));
+        return;
+      }
+      // Windows 的文件名大小写不敏感：按原样找不到时再宽松匹配一次，并采用磁盘上的真实写法
+      const match =
+        entries.find((entry) => entry.name === name) ??
+        entries.find((entry) => entry.name.toLowerCase() === name.toLowerCase());
+      if (!match) {
+        setPathError(t("workbench.pathMissing"));
+        return;
+      }
+      if (match.type === "dir") {
+        setPathError(t("workbench.pathIsDir"));
+        return;
+      }
       setPathError(null);
+      setPathDraft(null);
+      // 左栏也定位过去：既然用户明确指到了这个文件，树里看不到它会显得像没生效
+      setRevealPath(match.path);
+      await openFile(match.path);
       return;
     }
-    const slash = target.lastIndexOf("/");
-    const parent = slash === -1 ? "" : target.slice(0, slash);
-    const name = slash === -1 ? target : target.slice(slash + 1);
-    let entries: WorkbenchFileEntry[];
+
+    // 工作区外：读盘结果直接当缓冲，key 用主进程解析后的绝对路径（见 absolutePathInput 说明）
+    let file: WorkbenchFileContent;
     try {
-      entries = await api.listDir(sessionId, parent);
+      file = (await api.readOutsideFile(sessionId, outsidePath as string)) as WorkbenchFileContent;
     } catch (cause) {
-      setPathError(cause instanceof Error ? cause.message : String(cause));
-      return;
-    }
-    // Windows 的文件名大小写不敏感：按原样找不到时再宽松匹配一次，并采用磁盘上的真实写法
-    const match =
-      entries.find((entry) => entry.name === name) ??
-      entries.find((entry) => entry.name.toLowerCase() === name.toLowerCase());
-    if (!match) {
-      setPathError(t("workbench.pathMissing"));
-      return;
-    }
-    if (match.type === "dir") {
-      setPathError(t("workbench.pathIsDir"));
+      setPathError(cleanIpcError(cause));
       return;
     }
     setPathError(null);
     setPathDraft(null);
-    // 左栏也定位过去：既然用户明确指到了这个文件，树里看不到它会显得像没生效
-    setRevealPath(match.path);
-    await openFile(match.path);
+    setMiddleTab("code");
+    if (buffersRef.current[file.path]) {
+      setActivePath(file.path);
+      return;
+    }
+    setOpenTabs((current) => (current.includes(file.path) ? current : [...current, file.path]));
+    setActivePath(file.path);
+    setBuffers((current) => ({
+      ...current,
+      [file.path]: {
+        content: file.content,
+        binary: file.binary,
+        truncated: file.truncated,
+        dirty: false,
+        loading: false,
+        error: null,
+      },
+    }));
   }, [activePath, openFile, sessionId, t, workspaceRoot]);
 
   /**
@@ -414,21 +487,26 @@ export function WorkbenchPage({
     if (!api) return;
     // 记住本次写盘的内容：响应回来前若用户继续打字，新内容必须保持 dirty
     const savedContent = entry.content;
+    // 工作区外的文件走另一条通道（不做工作区限定），且不进快照——保存后没什么可刷新的
+    const external = isExternalPath(filePath);
     try {
-      await api.writeFile(sessionId, filePath, savedContent);
+      if (external) await api.writeOutsideFile(sessionId, filePath, savedContent);
+      else await api.writeFile(sessionId, filePath, savedContent);
       setBuffers((current) => {
         const latest = current[filePath];
         if (!latest) return current;
         if (latest.content !== savedContent) return current; // 保存飞行中又有新编辑：保留 dirty
         return { ...current, [filePath]: { ...latest, dirty: false } };
       });
-      setTreeRefresh((value) => value + 1);
+      if (!external) {
+        setTreeRefresh((value) => value + 1);
+        scheduleAutoSnapshot();
+      }
       setError(null);
       // 用户已用保存做出选择：跟随被挡下的提示不再成立
       setFollowBlockedPath((current) => (current === filePath ? null : current));
-      scheduleAutoSnapshot();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(cleanIpcError(cause));
     }
   }, [scheduleAutoSnapshot, sessionId]);
 
@@ -533,6 +611,8 @@ export function WorkbenchPage({
         readOnly: Boolean(entry?.binary || entry?.truncated),
         // 还在读盘或读失败：内容未知，不要对模型谎称"已保存"
         pending: Boolean(entry?.loading || entry?.error),
+        // 工作区外的文件给的是绝对路径，标注一下，免得模型按"相对工作区根"去理解
+        outsideWorkspace: isExternalPath(activePath),
         selection: readEditorSelection(),
       })
       : null;
@@ -714,13 +794,14 @@ export function WorkbenchPage({
                 </div>
               )}
 
-              {/* 路径栏：显示当前文件在工作区里的相对路径，也可直接改路径回车跳过去。
+              {/* 路径栏：显示当前文件的完整路径（工作区内=工作区根 + 相对路径，工作区外=绝对路径），
+                  也可直接改路径回车跳过去——相对路径与全盘绝对路径都接受。
                   失焦或 Esc 放弃这次输入（连同报错一起收掉），回到显示实际路径。 */}
               <div className="cy-workbench__path-bar">
                 <input
                   type="text"
                   className={`cy-workbench__path-input ${pathError ? "is-invalid" : ""}`}
-                  value={pathDraft ?? activePath ?? ""}
+                  value={pathDraft ?? (activePath ? displayPathFor(activePath, workspaceRoot) : "")}
                   placeholder={t("workbench.pathPlaceholder")}
                   spellCheck={false}
                   aria-label={t("workbench.pathAria")}
@@ -762,6 +843,11 @@ export function WorkbenchPage({
                     ×
                   </button>
                 </div>
+              )}
+
+              {/* 工作区外的文件：能读能改，但快照只覆盖工作区——这件事必须写在脸上 */}
+              {activePath && isExternalPath(activePath) && (
+                <div className="cy-workbench__editor-notice">{t("workbench.externalFileNotice")}</div>
               )}
 
               {!activePath && (

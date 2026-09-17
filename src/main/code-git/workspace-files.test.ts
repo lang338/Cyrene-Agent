@@ -115,3 +115,48 @@ describe("workspace-files writeFile", () => {
     await expect(service.writeFile("s1", "x.ts", undefined as unknown as string)).rejects.toThrow("文本");
   });
 });
+
+describe("workspace-files 工作区外（路径栏手输的全盘绝对路径）", () => {
+  it("按绝对路径读取，回传的 path 是解析后的正斜杠绝对路径（作标签键）", async () => {
+    const service = createService();
+    const target = path.join(outsideRoot, "secret.txt");
+    const content = await service.readOutsideFile(target);
+    expect(content.content).toBe("outside");
+    expect(content.path).toBe(target.replace(/\\/g, "/"));
+  });
+
+  it("相对路径拒绝：工作区外没有参照物", async () => {
+    const service = createService();
+    await expect(service.readOutsideFile("secret.txt")).rejects.toThrow("绝对路径");
+  });
+
+  it("文件不存在给中文提示，不漏 errno", async () => {
+    const service = createService();
+    await expect(service.readOutsideFile(path.join(outsideRoot, "nope.txt"))).rejects.toThrow("文件不存在");
+  });
+
+  it("目录拒绝读取", async () => {
+    const service = createService();
+    await expect(service.readOutsideFile(outsideRoot)).rejects.toThrow("目录");
+  });
+
+  it("反斜杠与 .. 归一成同一条路径", async () => {
+    const service = createService();
+    const messy = path.join(outsideRoot, "sub", "..", "secret.txt");
+    expect(messy).toContain("\\"); // Windows 临时目录：确认这条用例真的覆盖了反斜杠写法
+    const content = await service.readOutsideFile(messy);
+    expect(content.path).toBe(path.join(outsideRoot, "secret.txt").replace(/\\/g, "/"));
+  });
+
+  it("可以写工作区外已存在的文件", async () => {
+    const service = createService();
+    const target = path.join(outsideRoot, "secret.txt");
+    await service.writeOutsideFile(target, "edited");
+    expect(await fs.promises.readFile(target, "utf8")).toBe("edited");
+  });
+
+  it("不为工作区外凭空建文件", async () => {
+    const service = createService();
+    await expect(service.writeOutsideFile(path.join(outsideRoot, "brand-new.txt"), "x")).rejects.toThrow("文件不存在");
+  });
+});

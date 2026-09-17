@@ -10,6 +10,9 @@ interface WorkbenchApi {
   listDir(sessionId: string, path?: string): Promise<WorkbenchFileEntry[]>;
   readFile(sessionId: string, path: string): Promise<{ path: string; content: string; binary: boolean; truncated: boolean }>;
   writeFile(sessionId: string, path: string, content: string): Promise<void>;
+  /** 工作区外的文件：按全盘绝对路径读写（用户手输，见路径栏） */
+  readOutsideFile(sessionId: string, path: string): Promise<{ path: string; content: string; binary: boolean; truncated: boolean }>;
+  writeOutsideFile(sessionId: string, path: string, content: string): Promise<void>;
   listCheckpoints(sessionId: string): Promise<unknown>;
   diffCheckpoint(sessionId: string, hash: string): Promise<unknown>;
   restoreCheckpoint(sessionId: string, hash: string): Promise<unknown>;

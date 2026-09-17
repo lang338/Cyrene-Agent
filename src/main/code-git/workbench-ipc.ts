@@ -66,6 +66,22 @@ export function registerWorkbenchIpc(deps: RegisterWorkbenchIpcDeps): void {
     if (typeof input?.content !== "string") throw new Error("文件内容必须是文本");
     return deps.files.writeFile(requireSessionId(input.sessionId), input.path, input.content);
   });
+
+  // 工作区外：路径校验在文件服务里（只接受绝对路径），这里不重复判定
+  ipc.handle(IPC.WORKBENCH_FILE_READ_ABSOLUTE, (_event, payload: unknown) => {
+    const input = payload as { sessionId?: unknown; path?: unknown } | null;
+    if (typeof input?.path !== "string" || !input.path.trim()) throw new Error("缺少文件路径");
+    requireSessionId(input.sessionId);
+    return deps.files.readOutsideFile(input.path);
+  });
+
+  ipc.handle(IPC.WORKBENCH_FILE_WRITE_ABSOLUTE, (_event, payload: unknown) => {
+    const input = payload as { sessionId?: unknown; path?: unknown; content?: unknown } | null;
+    if (typeof input?.path !== "string" || !input.path.trim()) throw new Error("缺少文件路径");
+    if (typeof input?.content !== "string") throw new Error("文件内容必须是文本");
+    requireSessionId(input.sessionId);
+    return deps.files.writeOutsideFile(input.path, input.content);
+  });
 }
 
 function requireSessionId(value: unknown): string {

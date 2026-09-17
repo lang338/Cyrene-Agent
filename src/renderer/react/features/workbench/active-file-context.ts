@@ -20,7 +20,7 @@ export interface ActiveFileSelection {
 }
 
 export interface ActiveFileContextInput {
-  /** 工作区相对路径（中栏 activePath 的形态，已是相对路径） */
+  /** 工作区相对路径（中栏 activePath 的形态）；工作区外的文件是绝对路径 */
   relativePath: string;
   /** 编辑器缓冲区内容（可能与磁盘不一致） */
   content: string;
@@ -30,6 +30,8 @@ export interface ActiveFileContextInput {
   readOnly?: boolean;
   /** 文件尚未加载完成或读取失败：内容未知，只给路径，不能声称"已保存" */
   pending?: boolean;
+  /** 文件在工作区外：此时 relativePath 是绝对路径，标注出来免得模型按相对路径理解 */
+  outsideWorkspace?: boolean;
   selection?: ActiveFileSelection | null;
 }
 
@@ -54,7 +56,8 @@ export function buildActiveFileContext(
   const hasSelection = selectionText.trim().length > 0;
   const injectContent = input.dirty && !input.readOnly && !input.pending;
 
-  const lines = ["[工作台当前打开的文件]", `路径（相对工作区根）：${relativePath}`];
+  const pathLabel = input.outsideWorkspace ? "路径（工作区外，绝对路径）" : "路径（相对工作区根）";
+  const lines = ["[工作台当前打开的文件]", `${pathLabel}：${relativePath}`];
   if (input.pending) {
     lines.push("状态：文件尚未加载完成或读取失败，内容未知，需要时请自行用工具读取该文件");
   } else if (input.readOnly) {

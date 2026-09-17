@@ -24,6 +24,13 @@ export interface WorkspaceFileService {
   readFile(sessionId: string, relPath: string): Promise<WorkbenchFileContent>;
   /** 编辑器保存。父目录不存在时自动创建（支持"新建文件"）。 */
   writeFile(sessionId: string, relPath: string, content: string): Promise<void>;
+  /**
+   * 工作区外的文件：按绝对路径读写。
+   * 用户可以在路径栏里明确输入全盘路径查看/修改任意文件，所以这里不做工作区限定；
+   * 但只认绝对路径（相对路径有歧义），且写入要求目标已存在——不允许凭空在工作区外造文件。
+   */
+  readOutsideFile(absolutePath: string): Promise<WorkbenchFileContent>;
+  writeOutsideFile(absolutePath: string, content: string): Promise<void>;
 }
 
 export function createWorkspaceFileService(deps: WorkspaceFileServiceDeps): WorkspaceFileService {
@@ -68,21 +75,7 @@ export function createWorkspaceFileService(deps: WorkspaceFileServiceDeps): Work
       const absolute = await resolveInsideWorkspace(sessionId, relPath);
       const stat = await fs.promises.stat(absolute);
       if (stat.isDirectory()) throw new Error("这是一个目录");
-      const handle = await fs.promises.open(absolute, "r");
-      try {
-        const length = Math.min(stat.size, MAX_FILE_BYTES);
-        const buffer = Buffer.alloc(length);
-        await handle.read(buffer, 0, length, 0);
-        const binary = isBinaryBuffer(buffer);
-        return {
-          path: normalizeRelPath(relPath),
-          content: binary ? "" : buffer.toString("utf8"),
-          binary,
-          truncated: stat.size > MAX_FILE_BYTES,
-        };
-      } finally {
-        await handle.close();
-      }
+      return readFileAt(absolute, normalizeRelPath(relPath), stat);
     },
 
     async writeFile(sessionId, relPath, content) {
@@ -91,7 +84,70 @@ export function createWorkspaceFileService(deps: WorkspaceFileServiceDeps): Work
       await fs.promises.mkdir(path.dirname(absolute), { recursive: true });
       await fs.promises.writeFile(absolute, content, "utf8");
     },
+
+    async readOutsideFile(absolutePath) {
+      const absolute = resolveAbsolutePath(absolutePath);
+      const stat = await statForUser(absolute);
+      if (stat.isDirectory()) throw new Error("这是一个目录");
+      // 回给渲染端的 path 是解析后的绝对路径（正斜杠）：渲染端拿它当标签键，
+      // 这样 C:\a\..\b 与 C:/b 会收敛成同一个键，不会开出两个标签
+      return readFileAt(absolute, toKeyPath(absolute), stat);
+    },
+
+    async writeOutsideFile(absolutePath, content) {
+      if (typeof content !== "string") throw new Error("文件内容必须是文本");
+      const absolute = resolveAbsolutePath(absolutePath);
+      const stat = await statForUser(absolute);
+      if (stat.isDirectory()) throw new Error("这是一个目录");
+      // 不建父目录：工作区外的新建走"编辑器另存"这条路没意义，只允许改已存在的文件
+      await fs.promises.writeFile(absolute, content, "utf8");
+    },
   };
+}
+
+/** 读盘：大小上限截断 + 二进制嗅探；工作区内外的文件共用这一段逻辑 */
+async function readFileAt(absolute: string, reportPath: string, stat: fs.Stats): Promise<WorkbenchFileContent> {
+  const handle = await fs.promises.open(absolute, "r");
+  try {
+    const length = Math.min(stat.size, MAX_FILE_BYTES);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, 0);
+    const binary = isBinaryBuffer(buffer);
+    return {
+      path: reportPath,
+      content: binary ? "" : buffer.toString("utf8"),
+      binary,
+      truncated: stat.size > MAX_FILE_BYTES,
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+/** 工作区外的路径：只接受绝对路径，其余一律拒绝（相对路径在这里没有参照物） */
+function resolveAbsolutePath(value: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error("缺少文件路径");
+  if (value.includes("\0")) throw new Error("路径不合法");
+  if (!path.isAbsolute(value)) throw new Error("工作区外只能按绝对路径打开");
+  return path.resolve(value);
+}
+
+/** 内部键形态：正斜杠。渲染端各处以正斜杠相对路径为键，工作区外沿用同一形态便于比较 */
+function toKeyPath(absolute: string): string {
+  return absolute.replace(/\\/g, "/");
+}
+
+/** stat 的用户可读失败：ENOENT / 权限错误转成中文提示，其余原样抛出 */
+async function statForUser(target: string): Promise<fs.Stats> {
+  try {
+    return await fs.promises.stat(target);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") throw new Error("文件不存在");
+    if (code === "EACCES" || code === "EPERM") throw new Error("没有权限访问这个文件");
+    if (code === "EISDIR") throw new Error("这是一个目录");
+    throw err;
+  }
 }
 
 /**

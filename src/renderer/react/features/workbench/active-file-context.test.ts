@@ -78,6 +78,17 @@ describe("buildActiveFileContext（工作台当前文件 → 模型上下文）"
     expect(context?.text).not.toContain("已保存");
   });
 
+  it("工作区外的文件：路径标注为绝对路径，不让模型按相对路径理解", () => {
+    const context = buildActiveFileContext({
+      relativePath: "C:/Users/me/AppData/Roaming/live2d-cyrene/cyrene-chats/index.json",
+      content: "[]",
+      dirty: false,
+      outsideWorkspace: true,
+    });
+    expect(context?.text).toContain("工作区外，绝对路径");
+    expect(context?.text).not.toContain("相对工作区根");
+  });
+
   it("超长内容截断到上限并给出提示", () => {
     const context = buildActiveFileContext({
       relativePath: "src/huge.ts",

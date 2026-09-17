@@ -806,6 +806,11 @@ const workbenchApi = {
   readFile: (sessionId: string, path: string) => ipcRenderer.invoke(IPC.WORKBENCH_FILE_READ, { sessionId, path }),
   writeFile: (sessionId: string, path: string, content: string) =>
     ipcRenderer.invoke(IPC.WORKBENCH_FILE_WRITE, { sessionId, path, content }),
+  // 工作区外（用户手输的全盘绝对路径）
+  readOutsideFile: (sessionId: string, path: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_FILE_READ_ABSOLUTE, { sessionId, path }),
+  writeOutsideFile: (sessionId: string, path: string, content: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_FILE_WRITE_ABSOLUTE, { sessionId, path, content }),
   // 快照落盘广播：时间线据此在防抖快照 / AI 回合结束快照后自动刷新
   onCheckpointChanged: (callback: (payload: { sessionId: string }) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: { sessionId: string }) => callback(payload);

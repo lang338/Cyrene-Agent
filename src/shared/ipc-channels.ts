@@ -94,16 +94,24 @@ export const IPC = {
   CODE_GIT_COMMIT: "code-git:commit",
   CODE_GIT_PUSH: "code-git:push",
 
-  // Code 工作台（checkpoint 时间机器 + 工作区文件；全部限定会话绑定的工作区内）
+  // Code 工作台（checkpoint 时间机器 + 工作区文件）
   WORKBENCH_CHECKPOINT_SNAPSHOT: "workbench:checkpoint-snapshot",
   WORKBENCH_CHECKPOINT_LIST: "workbench:checkpoint-list",
   WORKBENCH_CHECKPOINT_DIFF: "workbench:checkpoint-diff",
   WORKBENCH_CHECKPOINT_RESTORE: "workbench:checkpoint-restore",
   /** 快照落盘后的广播（任意来源：防抖 / AI 回合结束 / 手动 / 回退保底） */
   WORKBENCH_CHECKPOINT_CHANGED: "workbench:checkpoint-changed",
+  /** 以下三个通道的路径都以 workspaceRoot 为界，越界即拒 */
   WORKBENCH_FILE_LIST: "workbench:file-list",
   WORKBENCH_FILE_READ: "workbench:file-read",
   WORKBENCH_FILE_WRITE: "workbench:file-write",
+  /**
+   * 工作区外的文件：只有用户在路径栏里明确输入绝对路径时才会走到这里
+   * （昔涟的跟随逻辑只认工作区内的路径，AI 无法借这个通道写到工作区外）。
+   * 与上面三个通道分开，因为校验口径不同：这里只接受绝对路径，不做工作区限定。
+   */
+  WORKBENCH_FILE_READ_ABSOLUTE: "workbench:file-read-absolute",
+  WORKBENCH_FILE_WRITE_ABSOLUTE: "workbench:file-write-absolute",
 
   // sidebar window (status / schedule / settings entry)
   SIDEBAR_MINIMIZE: "sidebar:minimize",
