@@ -62,15 +62,21 @@ interface BufferEntry {
  */
 type LoadOutcome = "ok" | "stale" | "failed";
 
-/** 编辑器走"微调"定位：不开补全、不渲染校验装饰（诊断在 monaco-setup 里全局关闭） */
+/**
+ * 编辑器选项。
+ * 补全已打开：语言智能属于"方便编码"的一部分，不自我设限。
+ * 诊断仍不渲染，理由见 monaco-setup：Monaco 的 TS 服务没有项目上下文
+ * （不读 tsconfig、不解析依赖），打开会大面积误报"找不到模块"。
+ */
 const EDITOR_OPTIONS = {
   automaticLayout: true,
   minimap: { enabled: false },
   fontSize: 13,
   scrollBeyondLastLine: false,
   wordWrap: "on" as const,
-  quickSuggestions: false,
-  suggestOnTriggerCharacters: false,
+  quickSuggestions: true,
+  suggestOnTriggerCharacters: true,
+  parameterHints: { enabled: true },
   renderValidationDecorations: "off" as const,
   occurrencesHighlight: "off" as const,
   selectionHighlight: false,

@@ -40,8 +40,9 @@ export function setupMonaco(): void {
       }
     },
   };
-  // 定位是"微调编辑器"：AI 负责写码，人只做小改动。
-  // 补全与诊断全部关掉——省掉 worker 往返，也避免满屏红线干扰。
+  // 诊断关闭：Monaco 的 TS 服务没有项目上下文（不读 tsconfig、不解析依赖），
+  // 打开会大面积误报"找不到模块 xx"——要开得先解决喂项目上下文的问题。
+  // 注意：补全不在这里控制（由 WorkbenchPage 的编辑器选项打开），两者互不影响。
   // monaco-editor 0.56+：语言服务命名空间挂在根导出（monaco.typescript / monaco.json）。
   const noDiagnostics = { noSemanticValidation: true, noSyntaxValidation: true, noSuggestionDiagnostics: true } as const;
   monaco.typescript.typescriptDefaults.setDiagnosticsOptions(noDiagnostics);
