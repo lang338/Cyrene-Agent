@@ -715,6 +715,20 @@ export function WorkbenchPage({
                           monacoNs.KeyMod.Alt | monacoNs.KeyCode.Slash,
                           () => editor.trigger("keyboard", "editor.action.triggerSuggest", {}),
                         );
+                        // ⚠️ 临时诊断探针（查明补全为何不生效后删除）：
+                        // Ctrl+R 后在 DevTools Console 找 "[工作台·TS 探针]" 那一行
+                        void (async () => {
+                          const model = editor.getModel();
+                          try {
+                            const getWorker = await monacoNs.languages.typescript.getTypeScriptWorker();
+                            if (!model) throw new Error("模型不存在");
+                            const client = await getWorker(model.uri);
+                            const info = await client.getCompletionsAtPosition(model.uri.toString(), 0, {});
+                            console.log(`[工作台·TS 探针] worker 就绪；位置 0 候选数 = ${info?.entries?.length ?? 0}`);
+                          } catch (error) {
+                            console.error("[工作台·TS 探针] TS worker 不可用：", error);
+                          }
+                        })();
                       }}
                     />
                   </div>

@@ -96,3 +96,9 @@ export function monacoLanguageFor(path: string): string {
   };
   return table[extension] ?? "plaintext";
 }
+
+// 模块加载即完成装配。
+// 为什么不能只在组件里调用：子组件（<Editor>）的 effect 先于父组件执行，首次挂载时
+// Editor 可能抢在 MonacoEnvironment / loader.config 之前初始化，语言服务（补全、诊断）
+// 会就此失效——表现为编辑器能显示、语法高亮正常，但补全只剩"同文件词汇"建议。
+setupMonaco();
