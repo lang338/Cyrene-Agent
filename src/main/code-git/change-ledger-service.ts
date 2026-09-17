@@ -154,6 +154,8 @@ export function createChangeLedger(deps: ChangeLedgerDeps): ChangeLedger {
       const temp = `${target}.${process.pid}.tmp`;
       await fs.promises.writeFile(temp, packed);
       await fs.promises.rename(temp, target);
+      // 新对象落盘：增量维护总占用，配额检查就不必再扫目录
+      if (cachedTotalBytes !== null) cachedTotalBytes += packed.byteLength;
     }
     return { hash };
   }
@@ -198,8 +200,19 @@ export function createChangeLedger(deps: ChangeLedgerDeps): ChangeLedger {
     }
   }
 
-  /** 对象库总占用（内容寻址去重后的真实磁盘开销） */
+  /**
+   * 对象库总占用（内容寻址去重后的真实磁盘开销）。
+   * 带内存缓存：每条记录都要查配额，不能每次都把对象目录整个 stat 一遍——
+   * 500MB 配额下对象可能上万，那会让每次 AI 写文件都背上几万次 stat。
+   */
+  let cachedTotalBytes: number | null = null;
+
   async function totalBytes(): Promise<number> {
+    if (cachedTotalBytes === null) cachedTotalBytes = await scanTotalBytes();
+    return cachedTotalBytes;
+  }
+
+  async function scanTotalBytes(): Promise<number> {
     let sum = 0;
     async function walk(dir: string): Promise<void> {
       let entries: fs.Dirent[];
@@ -244,6 +257,8 @@ export function createChangeLedger(deps: ChangeLedgerDeps): ChangeLedger {
       }
     }
     await walk(objectsDir);
+    // 刚删过对象：缓存的占用数字不再可信，下次重新统计
+    cachedTotalBytes = null;
   }
 
   /**

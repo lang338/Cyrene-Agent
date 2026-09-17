@@ -3,7 +3,7 @@
 // 数据来自改动账本（只存被改动文件的内容），因此**不要求工作区是 git 仓库、也不受工作区规模限制**——
 // 这正是它和上面「快照」页签的分工：小仓库用整区快照，巨型目录/普通文件夹用账本。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Modal } from "antd";
 import { DiffEditor } from "@monaco-editor/react";
 import { useTranslation } from "../../i18n";
@@ -51,6 +51,8 @@ export function ChangeTimeline({ sessionId, refreshToken, busy, onBusyChange, on
   const [diffLoading, setDiffLoading] = useState(false);
   const [restoreTarget, setRestoreTarget] = useState<LedgerRound | null>(null);
   const [pruneTarget, setPruneTarget] = useState<LedgerRound | null>(null);
+  // diff 请求序号：快速切换文件时，先发的请求可能后到——只接受最新那一次
+  const diffSeq = useRef(0);
 
   const load = useCallback(async () => {
     const api = workbenchApi();
@@ -85,16 +87,20 @@ export function ChangeTimeline({ sessionId, refreshToken, busy, onBusyChange, on
   async function openDiff(round: LedgerRound, file: LedgerFileChange) {
     const api = workbenchApi();
     if (!api?.ledgerFileVersions) return;
+    const seq = ++diffSeq.current;
     setDiffTarget({ round, file });
     setVersions(null);
     setDiffLoading(true);
     try {
-      setVersions(await api.ledgerFileVersions(sessionId, round.roundId, file.path) as LedgerFileVersions);
+      const next = await api.ledgerFileVersions(sessionId, round.roundId, file.path) as LedgerFileVersions;
+      if (seq !== diffSeq.current) return; // 已经有更新的一次选择，丢弃这次
+      setVersions(next);
     } catch (cause) {
+      if (seq !== diffSeq.current) return;
       setError(cause instanceof Error ? cause.message : String(cause));
       setDiffTarget(null);
     } finally {
-      setDiffLoading(false);
+      if (seq === diffSeq.current) setDiffLoading(false);
     }
   }
 
@@ -143,6 +149,8 @@ export function ChangeTimeline({ sessionId, refreshToken, busy, onBusyChange, on
   function skippedLabel(file: LedgerFileChange): string | null {
     if (file.contentSkipped === "binary") return t("workbench.ledgerSkippedBinary");
     if (file.contentSkipped === "too-large") return t("workbench.ledgerSkippedLarge");
+    // 改动后内容读失败（基线可能还在）：diff 右侧会空白、回退也会跳过——必须说出来
+    if (file.contentSkipped === "unreadable") return t("workbench.ledgerSkippedUnreadable");
     if (!file.hasBaseline) return t("workbench.ledgerNoBaseline");
     return null;
   }

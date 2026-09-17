@@ -71,6 +71,7 @@
     "ledgerNoBaseline": "no earlier version",
     "ledgerSkippedBinary": "content not stored (binary)",
     "ledgerSkippedLarge": "content not stored (too large)",
+    "ledgerSkippedUnreadable": "content could not be read after the change, so it cannot be diffed or restored",
     "ledgerNoBaselineDetail": "This file has no earlier version (recording started after it was changed), so its content cannot be restored.",
     "ledgerDiffTitle": "Change: {{path}}",
     "restoreToBefore": "Restore to before this round",
