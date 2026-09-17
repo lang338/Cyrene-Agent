@@ -168,6 +168,54 @@ describe("change-ledger 回退", () => {
     expect(await readWorkspace("src/a.ts")).toBe("a2\n");
     expect(await readWorkspace("src/b.ts")).toBe("b1\n");
   });
+
+  it("回退本身也记一轮（来源 restore），能看出回退了什么", async () => {
+    await writeWorkspace("src/a.ts", "new\n");
+    await ledger.record(change({ label: "帮我改一下 a", before: "old\n", after: "new\n" }));
+
+    await ledger.restore("c1", "run-1", workspaceRoot);
+
+    const rounds = await ledger.listRounds("c1");
+    expect(rounds).toHaveLength(2);
+    const restoreRound = rounds[1];
+    expect(restoreRound.label).toContain("回退到");
+    expect(restoreRound.label).toContain("帮我改一下 a");
+    expect(restoreRound.files[0]).toMatchObject({ path: "src/a.ts", source: "restore", kind: "modify", hasBaseline: true });
+    // 前后内容：回退前=被回退掉的那版，回退后=恢复回来的那版
+    const versions = await ledger.fileVersions("c1", restoreRound.roundId, "src/a.ts");
+    expect(versions.before).toBe("new\n");
+    expect(versions.after).toBe("old\n");
+  });
+
+  it("回退可以再被回退（撤销回退）", async () => {
+    await writeWorkspace("src/a.ts", "new\n");
+    await ledger.record(change({ before: "old\n", after: "new\n" }));
+    await ledger.restore("c1", "run-1", workspaceRoot);
+    expect(await readWorkspace("src/a.ts")).toBe("old\n");
+
+    const restoreRound = (await ledger.listRounds("c1"))[1];
+    const undone = await ledger.restore("c1", restoreRound.roundId, workspaceRoot);
+    expect(undone.restored).toEqual(["src/a.ts"]);
+    expect(await readWorkspace("src/a.ts")).toBe("new\n");
+  });
+
+  it("回退删除的文件也记一轮", async () => {
+    await writeWorkspace("src/new.ts", "hello\n");
+    await ledger.record(change({ path: "src/new.ts", kind: "create", before: null, after: "hello\n" }));
+    await ledger.restore("c1", "run-1", workspaceRoot);
+
+    const restoreRound = (await ledger.listRounds("c1"))[1];
+    expect(restoreRound.files[0]).toMatchObject({ path: "src/new.ts", source: "restore", kind: "delete" });
+  });
+
+  it("没有实际改动时不记空轮", async () => {
+    await writeWorkspace("src/cmd.ts", "generated\n");
+    await ledger.record(change({ path: "src/cmd.ts", before: undefined, after: "generated\n" }));
+
+    const result = await ledger.restore("c1", "run-1", workspaceRoot);
+    expect(result.restored).toEqual([]);
+    expect(await ledger.listRounds("c1")).toHaveLength(1); // 只有原来那一轮
+  });
 });
 
 describe("change-ledger 配额与清理", () => {

@@ -193,7 +193,11 @@ export function ChangeTimeline({ sessionId, refreshToken, busy, onBusyChange, on
                       <li key={file.path}>
                         <button type="button" className="cy-changes__file" onClick={() => void openDiff(round, file)}>
                           <span className={`cy-changes__badge is-${file.source}`}>
-                            {file.source === "ai" ? t("workbench.sourceAi") : t("workbench.sourceUser")}
+                            {file.source === "ai"
+                              ? t("workbench.sourceAi")
+                              : file.source === "restore"
+                                ? t("workbench.sourceRestore")
+                                : t("workbench.sourceUser")}
                           </span>
                           <span className="cy-changes__path" title={file.path}>{file.path}</span>
                           {file.kind === "create" && <span className="cy-changes__kind">{t("workbench.kindCreated")}</span>}

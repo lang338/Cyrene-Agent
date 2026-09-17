@@ -422,6 +422,10 @@ export function createChangeLedger(deps: ChangeLedgerDeps): ChangeLedger {
         for (const line of lines.slice(targetIndex)) lastByPath.set(line.path, line);
 
         const result: LedgerRestoreResult = { restored: [], deleted: [], skipped: [] };
+        // 回退本身也要留下痕迹：记成时间线上新的一轮（来源 restore）。
+        // 附带好处：这次回退同样可以被再回退——等于「撤销回退」。
+        const restoreRoundId = `restore-${now()}`;
+        const actions: Array<{ path: string; kind: LedgerChangeKind; before: string | null; after: string | null }> = [];
         for (const line of affected) {
           const absolute = path.resolve(workspaceRoot, line.path);
           const root = path.resolve(workspaceRoot);
@@ -459,6 +463,8 @@ export function createChangeLedger(deps: ChangeLedgerDeps): ChangeLedger {
           if (beforeField.hash === null) {
             await fs.promises.rm(absolute, { force: true });
             result.deleted.push(line.path);
+            // 磁盘上本来就没了：不是一次真实改动，不必记
+            if (current !== null) actions.push({ path: line.path, kind: "delete", before: current, after: null });
             continue;
           }
           const content = await readContentByHash(beforeField.hash);
@@ -469,6 +475,38 @@ export function createChangeLedger(deps: ChangeLedgerDeps): ChangeLedger {
           await fs.promises.mkdir(path.dirname(absolute), { recursive: true });
           await fs.promises.writeFile(absolute, content, "utf8");
           result.restored.push(line.path);
+          actions.push({ path: line.path, kind: "modify", before: current, after: content });
+        }
+
+        // 把这次回退记成一轮：用户能在时间线上看到"我把哪些文件退回了哪一轮之前"
+        if (actions.length > 0) {
+          const targetLabel = lines[targetIndex].label?.trim();
+          const label = targetLabel
+            ? `回退到「${targetLabel}」之前`
+            : `回退到 ${new Date(lines[targetIndex].at).toLocaleString("zh-CN")} 之前`;
+          for (const action of actions) {
+            const beforeResult = action.before === null ? null : await putContent(action.before);
+            const afterResult = action.after === null ? null : await putContent(action.after);
+            const line: LedgerLine = {
+              at: now(),
+              conversationId,
+              runId: restoreRoundId,
+              toolCallId: "",
+              toolId: "ledger-restore",
+              path: action.path,
+              kind: action.kind,
+              source: "restore",
+              insertions: action.after ? countTextLines(action.after) : 0,
+              deletions: action.before ? countTextLines(action.before) : 0,
+              label,
+            };
+            if (beforeResult && "hash" in beforeResult) line.beforeHash = beforeResult.hash;
+            else if (action.before === null) line.beforeHash = null;
+            if (afterResult && "hash" in afterResult) line.afterHash = afterResult.hash;
+            else if (action.after === null) line.afterHash = null;
+            await appendLine(line);
+          }
+          await enforceQuota();
         }
         return result;
       });
@@ -504,6 +542,13 @@ export function createChangeLedger(deps: ChangeLedgerDeps): ChangeLedger {
       });
     },
   };
+}
+
+/** 行数（末尾空行不计，与工具证据同一口径） */
+function countTextLines(text: string): number {
+  if (!text) return 0;
+  const lines = text.split("\n");
+  return lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
 }
 
 /** 读磁盘内容：文件不存在返回 null（用于回退前的一致性比对） */

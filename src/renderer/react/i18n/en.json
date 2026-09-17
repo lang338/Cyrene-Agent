@@ -65,6 +65,7 @@
     "ledgerFileCount": "{{count}} file(s)",
     "sourceAi": "Cyrene",
     "sourceUser": "You",
+    "sourceRestore": "Restore",
     "kindCreated": "new",
     "kindDeleted": "deleted",
     "ledgerNoBaseline": "no earlier version",
