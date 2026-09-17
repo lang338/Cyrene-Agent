@@ -709,6 +709,12 @@ export function WorkbenchPage({
                           monacoNs.KeyMod.CtrlCmd | monacoNs.KeyCode.KeyS,
                           () => saveActiveRef.current(),
                         );
+                        // Ctrl+Space 在中文 Windows 上常被输入法当"中英文切换"抢走，Monaco 收不到，
+                        // 所以另给一个不冲突的触发键（Eclipse 系习惯）。Ctrl+Space 的默认绑定保持不动。
+                        editor.addCommand(
+                          monacoNs.KeyMod.Alt | monacoNs.KeyCode.Slash,
+                          () => editor.trigger("keyboard", "editor.action.triggerSuggest", {}),
+                        );
                       }}
                     />
                   </div>
