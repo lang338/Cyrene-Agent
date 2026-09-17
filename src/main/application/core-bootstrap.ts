@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Core 启动阶段（coreReady）：建立聊天可用所需的最小核心。
  * 按严格依赖顺序构造：迁移 → 技能 → 低成本服务 → 沙箱 → 计划模式 → 工具
  * → RAG（可降级）→ Agent Runtime → scheduler/channels（只装配不启动）
@@ -21,6 +21,7 @@ import type { EmbeddingIndexService } from "../services/embedding/embedding-inde
 import type { ProactiveLifecycle } from "../proactive/proactive-lifecycle";
 import type { GitService } from "../code-git/git-service";
 import type { CheckpointService } from "../code-git/checkpoint-service";
+import type { ChangeLedger } from "../code-git/change-ledger-service";
 import type { WorkspaceFileService } from "../code-git/workspace-files";
 import type { LspManager } from "../lsp/manager";
 import type { ScreenshotService } from "../screenshot/screenshot-lifecycle";
@@ -46,6 +47,8 @@ export interface CoreServices {
   proactive: ProactiveLifecycle;
   git: GitService;
   checkpoint: CheckpointService;
+  /** 改动账本：工作台"改动时间线"的数据源（不要求工作区是 git 仓库） */
+  changeLedger: ChangeLedger;
   workspaceFiles: WorkspaceFileService;
   lsp: LspManager;
   screenshot: ScreenshotService;

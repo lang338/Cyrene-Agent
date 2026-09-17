@@ -19,6 +19,13 @@ interface WorkbenchApi {
   snapshot(sessionId: string, kind?: "auto" | "pre-restore" | "manual"): Promise<unknown>;
   /** 快照落盘广播订阅；返回退订函数 */
   onCheckpointChanged?(callback: (payload: { sessionId: string }) => void): () => void;
+  /** 改动账本（时间线）：不要求工作区是 git 仓库，巨型目录同样可用 */
+  listLedgerRounds?(sessionId: string): Promise<unknown>;
+  ledgerFileVersions?(sessionId: string, roundId: string, path: string): Promise<unknown>;
+  restoreLedgerRound?(sessionId: string, roundId: string): Promise<unknown>;
+  ledgerUsage?(): Promise<unknown>;
+  pruneLedgerRounds?(sessionId: string, roundIds: string[]): Promise<unknown>;
+  onLedgerChanged?(callback: (payload: { sessionId: string }) => void): () => void;
 }
 
 export function workbenchApi(): WorkbenchApi | undefined {

@@ -110,6 +110,7 @@ import { createGitService } from "../code-git/git-service";
 import { resolveGitExecutable, type ResolvedGitExecutable } from "../code-git/git-executable";
 import { registerCodeGitIpc } from "../code-git/code-git-ipc";
 import { createCheckpointService } from "../code-git/checkpoint-service";
+import { configureChangeLedger, createChangeLedger, getConfiguredChangeLedger } from "../code-git/change-ledger-service";
 import { createWorkspaceFileService } from "../code-git/workspace-files";
 import { registerWorkbenchIpc } from "../code-git/workbench-ipc";
 import { installSingleInstanceGuard } from "../single-instance";
@@ -345,6 +346,12 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         git.onChanged(({ sessionId }) => checkpoint.notifyActivity(sessionId));
         const workspaceFiles = createWorkspaceFileService({ getSession: chatsStore.getSession });
 
+        // 改动账本：工作台"改动时间线"的数据源。
+        // 与 checkpoint 不同，它不要求工作区是 git 仓库、也不受工作区规模限制，
+        // 因此巨型目录/普通文件夹照样能记账。构造后配置成进程级实例，工具调度层直接取用。
+        const changeLedger = createChangeLedger({ rootDir: path.join(app.getPath("userData"), "cyrene-changes") });
+        configureChangeLedger(changeLedger);
+
         // LSP：管理器预创建；具体语言服务进程按需启动
         const lsp = new LspManager({
           getServerOverrides: () => loadGeneralSettings().lspServerOverrides,
@@ -380,6 +387,7 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           proactive: proactiveLifecycle,
           git,
           checkpoint,
+          changeLedger,
           workspaceFiles,
           lsp,
           screenshot,
@@ -513,7 +521,19 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         registerChatsIpc(ipc);
         registerMomentsIpc(ipc);
         registerCodeGitIpc({ ipc, service: services.git });
-        registerWorkbenchIpc({ ipc, checkpoint: services.checkpoint, files: services.workspaceFiles });
+        registerWorkbenchIpc({
+          ipc,
+          checkpoint: services.checkpoint,
+          files: services.workspaceFiles,
+          ledger: services.changeLedger,
+          // 账本写入后广播：工作台的改动时间线据此自动刷新
+          onLedgerChanged: (sessionId) => {
+            for (const win of BrowserWindow.getAllWindows()) {
+              if (!win.isDestroyed()) win.webContents.send(IPC.WORKBENCH_LEDGER_CHANGED, { sessionId });
+            }
+          },
+          getWorkspaceRoot: (sessionId) => chatsStore.getSession(sessionId)?.workspaceBinding?.workspaceRoot,
+        });
 
         // AG-UI 事件流桥：渲染进程 invoke(AGUI_RUN) → CyreneAgent 跑 Agent 循环 → 事件透传
         registerAgUiIpc(
