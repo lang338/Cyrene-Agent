@@ -118,6 +118,8 @@ export const IPC = {
    */
   WORKBENCH_LEDGER_LIST: "workbench:ledger-list",
   WORKBENCH_LEDGER_FILE: "workbench:ledger-file",
+  /** 回退前预检：预览本次回退实际触及的全部工作区相对路径（只读） */
+  WORKBENCH_LEDGER_RESTORE_AFFECTED: "workbench:ledger-restore-affected",
   WORKBENCH_LEDGER_RESTORE: "workbench:ledger-restore",
   WORKBENCH_LEDGER_USAGE: "workbench:ledger-usage",
   WORKBENCH_LEDGER_PRUNE: "workbench:ledger-prune",

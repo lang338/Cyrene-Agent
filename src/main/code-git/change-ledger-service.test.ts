@@ -216,6 +216,29 @@ describe("change-ledger 回退", () => {
     expect(result.restored).toEqual([]);
     expect(await ledger.listRounds("c1")).toHaveLength(1); // 只有原来那一轮
   });
+
+  it("restoreAffectedPaths：后续轮次才改的文件也在预检清单里（脏缓冲守卫靠它）", async () => {
+    await writeWorkspace("src/a.ts", "a2\n");
+    await writeWorkspace("src/b.ts", "b2\n");
+    await ledger.record(change({ runId: "run-1", path: "src/a.ts", before: "a1\n", after: "a2\n" }));
+    await ledger.record(change({ runId: "run-2", path: "src/b.ts", before: "b1\n", after: "b2\n" }));
+
+    // 回退到 run-1：b.ts 不在 run-1 自己的 files 里，但它在 run-2 被改、同样会被撤掉
+    const fromFirst = await ledger.restoreAffectedPaths("c1", "run-1");
+    expect(fromFirst.sort()).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(await ledger.restoreAffectedPaths("c1", "run-2")).toEqual(["src/b.ts"]);
+
+    // 预检口径与真正执行一致：回 run-1 时两个文件都被写回
+    const result = await ledger.restore("c1", "run-1", workspaceRoot);
+    expect(result.restored.sort()).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(await readWorkspace("src/a.ts")).toBe("a1\n");
+    expect(await readWorkspace("src/b.ts")).toBe("b1\n");
+  });
+
+  it("restoreAffectedPaths：找不到轮次要报错，不能默默返回空清单", async () => {
+    await ledger.record(change());
+    await expect(ledger.restoreAffectedPaths("c1", "nope")).rejects.toThrow();
+  });
 });
 
 describe("isMissingFileError（只有 ENOENT 才算文件不存在）", () => {
@@ -259,6 +282,42 @@ describe("change-ledger 配额与清理", () => {
     expect(rounds.length).toBeGreaterThanOrEqual(2);
     expect(evicted[0]).toBe("r1"); // 从最旧的开始淘汰
     expect((await small.usage()).totalBytes).toBeLessThanOrEqual(1400 * 0.7 + 300); // 回落到目标水位附近
+  });
+
+  it("淘汰旧轮时只释放它独有的对象：被其他轮次共享的内容必须保留", async () => {
+    const small = createChangeLedger({ rootDir, limits: { maxTotalBytes: 2200 } });
+    // 不可压缩内容才能用 gzip 后的体积做配额设计；A 在两轮里都被引用（同一版本）
+    const shared = randomBytes(300).toString("base64");
+    const oldOnly = randomBytes(700).toString("base64");
+    const newOnly = randomBytes(1500).toString("base64");
+    await small.record({ ...change({ runId: "run-old", path: "a.ts" }), before: shared, after: oldOnly });
+    // 新轮使总占用越过配额：旧轮应被淘汰，但共享的 A 还有新轮引用，绝不能删
+    const result = await small.record({ ...change({ runId: "run-new", path: "b.ts" }), before: shared, after: newOnly });
+
+    expect(result.evicted.map((entry) => entry.roundId)).toEqual(["run-old"]);
+    expect(await small.readContent(await hashOf(shared))).toBe(shared);
+    expect(await small.readContent(await hashOf(oldOnly))).toBeNull();
+    expect(await small.readContent(await hashOf(newOnly))).toBe(newOnly);
+    // 新轮的 before 仍能读出共享内容：引用计数没把它的历史搞坏
+    const versions = await small.fileVersions("c1", "run-new", "b.ts");
+    expect(versions.before).toBe(shared);
+  });
+
+  it("一次保存要淘汰多轮时：循环内增量回收，水位判定准确且最新轮保留", async () => {
+    const small = createChangeLedger({ rootDir, limits: { maxTotalBytes: 2000 } });
+    // 两个大旧轮（入库时不触发）+ 一个稍小的新轮：新轮落盘后必须在同一次淘汰里连删两轮
+    const big1 = `${randomBytes(800).toString("base64")}-1`;
+    const big2 = `${randomBytes(800).toString("base64")}-2`;
+    const medium3 = `${randomBytes(650).toString("base64")}-3`;
+    await small.record({ ...change({ runId: "r1", path: "r1.ts", kind: "create" }), before: null, after: big1 });
+    await small.record({ ...change({ runId: "r2", path: "r2.ts", kind: "create" }), before: null, after: big2 });
+    const result = await small.record({ ...change({ runId: "r3", path: "r3.ts", kind: "create" }), before: null, after: medium3 });
+
+    expect(result.evicted.map((entry) => entry.roundId)).toEqual(["r1", "r2"]);
+    expect((await small.listRounds("c1")).map((round) => round.roundId)).toEqual(["r3"]);
+    expect(await small.readContent(await hashOf(medium3))).toBe(medium3);
+    // 增量账与磁盘一致：已回落到目标水位附近（0.7），不是删完还按旧总量误判
+    expect((await small.usage()).totalBytes).toBeLessThanOrEqual(2000 * 0.7 + 300);
   });
 
   it("按轮删除后回收对象", async () => {

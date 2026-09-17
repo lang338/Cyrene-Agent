@@ -156,6 +156,14 @@ export function registerWorkbenchIpc(deps: RegisterWorkbenchIpcDeps): void {
     return requireLedger().fileVersions(requireSessionId(input.sessionId), input.roundId, input.path);
   });
 
+  ipc.handle(IPC.WORKBENCH_LEDGER_RESTORE_AFFECTED, (_event, payload: unknown) => {
+    // 回退前预检：拿"目标轮及之后"的完整受影响路径给渲染端脏缓冲把关，
+    // 只看 round.files 会漏掉后续轮次才改、同样会被本次回退写/删的文件
+    const input = payload as { sessionId?: unknown; roundId?: unknown } | null;
+    if (typeof input?.roundId !== "string" || !input.roundId.trim()) throw new Error("缺少轮次标识");
+    return requireLedger().restoreAffectedPaths(requireSessionId(input.sessionId), input.roundId);
+  });
+
   ipc.handle(IPC.WORKBENCH_LEDGER_RESTORE, async (_event, payload: unknown) => {
     const input = payload as { sessionId?: unknown; roundId?: unknown } | null;
     if (typeof input?.roundId !== "string" || !input.roundId.trim()) throw new Error("缺少轮次标识");
