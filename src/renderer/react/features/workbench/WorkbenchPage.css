@@ -413,37 +413,39 @@
   color: #e8e8e8;
 }
 
-/* ── 路径栏（文件页签下方：显示当前文件路径，可直接改路径跳转） ── */
+/* ── 路径栏（文件页签下方：显示当前文件路径，可直接改路径跳转） ──
+   刻意不画框、不自己画分隔线：它只是页签条下面的一行路径文字，
+   再包一层边框看起来就成了"另一个输入区"，比文件名栏还抢眼。 */
 
 .cy-workbench__path-bar {
   display: flex;
   align-items: center;
   gap: 8px;
   flex: none;
-  padding: 4px 8px;
-  border-bottom: var(--cy-wb-line-w) solid var(--cy-wb-line);
+  padding: 0 6px 4px;
 }
 
 .cy-workbench__path-input {
   flex: 1;
   min-width: 0;
-  padding: 3px 8px;
-  border: 1px solid transparent;
+  padding: 2px 6px;
+  border: 0;
   border-radius: 4px;
-  background: #232529;
-  color: #c9cdd4;
+  background: transparent;
+  color: #a3a9b1;
   /* 路径按等宽字体读更省力（对齐、区分 l/1/I），沿用 CodeHighlighter 的字族回退链 */
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   font-size: 12px;
 }
 
+/* 悬停/聚焦都只在原地加深一点底色：既给出"这行能改"的反馈，又不引入框线 */
 .cy-workbench__path-input:hover {
-  border-color: var(--cy-wb-line);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .cy-workbench__path-input:focus {
   outline: none;
-  border-color: #2f6feb;
+  background: rgba(255, 255, 255, 0.08);
   color: #e8e8e8;
 }
 
@@ -451,8 +453,9 @@
   color: #6d737b;
 }
 
+/* 没有框线可用，用字色表达"这条路径打不开" */
 .cy-workbench__path-input.is-invalid {
-  border-color: #a35b5b;
+  color: #e5a3a3;
 }
 
 .cy-workbench__path-error {
