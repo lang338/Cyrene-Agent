@@ -284,6 +284,16 @@
   transition: background 0.15s;
 }
 
+/* 命中区加宽：5px 对鼠标太苛刻（可见线只有 2px，左右两边又都是可点区域，
+   偏一两像素就落到文件树或编辑器上，表现为"点不到"）。用伪元素向两侧各扩 3px，
+   总命中宽度 11px——不参与 flex 布局计算，因此不用改 use-resizable-columns 的 RESIZER_TOTAL。
+   命中区一宽，col-resize 光标和 hover 变蓝就会提前出现，用户才找得到这条缝。 */
+.cy-workbench__resizer::before {
+  content: "";
+  position: absolute;
+  inset: 0 -3px;
+}
+
 .cy-workbench__resizer::after {
   content: "";
   position: absolute;
