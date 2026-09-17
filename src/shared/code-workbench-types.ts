@@ -58,8 +58,8 @@ export interface WorkbenchFileContent {
 // 与 checkpoint 的区别：checkpoint 存"整个工作区的一棵树"（要求工作区是 git 仓库、规模受限）；
 // 账本只存"被改动过的文件的内容"，因此巨型目录、非 git 目录都能用。
 
-/** 一次改动的来源：ai=昔涟用写文件工具改的；user=你在工作台代码区保存的 */
-export type LedgerSource = "ai" | "user";
+/** 一次改动的来源：ai=昔涟用写文件工具改的；user=你在工作台代码区保存的；restore=你把文件回退到某一轮之前 */
+export type LedgerSource = "ai" | "user" | "restore";
 
 export type LedgerChangeKind = "create" | "modify" | "delete";
 

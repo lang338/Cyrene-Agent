@@ -690,6 +690,7 @@
     "ledgerFileCount": "{{count}} 个文件",
     "sourceAi": "昔涟",
     "sourceUser": "你",
+    "sourceRestore": "回退",
     "kindCreated": "新建",
     "kindDeleted": "删除",
     "ledgerNoBaseline": "无更早版本",

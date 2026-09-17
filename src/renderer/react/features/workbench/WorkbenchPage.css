@@ -1205,6 +1205,12 @@
   color: #e0c48a;
 }
 
+/* 回退：你自己发起的还原动作，也在时间线上留痕（可再被回退＝撤销回退） */
+.cy-changes__badge.is-restore {
+  background: #3a2b3f;
+  color: #d6b3e0;
+}
+
 .cy-changes__path {
   flex: 1;
   min-width: 0;
