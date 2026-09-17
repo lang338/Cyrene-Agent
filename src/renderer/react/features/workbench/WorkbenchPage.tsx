@@ -691,6 +691,10 @@ export function WorkbenchPage({
                   <div className="cy-monaco-fill">
                     <Editor
                       key={activePath}
+                      // path 必须有：Monaco 的 TS 语言服务按"模型 URI 的扩展名"判断这是不是它的文件，
+                      // 缺了它 URI 会是 inmemory://model/N（无扩展名）→ 语义补全一律返回空，
+                      // 只剩主线程算的"同文件词汇"建议（表现为输 doc 弹 description 而不是 document）。
+                      path={`file:///${activePath}`}
                       language={monacoLanguageFor(activePath)}
                       theme="vs-dark"
                       value={activeEntry.content}
