@@ -15,6 +15,8 @@ import {
 } from "../components/run-presentation";
 import { ChatMessageList } from "../components/ChatMessageList";
 import { ChatPageNavigation, type ChatPagePanel } from "../components/ChatPageNavigation";
+import { WorkbenchPage } from "../../workbench/WorkbenchPage";
+import { workbenchApi } from "../../workbench/WorkspaceTree";
 import {
   ContextCompressionNotice,
   FileDropOverlay,
@@ -25,6 +27,7 @@ import { EarlyTtsPlaybackQueue, type EarlyTtsSplitMode } from "../tts/early-tts-
 
 import type { ChatMessage, ChatSession, ChatSessionMeta, ConversationMode } from "../../../../../shared/chat-types";
 import { type ContextUsageSnapshot } from "../../../../../shared/context-usage";
+import type { PopQuizSubmission } from "../../../../../shared/pop-quiz";
 import { ChatPagePanelHost } from "../components/ChatPagePanelHost";
 import { useUserCallPreference } from "../../../hooks/useUserNickname";
 import { resolveRevisableLastTurn } from "../components/last-turn-actions";
@@ -108,6 +111,8 @@ export function ChatPage() {
   const [inspectorTab, setInspectorTab] = useState<"diff" | "plan">("plan");
   const [mode, setMode] = useState<ConversationMode>(getInitialMode);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // 代码工作台（work/code 模式入口）：全屏覆盖层，会话消息与发送仍走本页运行时
+  const [workbenchOpen, setWorkbenchOpen] = useState(false);
 
   const [workspaceNames, setWorkspaceNames] = useState<Partial<Record<ConversationMode, string>>>({});
   const [pendingWorkspaceByMode, setPendingWorkspaceByMode] = useState<
@@ -305,6 +310,65 @@ export function ChatPage() {
   const activeInteraction = sessionInteraction(interactionsBySession, activeSessionId);
   const composerInteraction = activeInteraction?.interaction;
   const interactionBusy = activeInteraction?.busy ?? false;
+  // 交互卡（工具审批 / 向用户提问 / 小测验）的统一提交入口。
+  // 聊天页与工作台共用同一套：工作台内也能直接处理审批，不必退回主界面。
+  const interactionHandlers = {
+    onAnswer: (id: string, answer: unknown) => {
+      if (!activeSessionId) return;
+      const choice = choiceApi();
+      if (!choice) return;
+      setInteractionBusyForSession(activeSessionId, true);
+      void choice.resolve(id, answer).then((result) => {
+        // ok:false = pending 已在主进程被结算（超时/取消等）：卡片不可能再提交成功，直接清掉，
+        // 避免留下一张点多少次都没反应的僵尸卡。
+        if (result.ok) {
+          runCheckpointBySessionRef.current[activeSessionId]?.("running");
+        }
+        clearInteractionForSession(activeSessionId);
+        setInteractionBusyForSession(activeSessionId, false);
+      }).catch(() => setInteractionBusyForSession(activeSessionId, false));
+    },
+    onIgnore: (id: string) => {
+      if (!activeSessionId) return;
+      const choice = choiceApi();
+      if (!choice) return;
+      setInteractionBusyForSession(activeSessionId, true);
+      void choice.resolve(id, "").then((result) => {
+        // 同 onAnswer：ok:false 说明 pending 已被主进程结算，卡片清掉不留僵尸。
+        if (result.ok) {
+          runCheckpointBySessionRef.current[activeSessionId]?.("running");
+        }
+        clearInteractionForSession(activeSessionId);
+        setInteractionBusyForSession(activeSessionId, false);
+      }).catch(() => setInteractionBusyForSession(activeSessionId, false));
+    },
+    onPermissionDecision: (id: string, allowed: boolean) => {
+      if (!activeSessionId) return;
+      const settings = settingsApprovalApi();
+      if (!settings) return;
+      setInteractionBusyForSession(activeSessionId, true);
+      void settings.resolvePermissionApproval(id, allowed).then((result) => {
+        // ok:false = pending 已在主进程被结算（run 取消等）：卡片不可能再提交成功，直接清掉，
+        // 避免留下一张点多少次都没反应的僵尸卡。
+        if (result.ok) {
+          runCheckpointBySessionRef.current[activeSessionId]?.("running");
+        }
+        clearInteractionForSession(activeSessionId);
+        setInteractionBusyForSession(activeSessionId, false);
+      }).catch(() => setInteractionBusyForSession(activeSessionId, false));
+    },
+    onQuizSubmit: (submission: PopQuizSubmission) => {
+      const settings = settingsApprovalApi();
+      if (!settings) return Promise.resolve({ ok: false, error: "E_QUIZ_NO_BRIDGE" });
+      // 展示态切换由卡片组件处理，这里只透传判分结果
+      return settings.resolvePopQuiz(submission);
+    },
+    onQuizSkip: (quizId: string) => {
+      const settings = settingsApprovalApi();
+      if (!settings) return Promise.resolve({ ok: false, error: "E_QUIZ_NO_BRIDGE" });
+      return settings.skipPopQuiz(quizId);
+    },
+  };
   const hasMessages = messages.length > 0;
   const {
     attachments,
@@ -366,6 +430,28 @@ export function ChatPage() {
       console.error("[ChatPage] Failed to refresh sessions after mode change:", error);
     });
   }, [bootstrapCompleted, mode]);
+
+  // 工作区换绑广播 → 重新取一次会话，让 activeSession 跟上新绑定。
+  // 为什么必须订阅：改绑工作区走的是 refreshSessions(mode, false)，只刷列表、不重选会话，
+  // activeSession 会停在旧绑定上。工作台正是拿它的 workspaceRoot 判断"改动文件在不在工作区内"，
+  // 旧根会把实际落在工作区里的文件判成越界丢掉（改绑后写的新文件不跟随，就是这个原因）。
+  useEffect(() => {
+    const store = chatStore();
+    if (!store?.onWorkspaceChanged) return;
+    const unsubscribe = store.onWorkspaceChanged((payload) => {
+      if (!payload?.sessionId) return;
+      const isActive = () => activeSessionIdsRef.current[activeModeRef.current] === payload.sessionId;
+      if (!isActive()) return;
+      void store.get(payload.sessionId).then((session) => {
+        // 取回期间用户可能已切走：只在它仍是当前会话时落地
+        if (!session || !isActive()) return;
+        setActiveSession(session);
+      }).catch((error) => {
+        console.error("[ChatPage] Failed to refresh session after workspace change:", error);
+      });
+    });
+    return unsubscribe;
+  }, []);
 
   // 合并 effect：注册 IPC → cold-start → finally 置 bootstrap + 通知 ready
   useEffect(() => {
@@ -750,6 +836,12 @@ export function ChatPage() {
         },
         onRunFinished: ({ mode, sessionId }) => {
           void refreshSessions(mode, false);
+          // AI 一回合结束时立刻打一条工作区快照：这比 git 变化防抖更贴近"这一轮改了什么"的语义点。
+          // 服务端会按 tree 去重（没改文件就不产生快照），非 code 模式或未绑定工作区则直接拒绝，静默忽略。
+          if (mode === "code") {
+            const api = workbenchApi();
+            void api?.snapshot(sessionId, "auto").catch(() => undefined);
+          }
           // 当前 session 队列中的下一条消息自动消费
           const queue = pendingQueueBySessionRef.current[sessionId] ?? [];
           if (queue.length === 0) return;
@@ -762,6 +854,7 @@ export function ChatPage() {
             rawContent: next.rawContent,
             visibleContent: next.visibleContent,
             attachments: next.attachments,
+            contextAttachments: next.contextAttachments,
             userSticker: next.userSticker,
             assistantId: crypto.randomUUID(),
             userMessageId: next.id,
@@ -898,6 +991,21 @@ export function ChatPage() {
     await refreshSessions(targetMode, false);
     await selectSession(session.id, targetMode);
     return session.id;
+  }
+
+  /**
+   * 工作台入口放在 composer 底栏，work/code 模式常驻：
+   * 欢迎页（尚无会话）点击时先自动建会话，再打开工作台。
+   */
+  async function openWorkbench(): Promise<void> {
+    if (!activeSessionId) {
+      try {
+        await ensureSession(mode);
+      } catch {
+        return;
+      }
+    }
+    setWorkbenchOpen(true);
   }
 
 
@@ -1110,8 +1218,10 @@ export function ChatPage() {
     keepComposer?: boolean;
     /** 为 false 时用户消息落盘后立即返回，模型运行转入后台继续。 */
     waitForRun?: boolean;
+    /** 本轮临时文本上下文（工作台当前打开的文件）；不落历史，只进本轮 prompt。 */
+    contextAttachments?: Array<{ name: string; text: string }>;
   }): Promise<{ persisted: boolean }> {
-    const { targetMode, sessionId, rawContent, visibleContent, attachments, userSticker, assistantId, userMessageId, resumeFromRunId, keepComposer } = input;
+    const { targetMode, sessionId, rawContent, visibleContent, attachments, userSticker, assistantId, userMessageId, resumeFromRunId, keepComposer, contextAttachments } = input;
     appendMessages(sessionId, [
       {
         id: userMessageId,
@@ -1179,6 +1289,7 @@ export function ChatPage() {
         assistantId,
         session: updatedSession,
         attachments,
+        contextAttachments,
         resumeFromRunId,
       });
     } else {
@@ -1189,6 +1300,7 @@ export function ChatPage() {
         assistantId,
         session: updatedSession,
         attachments,
+        contextAttachments,
         resumeFromRunId,
       });
     }
@@ -1206,6 +1318,8 @@ export function ChatPage() {
     sessionId: string;
     mode: ConversationMode;
     text: string;
+    /** 本轮临时文本上下文（工作台当前打开的文件）；不落历史。 */
+    contextAttachments?: Array<{ name: string; text: string }>;
   }): Promise<{ ok: true } | { ok: false; error: { code: string; message: string } }> {
     const text = input.text.trim();
     if (!text) {
@@ -1229,6 +1343,8 @@ export function ChatPage() {
         rawContent: text,
         visibleContent: text,
         attachments: [],
+        // 上下文在入队这一刻冻结：真正发出时用户可能已经切走了文件
+        contextAttachments: input.contextAttachments,
         keepComposer: true,
       });
       pendingQueueBySessionRef.current = nextQueue;
@@ -1241,6 +1357,7 @@ export function ChatPage() {
       rawContent: text,
       visibleContent: text,
       attachments: [],
+      contextAttachments: input.contextAttachments,
       assistantId: crypto.randomUUID(),
       userMessageId: crypto.randomUUID(),
       keepComposer: true,
@@ -1363,7 +1480,7 @@ export function ChatPage() {
             mode={mode}
           />
         )}
-        {mode === "code" && activeSessionId && (
+        {mode === "code" && activeSessionId && !workbenchOpen && (
           <CodeGitPanel
             sessionId={activeSessionId}
             projectName={workspaceNames.code}
@@ -1447,6 +1564,7 @@ export function ChatPage() {
             onQueueMessage={(value) => queueCurrentDraft(value)}
             onRemoveQueuedMessage={(id) => activeSessionId && removeQueuedMessage(activeSessionId, id)}
             onChooseWorkspace={() => void chooseWorkspace()}
+            onOpenWorkbench={(mode === "work" || mode === "code") ? () => void openWorkbench() : undefined}
             onChooseFiles={(files) => void chooseFiles(files)}
             onRemoveAttachment={removeAttachment}
             onScreenshot={() => void handleScreenshot()}
@@ -1474,61 +1592,7 @@ export function ChatPage() {
             />}
             interaction={composerInteraction}
             interactionBusy={interactionBusy}
-            onAnswer={(id, answer) => {
-              if (!activeSessionId) return;
-              const choice = choiceApi();
-              if (!choice) return;
-              setInteractionBusyForSession(activeSessionId, true);
-              void choice.resolve(id, answer).then((result) => {
-                // ok:false = pending 已在主进程被结算（超时/取消等）：卡片不可能再提交成功，直接清掉，
-                // 避免留下一张点多少次都没反应的僵尸卡。
-                if (result.ok) {
-                  runCheckpointBySessionRef.current[activeSessionId]?.("running");
-                }
-                clearInteractionForSession(activeSessionId);
-                setInteractionBusyForSession(activeSessionId, false);
-              }).catch(() => setInteractionBusyForSession(activeSessionId, false));
-            }}
-            onIgnore={(id) => {
-              if (!activeSessionId) return;
-              const choice = choiceApi();
-              if (!choice) return;
-              setInteractionBusyForSession(activeSessionId, true);
-              void choice.resolve(id, "").then((result) => {
-                // 同 onAnswer：ok:false 说明 pending 已被主进程结算，卡片清掉不留僵尸。
-                if (result.ok) {
-                  runCheckpointBySessionRef.current[activeSessionId]?.("running");
-                }
-                clearInteractionForSession(activeSessionId);
-                setInteractionBusyForSession(activeSessionId, false);
-              }).catch(() => setInteractionBusyForSession(activeSessionId, false));
-            }}
-            onPermissionDecision={(id, allowed) => {
-              if (!activeSessionId) return;
-              const settings = settingsApprovalApi();
-              if (!settings) return;
-              setInteractionBusyForSession(activeSessionId, true);
-              void settings.resolvePermissionApproval(id, allowed).then((result) => {
-                // ok:false = pending 已在主进程被结算（run 取消等）：卡片不可能再提交成功，直接清掉，
-                // 避免留下一张点多少次都没反应的僵尸卡。
-                if (result.ok) {
-                  runCheckpointBySessionRef.current[activeSessionId]?.("running");
-                }
-                clearInteractionForSession(activeSessionId);
-                setInteractionBusyForSession(activeSessionId, false);
-              }).catch(() => setInteractionBusyForSession(activeSessionId, false));
-            }}
-            onQuizSubmit={(submission) => {
-              const settings = settingsApprovalApi();
-              if (!settings) return Promise.resolve({ ok: false, error: "E_QUIZ_NO_BRIDGE" });
-              // 展示态切换由卡片组件处理，这里只透传判分结果
-              return settings.resolvePopQuiz(submission);
-            }}
-            onQuizSkip={(quizId) => {
-              const settings = settingsApprovalApi();
-              if (!settings) return Promise.resolve({ ok: false, error: "E_QUIZ_NO_BRIDGE" });
-              return settings.skipPopQuiz(quizId);
-            }}
+            {...interactionHandlers}
           />
         </div>
         </>
@@ -1550,6 +1614,32 @@ export function ChatPage() {
           }
         }}
       />
+      {workbenchOpen && activeSessionId && (
+        <WorkbenchPage
+          // key 绑定会话：换会话时重建工作台实例。否则 React 复用旧实例，
+          // openTabs/buffers 会留在上一个会话的状态上，而 saveFile 已经拿到新 sessionId，
+          // 一保存就把旧会话的缓冲写进新会话的文件里。
+          key={activeSessionId}
+          sessionId={activeSessionId}
+          mode={mode}
+          workspaceRoot={activeSession?.workspaceBinding?.workspaceRoot}
+          messages={messages}
+          busy={isSessionBusy(activeSessionId)}
+          preferredAddress={preferredAddress}
+          stickerSize={stickerSize}
+          onTtsCacheKey={(messageId, cacheKey, converterVersion) => {
+            void handleTtsCacheKey(activeSessionId, messageId, cacheKey, converterVersion);
+          }}
+          onSendText={async (text, contextAttachments) => (
+            await submitTextToSession({ sessionId: activeSessionId, mode, text, contextAttachments })
+          ).ok}
+          onCancelRun={() => void cancelCurrentRun()}
+          onClose={() => setWorkbenchOpen(false)}
+          interaction={composerInteraction}
+          interactionBusy={interactionBusy}
+          {...interactionHandlers}
+        />
+      )}
     </div>
   );
 }

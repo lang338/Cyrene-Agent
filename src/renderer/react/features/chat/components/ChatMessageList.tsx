@@ -100,7 +100,6 @@ interface ChatMessageListProps {
 }
 
 const markdownConfig = { extensions: Latex() };
-const cyreneAvatarUrl = resolveAsset("avatars/cyrene-avatar.png");
 
 // 消息是否正在流式输出。code 渲染器收不到 MarkdownContent 的 props，用 context 传下去，
 // mermaid 块靠它在流式期间显示占位而不是渲染半截语法
@@ -734,11 +733,6 @@ function LastUserMessageEditor({
   );
 }
 
-function CyreneMessageAvatar() {
-  const { t } = useTranslation();
-  return <img className="cy-message-avatar__image" src={cyreneAvatarUrl} alt={t("messageList.cyreneAvatarAlt")} draggable={false} />;
-}
-
 function UserMessageAvatar({ src }: { src: string | null }) {
   const { t } = useTranslation();
   if (src) return <img className="cy-message-avatar__image" src={src} alt={t("messageList.userAvatarAlt")} draggable={false} />;
@@ -808,7 +802,8 @@ function createRoles(
     placement: "start" as const,
     variant: "filled" as const,
     rootClassName: "cy-message cy-message--assistant",
-    avatar: <CyreneMessageAvatar />,
+    // 不渲染昔涟头像：回复直接占满聊天宽度（思考/工具等同侧角色也都没有头像）
+    avatar: null,
     contentRender: (content: string, info: { extraInfo?: { streaming?: boolean; stickerUrl?: string; channelSource?: ChatMessageChannelSource } }) => (
       <AssistantContent
         content={content}

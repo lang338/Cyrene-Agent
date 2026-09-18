@@ -192,6 +192,11 @@ export interface PendingQueueEntry {
   rawContent: string;
   visibleContent: string;
   attachments: ComposerAttachment[];
+  /**
+   * 入队时冻结的本轮临时上下文（如工作台当前打开的文件）。
+   * 必须在入队那一刻固化：等真正发出时用户可能已经切走了文件。
+   */
+  contextAttachments?: Array<{ name: string; text: string }>;
   userSticker?: string;
   keepComposer?: boolean;
 }

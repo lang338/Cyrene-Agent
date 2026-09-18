@@ -49,6 +49,11 @@ export interface AgentRunInput {
   assistantId: string;
   session: ChatSession;
   attachments: ComposerAttachment[];
+  /**
+   * 本轮临时文本上下文（工作台当前打开的文件等）。
+   * 只进本轮 prompt，不落历史：主进程渲染成"本轮附件内容"拼进尾部上下文。
+   */
+  contextAttachments?: Array<{ name: string; text: string }>;
   resumeFromRunId?: string;
   takeoverFromRunId?: string;
 }
@@ -232,6 +237,9 @@ export class AgentRunController {
         styleId: general?.currentStyleId,
         sessionId: this.input.sessionId,
         recoveryContext: buildTodoRecoveryContext(this.input.session.messages, this.input.assistantId),
+        ...(this.input.contextAttachments?.length
+          ? { attachments: this.input.contextAttachments }
+          : {}),
         ...(this.input.resumeFromRunId ? { resumeFromRunId: this.input.resumeFromRunId } : {}),
         ...(this.input.takeoverFromRunId ? { takeoverFromRunId: this.input.takeoverFromRunId } : {}),
         imageAttachments: this.input.attachments

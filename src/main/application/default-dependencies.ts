@@ -109,6 +109,9 @@ import { createSocialContextService } from "../services/social-context/social-co
 import { createGitService } from "../code-git/git-service";
 import { resolveGitExecutable, type ResolvedGitExecutable } from "../code-git/git-executable";
 import { registerCodeGitIpc } from "../code-git/code-git-ipc";
+import { createCheckpointService } from "../code-git/checkpoint-service";
+import { createWorkspaceFileService } from "../code-git/workspace-files";
+import { registerWorkbenchIpc } from "../code-git/workbench-ipc";
 import { installSingleInstanceGuard } from "../single-instance";
 import { createWindowManager } from "../windows/window-manager";
 import { createTray } from "../tray";
@@ -312,18 +315,35 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         // 探测结果在进程内缓存：成功过一次就不再重复探测，避免启动高峰期
         // 偶发超时导致 Git 面板误报"未检测到可用 Git"；探测失败不缓存，下次自动重试
         let resolvedGit: ResolvedGitExecutable | null = null;
+        const resolveGitExecutableCached = async () => {
+          resolvedGit ??= await resolveGitExecutable({
+            systemCommand: "git",
+            bundledPath: app.isPackaged
+              ? path.join(process.resourcesPath, "mingit", "cmd", "git.exe")
+              : path.join(app.getAppPath(), "resources", "mingit", "cmd", "git.exe"),
+          });
+          return resolvedGit;
+        };
         const git = createGitService({
           getSession: chatsStore.getSession,
-          resolveExecutable: async () => {
-            resolvedGit ??= await resolveGitExecutable({
-              systemCommand: "git",
-              bundledPath: app.isPackaged
-                ? path.join(process.resourcesPath, "mingit", "cmd", "git.exe")
-                : path.join(app.getAppPath(), "resources", "mingit", "cmd", "git.exe"),
-            });
-            return resolvedGit;
+          resolveExecutable: resolveGitExecutableCached,
+        });
+
+        // 工作台：checkpoint 时间机器（git 变化防抖自动快照 + AI 回合结束快照）+ 工作区文件服务
+        const checkpoint = createCheckpointService({
+          getSession: chatsStore.getSession,
+          resolveExecutable: resolveGitExecutableCached,
+          // 任何来源的快照落盘后都广播一次，工作台时间线据此自动刷新
+          onSnapshot: (entry) => {
+            for (const win of BrowserWindow.getAllWindows()) {
+              if (!win.isDestroyed()) {
+                win.webContents.send(IPC.WORKBENCH_CHECKPOINT_CHANGED, { sessionId: entry.sessionId });
+              }
+            }
           },
         });
+        git.onChanged(({ sessionId }) => checkpoint.notifyActivity(sessionId));
+        const workspaceFiles = createWorkspaceFileService({ getSession: chatsStore.getSession });
 
         // LSP：管理器预创建；具体语言服务进程按需启动
         const lsp = new LspManager({
@@ -359,6 +379,8 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           embedding: embeddingIndexService,
           proactive: proactiveLifecycle,
           git,
+          checkpoint,
+          workspaceFiles,
           lsp,
           screenshot,
           music,
@@ -491,6 +513,7 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         registerChatsIpc(ipc);
         registerMomentsIpc(ipc);
         registerCodeGitIpc({ ipc, service: services.git });
+        registerWorkbenchIpc({ ipc, checkpoint: services.checkpoint, files: services.workspaceFiles });
 
         // AG-UI 事件流桥：渲染进程 invoke(AGUI_RUN) → CyreneAgent 跑 Agent 循环 → 事件透传
         registerAgUiIpc(

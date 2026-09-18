@@ -1,10 +1,14 @@
 .cy-message-list {
-  /* Leave room for the floating Todo/Git card on wide desktop windows. */
-  --cy-message-reading-width: min(100%, clamp(640px, calc(100vw - 560px), 1120px));
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: 28px;
+}
+
+/* 昔涟一侧（正文/思考/工具/活动卡等，不含系统消息）占满整个聊天宽度：
+   去掉 antd-x 给 start 气泡默认预留的 15% 右侧空白；用户消息（end）仍保留气泡惯例。 */
+.cy-message-list .ant-bubble-list .ant-bubble-start.cy-message:not(.ant-bubble-divider):not(.ant-bubble-system) {
+  padding-inline-end: 0;
 }
 
 .cy-message-list .ant-bubble-list {
@@ -190,14 +194,21 @@
   box-shadow: var(--cy-shadow-bubble-neutral);
 }
 
+/* 正文默认按内容收拢（短回复不变成整条灰条），宽度上限放到聊天区全宽；
+   含代码块/公式/表格时由下方 :has(...) 规则显式拉满。 */
 .cy-message--assistant .ant-bubble-body {
   min-width: 0;
-  max-width: var(--cy-message-reading-width);
+  max-width: 100%;
+}
+
+/* 头像已不渲染：兜底确保不残留占位（与工具/活动卡等同侧角色一致） */
+.cy-message--assistant .ant-bubble-avatar {
+  display: none;
 }
 
 .cy-message--reasoning {
-  width: var(--cy-message-reading-width);
-  max-width: var(--cy-message-reading-width);
+  width: 100%;
+  max-width: none;
 }
 
 .cy-message--reasoning .ant-bubble-content {
@@ -208,8 +219,8 @@
 
 .cy-message--tool,
 .cy-message--review {
-  width: var(--cy-message-reading-width);
-  max-width: var(--cy-message-reading-width);
+  width: 100%;
+  max-width: none;
 }
 
 .cy-message--tool .ant-bubble-avatar,
@@ -234,8 +245,8 @@
 }
 
 .cy-message--waiting {
-  width: var(--cy-message-reading-width);
-  max-width: var(--cy-message-reading-width);
+  width: 100%;
+  max-width: none;
 }
 
 .cy-message--waiting .ant-bubble-avatar {
@@ -255,8 +266,8 @@
 }
 
 .cy-message--activity {
-  width: var(--cy-message-reading-width);
-  max-width: var(--cy-message-reading-width);
+  width: 100%;
+  max-width: none;
 }
 
 .cy-message--activity .ant-bubble-avatar {
@@ -1051,12 +1062,6 @@
   border-radius: 0;
   background: transparent;
   box-shadow: none;
-}
-
-/* 无气泡时不为可拖动的 Todo/Git 卡片预留阅读宽度；保留头像与固定右侧边距。 */
-:root[data-assistant-bubble="off"] .cy-message--assistant .ant-bubble-body {
-  width: calc(100% - 54px);
-  max-width: calc(100% - 54px);
 }
 
 .cy-message:hover .cy-copy-button,

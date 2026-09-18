@@ -17,8 +17,14 @@ import type { EarlyTtsPlaybackQueue } from "../../tts/early-tts-queue";
  */
 
 interface FakeApi extends AguiApi {
-  emit: (event: AguiEvent) => void;
+  emit: (event: TestAguiEvent) => void;
 }
+
+/**
+ * 测试事件：RUN_FINISHED 实际携带 result（{status}），但渲染桥的 AguiEvent
+ * 为协议事件的精简声明、未包含该字段。测试本地补上，不改生产接口。
+ */
+type TestAguiEvent = AguiEvent & { result?: { status: string } };
 
 /** 假桥：onEvent 注册监听器，run 返回测试控制的 ack，emit 广播事件。 */
 function createFakeApi(ack: { success: boolean; runId: string; error?: string }): FakeApi {
@@ -52,7 +58,9 @@ function createFakeStore() {
 function createRecordingHost() {
   let todoState: TodoStateBySession = {};
   const earlyTtsQueue = { append: vi.fn(), cancel: vi.fn() } as unknown as EarlyTtsPlaybackQueue;
-  const host: AgentRunHost & Record<string, ReturnType<typeof vi.fn>> = {
+  // 记录型宿主：AgentRunHost 的具名函数类型会压过 Record 索引签名，
+  // 测试要读 requestTakeover.mock.calls，故单独把它显式声明为 Mock。
+  const host = {
     patchMessage: vi.fn(),
     setInteraction: vi.fn(),
     clearInteraction: vi.fn(),
@@ -67,6 +75,9 @@ function createRecordingHost() {
     clearTakeover: vi.fn(),
     earlyTts: { start: vi.fn(() => earlyTtsQueue), finish: vi.fn() },
     onRunFinished: vi.fn(),
+  } as unknown as AgentRunHost & {
+    requestTakeover: ReturnType<typeof vi.fn>;
+    earlyTts: { start: ReturnType<typeof vi.fn>; finish: ReturnType<typeof vi.fn> };
   };
   return { host, earlyTtsQueue, readTodoState: () => todoState };
 }
@@ -158,6 +169,44 @@ describe("AgentRunController", () => {
         expect.objectContaining({ role: "user", content: "继续说" }),
       ],
     }));
+
+    api.emit(RUN_STARTED_EVENT);
+    api.emit({ type: "RUN_FINISHED", runId: "run-1", result: { status: "success" } });
+    await promise;
+  });
+
+  it("本轮临时上下文（工作台当前打开的文件）作为 attachments 传给主进程，且不落历史", async () => {
+    const api = createFakeApi({ success: true, runId: "run-1" });
+    const store = createFakeStore();
+    const { host } = createRecordingHost();
+    const context = [{
+      name: "src/main/foo.ts",
+      text: "[工作台当前打开的文件]\n路径（相对工作区根）：src/main/foo.ts",
+    }];
+    const input = createInput({ contextAttachments: context });
+    const { promise } = launch(input, { api, store, host, registries: createRegistries() });
+    await flush();
+
+    expect(api.run).toHaveBeenCalledWith(expect.objectContaining({ attachments: context }));
+    // 关键：上下文只进本轮 prompt，历史消息里仍只有用户原文
+    expect(api.run).toHaveBeenCalledWith(expect.objectContaining({
+      messages: [expect.objectContaining({ content: "你好" })],
+    }));
+
+    api.emit(RUN_STARTED_EVENT);
+    api.emit({ type: "RUN_FINISHED", runId: "run-1", result: { status: "success" } });
+    await promise;
+  });
+
+  it("没有本轮上下文时不携带 attachments 字段（不给主进程塞空数组）", async () => {
+    const api = createFakeApi({ success: true, runId: "run-1" });
+    const store = createFakeStore();
+    const { host } = createRecordingHost();
+    const { promise } = launch(createInput(), { api, store, host, registries: createRegistries() });
+    await flush();
+
+    const payload = (api.run as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>;
+    expect("attachments" in payload).toBe(false);
 
     api.emit(RUN_STARTED_EVENT);
     api.emit({ type: "RUN_FINISHED", runId: "run-1", result: { status: "success" } });

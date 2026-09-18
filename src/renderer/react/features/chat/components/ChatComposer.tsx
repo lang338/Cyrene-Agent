@@ -34,6 +34,8 @@ interface ChatComposerProps {
   onQueueMessage?: (value: string) => void;
   onRemoveQueuedMessage?: (id: string) => void;
   onChooseWorkspace: () => void;
+  /** 打开代码工作台（仅 work/code 模式由父级提供） */
+  onOpenWorkbench?: () => void;
   onChooseFiles: (files: File[]) => void;
   onRemoveAttachment: (index: number) => void;
   onScreenshot: () => void;
@@ -188,6 +190,16 @@ function ChevronIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>;
 }
 
+/** 代码工作台入口：尖括号对，沿用 footer 小图标的线条风格 */
+function WorkbenchIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <polyline points="16 18 22 12 16 6" />
+      <polyline points="8 6 2 12 8 18" />
+    </svg>
+  );
+}
+
 function ObsidianVaultIcon() {
   return (
     <svg className="cy-composer__obsidian-icon" height="1em" style={{ flex: "none", lineHeight: 1 }} viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -216,6 +228,7 @@ export function ChatComposer({
   onQueueMessage,
   onRemoveQueuedMessage,
   onChooseWorkspace,
+  onOpenWorkbench,
   onChooseFiles,
   onRemoveAttachment,
   onScreenshot,
@@ -403,6 +416,12 @@ export function ChatComposer({
             <ObsidianVaultIcon />
             <span>{workspaceName ?? t("composer.obsidianLibrary")}</span>
             <ChevronIcon />
+          </button>
+        )}
+        {onOpenWorkbench && (
+          <button type="button" className="cy-composer__footer-button" onClick={onOpenWorkbench} title={t("workbench.open")}>
+            <WorkbenchIcon />
+            <span>{t("workbench.open")}</span>
           </button>
         )}
         {supportsPlanToggle && conversationId && (

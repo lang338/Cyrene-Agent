@@ -3,6 +3,7 @@ import type {
   ChatSession,
   ChatSessionMeta,
   ConversationMode,
+  ConversationWorkspaceBinding,
   ToolFileChange,
 } from "../../../../../shared/chat-types";
 import type {
@@ -30,6 +31,8 @@ export interface ChatStoreApi {
   setModelProfile: (id: string, modelProfileId?: string) => Promise<ChatSession | null>;
   pickWorkspaceFolder: () => Promise<{ ok: boolean; path?: string; displayName?: string; error?: string }>;
   setWorkspace: (sessionId: string, workspaceRoot: string) => Promise<{ ok: boolean; error?: string; isEmpty?: boolean }>;
+  // main → 所有窗口：工作区绑定变更（binding 为 null 表示解绑）
+  onWorkspaceChanged: (callback: (payload: { sessionId: string; binding: ConversationWorkspaceBinding | null }) => void) => () => void;
   initLearnWorkspace: (sessionId: string) => Promise<{ ok: boolean; error?: string; created?: string[]; skipped?: string[] }>;
   openWorkspace: (workspaceRoot: string) => Promise<{ ok: boolean; error?: string }>;
   setActiveSession: (sessionId: string | null, mode?: ConversationMode) => Promise<unknown>;
@@ -74,6 +77,8 @@ export interface AguiApi {
     assistantTurnId: string;
     styleId?: string;
     sessionId: string;
+    /** 本轮临时文本上下文（如工作台当前打开的文件）；不落历史，拼进每轮尾部上下文。 */
+    attachments?: Array<{ name: string; text: string }>;
     imageAttachments?: Array<{ name: string; filePath: string; mime?: string }>;
     recoveryContext?: string;
     resumeFromRunId?: string;

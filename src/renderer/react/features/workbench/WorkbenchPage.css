@@ -1,0 +1,1128 @@
+/* 工作台全屏覆盖层：三栏可拖拽布局（文件树 | 代码/历史 | 对话流）。
+   z-index 900：低于 antd Modal（1000），保证回退确认弹窗浮在工作台之上。 */
+
+.cy-workbench {
+  /* 分隔线：主窗口是透明窗体 + .cy-page 自绘圆角；工作台被 portal 到 body，
+     在 .cy-page 之外，必须自己再画一次圆角，否则深色底会盖住窗口圆角、四角变直角。
+     内部各功能分区共用这两条亮线，避免整块深色糊成一团。 */
+  /* 分区线用 2px：1px 低透明线在深色底上几乎看不见（试过 1px/0.10，仍然糊） */
+  --cy-wb-line: rgba(255, 255, 255, 0.17);
+  --cy-wb-line-strong: rgba(255, 255, 255, 0.28);
+  --cy-wb-line-w: 2px;
+
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  border: var(--cy-wb-line-w) solid var(--cy-wb-line-strong);
+  border-radius: var(--cy-window-radius, 24px);
+  overflow: hidden;
+  background: #1b1d21;
+  color: #d4d4d4;
+  color-scheme: dark;
+}
+
+.cy-workbench--column-resizing,
+.cy-workbench--column-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/* ── 顶栏 ─────────────────────────────────────────────── */
+
+.cy-workbench__topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 42px;
+  padding: 0 0 0 12px;
+  background: #232529;
+  border-bottom: var(--cy-wb-line-w) solid var(--cy-wb-line-strong);
+  flex: none;
+  /* 工作台是全屏覆盖层、盖住了系统标题栏：顶栏承担拖拽移动窗口的职责 */
+  -webkit-app-region: drag;
+}
+
+.cy-workbench__topbar button {
+  -webkit-app-region: no-drag;
+}
+
+.cy-workbench__topbar-left,
+.cy-workbench__topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.cy-workbench__back {
+  background: none;
+  border: none;
+  color: #9aa0a8;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.cy-workbench__back:hover {
+  background: #2f3238;
+  color: #e8e8e8;
+}
+
+.cy-workbench__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e8e8e8;
+}
+
+.cy-workbench__error {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: #3a2626;
+  border: 1px solid #5c3535;
+  color: #e5a3a3;
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.cy-workbench__action {
+  background: #2f3238;
+  border: 1px solid #3c4046;
+  color: #d4d4d4;
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+  flex: none;
+}
+
+.cy-workbench__action:hover:not(:disabled) {
+  background: #3a3e45;
+}
+
+.cy-workbench__action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.cy-workbench__action.is-send {
+  background: #2f6feb;
+  border-color: #2f6feb;
+  color: #fff;
+}
+
+.cy-workbench__action.is-send:hover:not(:disabled) {
+  background: #3d7bf0;
+}
+
+.cy-workbench__action.is-stop {
+  background: #5c3535;
+  border-color: #7a4545;
+  color: #e5a3a3;
+}
+
+/* ── 窗口控制（Windows 风格扁平键） ───────────────────── */
+
+.cy-workbench__win-controls {
+  display: flex;
+  align-items: stretch;
+  height: 42px;
+}
+
+.cy-workbench__win-btn {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 42px;
+  border: none;
+  background: transparent;
+  color: #c4c7cc;
+  cursor: pointer;
+  border-radius: 0;
+  transition: background 0.12s, color 0.12s;
+}
+
+.cy-workbench__win-btn:hover {
+  background: #34373d;
+  color: #f0f0f0;
+}
+
+.cy-workbench__win-btn--close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+/* ── 三栏 ─────────────────────────────────────────────── */
+
+.cy-workbench__body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.cy-workbench__col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #1e2024;
+}
+
+.cy-workbench__col--left {
+  flex: none;
+  background: #1c1e22;
+  border-right: none;
+}
+
+/* 中栏吃剩余空间：左右两栏是像素宽度，窗口缩放由中栏先让位，天然不会把某一栏挤出窗口 */
+.cy-workbench__col--middle {
+  flex: 1 1 auto;
+  background: #1e2024;
+  /* 交互卡停靠位的定位上下文 */
+  position: relative;
+}
+
+/* ── 停靠在中栏右下角的交互卡（工具审批 / 向用户提问 / 小测验）──
+   贴着右栏边缘：浮在编辑器正中会挡住正在读的那几行代码。
+   固定宽度：卡片是"要不要继续"的决策点，宽度随窗口跳变会让人看漏按钮。
+   浮在编辑器之上而非挤占布局，避免审批弹出时编辑器整个重排。 */
+.cy-workbench__interaction-dock {
+  position: absolute;
+  right: 14px;
+  bottom: 26px;
+  z-index: 6;
+  width: 440px;
+  max-width: calc(100% - 28px);
+  max-height: min(64vh, 480px);
+  overflow-y: auto;
+}
+
+/* 卡片跟随停靠位宽度，不吃聊天页那条 min(100%, 770px) */
+.cy-workbench__interaction-dock .cy-interaction-panel {
+  width: 100%;
+}
+
+.cy-workbench__col--right {
+  flex: none;
+  background: #202226;
+}
+
+/* 收起后的展开箭头：贴边居中的小胶囊。
+   不做整条全高热区——那会盖住中栏编辑器的滚动条与行号槽，只在中间留一小段。 */
+.cy-workbench__reveal {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  display: flex;
+  width: 14px;
+  height: 72px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #9aa0a8;
+  cursor: pointer;
+  opacity: 0.55;
+  transform: translateY(-50%);
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+
+.cy-workbench__reveal--left { left: 2px; }
+.cy-workbench__reveal--right { right: 2px; }
+
+.cy-workbench__reveal:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #e8e8e8;
+  opacity: 1;
+}
+
+.cy-workbench__reveal:focus-visible {
+  outline: 2px solid #2f6feb;
+  outline-offset: -2px;
+}
+
+.cy-workbench__col-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: #9aa0a8;
+  background: #202329;
+  border-bottom: var(--cy-wb-line-w) solid var(--cy-wb-line);
+  flex: none;
+}
+
+.cy-workbench__col-header--tabs {
+  padding: 0 6px;
+}
+
+.cy-workbench__col-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* 列间隔：保留 5px 命中区，视觉上收成 1px 亮线，拖动时整条高亮 */
+.cy-workbench__resizer {
+  position: relative;
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  flex: none;
+  transition: background 0.15s;
+}
+
+/* 命中区加宽：5px 对鼠标太苛刻（可见线只有 2px，左右两边又都是可点区域，
+   偏一两像素就落到文件树或编辑器上，表现为"点不到"）。用伪元素向两侧各扩 3px，
+   总命中宽度 11px——不参与 flex 布局计算，因此不用改 use-resizable-columns 的 RESIZER_TOTAL。
+   命中区一宽，col-resize 光标和 hover 变蓝就会提前出现，用户才找得到这条缝。 */
+.cy-workbench__resizer::before {
+  content: "";
+  position: absolute;
+  inset: 0 -3px;
+}
+
+.cy-workbench__resizer::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 50%;
+  width: var(--cy-wb-line-w);
+  background: var(--cy-wb-line);
+  /* 居中对齐：宽度变化时用半宽反向位移，始终压在中线上 */
+  transform: translateX(calc(var(--cy-wb-line-w) / -2));
+  transition: background 0.15s, width 0.15s, transform 0.15s;
+}
+
+.cy-workbench__resizer:hover {
+  background: rgba(47, 111, 235, 0.12);
+}
+
+.cy-workbench__resizer:hover::after {
+  width: 3px;
+  transform: translateX(-1.5px);
+  background: #2f6feb;
+}
+
+/* 键盘焦点：这条缝只有 5px 宽，没有明显焦点环键盘用户会找不到自己在哪 */
+.cy-workbench__resizer:focus-visible {
+  outline: 2px solid #2f6feb;
+  outline-offset: -1px;
+  background: rgba(47, 111, 235, 0.12);
+}
+
+.cy-workbench__resizer:focus-visible::after {
+  width: 3px;
+  transform: translateX(-1.5px);
+  background: #2f6feb;
+}
+
+/* ── 中栏页签 ─────────────────────────────────────────── */
+
+.cy-workbench__tab {
+  background: none;
+  border: none;
+  color: #9aa0a8;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.cy-workbench__tab:hover {
+  color: #e8e8e8;
+  background: #2f3238;
+}
+
+.cy-workbench__tab.is-active {
+  color: #e8e8e8;
+  background: #2f3238;
+}
+
+.cy-workbench__save {
+  margin-left: auto;
+}
+
+/* ── 文件页签条 ───────────────────────────────────────── */
+
+.cy-workbench__editor-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.cy-workbench__file-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px 6px;
+  border-bottom: var(--cy-wb-line-w) solid var(--cy-wb-line);
+  flex: none;
+  max-height: 64px;
+  overflow-y: auto;
+}
+
+.cy-workbench__file-tab {
+  display: inline-flex;
+  align-items: center;
+  background: #232529;
+  border: 1px solid var(--cy-wb-line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.cy-workbench__file-tab.is-active {
+  border-color: #2f6feb;
+  background: #262a33;
+}
+
+.cy-workbench__file-tab-name {
+  background: none;
+  border: none;
+  color: #c9cdd4;
+  font-size: 12px;
+  padding: 3px 6px 3px 10px;
+  cursor: pointer;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cy-workbench__file-tab-close {
+  background: none;
+  border: none;
+  color: #6d737b;
+  font-size: 13px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.cy-workbench__file-tab-close:hover {
+  color: #e8e8e8;
+}
+
+/* ── 路径栏（文件页签下方：显示当前文件路径，可直接改路径跳转） ──
+   刻意不画框、不自己画分隔线：它只是页签条下面的一行路径文字，
+   再包一层边框看起来就成了"另一个输入区"，比文件名栏还抢眼。 */
+
+.cy-workbench__path-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 0 6px 4px;
+}
+
+.cy-workbench__path-input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #a3a9b1;
+  /* 路径按等宽字体读更省力（对齐、区分 l/1/I），沿用 CodeHighlighter 的字族回退链 */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+/* 悬停/聚焦都只在原地加深一点底色：既给出"这行能改"的反馈，又不引入框线 */
+.cy-workbench__path-input:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.cy-workbench__path-input:focus {
+  outline: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8e8e8;
+}
+
+.cy-workbench__path-input::placeholder {
+  color: #6d737b;
+}
+
+/* 没有框线可用，用字色表达"这条路径打不开" */
+.cy-workbench__path-input.is-invalid {
+  color: #e5a3a3;
+}
+
+.cy-workbench__path-error {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #e5a3a3;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cy-workbench__editor-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6d737b;
+  font-size: 13px;
+}
+
+.cy-workbench__editor-empty.is-error {
+  color: #e5a3a3;
+}
+
+.cy-workbench__editor-notice {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #d8b26a;
+  background: #322b1e;
+  border-bottom: var(--cy-wb-line-w) solid var(--cy-wb-line);
+  flex: none;
+}
+
+/* 跟随昔涟被未保存改动挡下：只告知，不覆盖用户手里的草稿 */
+.cy-workbench__editor-notice.is-blocked {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #e5a3a3;
+  background: #3a2626;
+}
+
+.cy-workbench__editor-notice.is-blocked button {
+  flex: none;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* Monaco 容器撑满剩余空间 */
+.cy-workbench__editor-body .cy-monaco-fill {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── 左栏文件树（VS Code/Trae 风格：紧凑行 + 缩进引导线 + 类型图标） ── */
+
+.cy-workbench-tree {
+  padding: 4px 0 8px;
+  font-size: 13px;
+}
+
+.cy-workbench-tree__row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  height: 22px;
+  background: none;
+  border: none;
+  color: #c8ccd3;
+  font-size: 13px;
+  line-height: 22px;
+  text-align: left;
+  /* 每层缩进 8px；箭头和图标各 16px，故文件/目录名天然对齐 */
+  padding: 0 8px 0 calc(8px + var(--tree-depth, 0) * 8px);
+  cursor: pointer;
+  user-select: none;
+}
+
+.cy-workbench-tree__row:hover {
+  background: #282b31;
+}
+
+.cy-workbench-tree__row.is-active {
+  background: #2f4360;
+  color: #f2f4f8;
+}
+
+.cy-workbench-tree__twisty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: #7e858f;
+}
+
+.cy-workbench-tree__row.is-open .cy-workbench-tree__twisty svg {
+  transform: rotate(90deg);
+}
+
+.cy-workbench-tree__twisty svg {
+  transition: transform 0.12s ease;
+}
+
+/* 类型图标固定 16px，彩色徽标本身是 16x16 的 svg */
+.cy-workbench-tree__row > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.cy-workbench-tree__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 缩进引导线：相对行定位，贯通整行高度，落在每一级箭头的正中 */
+.cy-workbench-tree__guides {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.cy-workbench-tree__guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.cy-workbench-tree__error,
+.cy-workbench-tree__empty,
+.cy-workbench-history__error,
+.cy-workbench-history__empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #6d737b;
+}
+
+.cy-workbench-tree__error,
+.cy-workbench-history__error {
+  color: #e5a3a3;
+}
+
+/* ── 历史时间线 ───────────────────────────────────────── */
+
+.cy-workbench-history {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.cy-workbench-history__list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 4px;
+  border-bottom: var(--cy-wb-line-w) solid var(--cy-wb-line);
+  flex: none;
+  max-height: 40%;
+  overflow-y: auto;
+}
+
+.cy-workbench-history__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+
+.cy-workbench-history__item:hover {
+  background: #2a2d33;
+}
+
+.cy-workbench-history__item.is-selected {
+  background: #2b3550;
+}
+
+.cy-workbench-history__open {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  color: #c9cdd4;
+  font-size: 12px;
+  padding: 4px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.cy-workbench-history__open time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cy-workbench-history__kind {
+  flex: none;
+  font-size: 11px;
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: #2f3238;
+  color: #9aa0a8;
+}
+
+.cy-workbench-history__kind.is-manual {
+  background: #243a5e;
+  color: #8db4f5;
+}
+
+.cy-workbench-history__kind.is-pre-restore {
+  background: #3a2d24;
+  color: #d8b26a;
+}
+
+.cy-workbench-history__restore {
+  flex: none;
+  background: none;
+  border: 1px solid #3c4046;
+  color: #9aa0a8;
+  font-size: 11px;
+  border-radius: 5px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.cy-workbench-history__restore:hover:not(:disabled) {
+  color: #e8e8e8;
+  border-color: #565b63;
+}
+
+.cy-workbench-history__restore:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.cy-workbench-history__detail {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px;
+}
+
+.cy-workbench-history__summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #9aa0a8;
+  padding-bottom: 6px;
+}
+
+.cy-workbench-history__summary em {
+  color: #d8b26a;
+  font-style: normal;
+}
+
+.cy-workbench-diff__ins { color: #7dc47d; }
+.cy-workbench-diff__del { color: #e58a8a; }
+
+.cy-workbench-diff__files {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  font-size: 12px;
+}
+
+.cy-workbench-diff__files li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.cy-workbench-diff__files code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #c9cdd4;
+  background: none;
+}
+
+.cy-workbench-diff {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  background: #16171a;
+  border: 1px solid var(--cy-wb-line);
+  border-radius: 8px;
+  padding: 8px;
+  overflow: auto;
+  white-space: pre;
+}
+
+.cy-workbench-diff__line { color: #8a9099; }
+.cy-workbench-diff__line.is-add { color: #7dc47d; background: rgba(125, 196, 125, 0.08); }
+.cy-workbench-diff__line.is-del { color: #e58a8a; background: rgba(229, 138, 138, 0.08); }
+.cy-workbench-diff__line.is-hunk { color: #7aa5d8; }
+.cy-workbench-diff__line.is-meta { color: #5c626b; }
+
+/* ── 回退确认弹窗（antd Modal 局部样式） ──────────────── */
+
+.cy-workbench-modal__hint {
+  font-size: 13px;
+  color: #d4d4d4;
+}
+
+.cy-workbench-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.cy-workbench-modal__actions button {
+  border-radius: 6px;
+  padding: 5px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  background: #2f3238;
+  border: 1px solid #3c4046;
+  color: #d4d4d4;
+}
+
+.cy-workbench-modal__actions button.is-primary {
+  background: #2f6feb;
+  border-color: #2f6feb;
+  color: #fff;
+}
+
+/* ── 右栏对话流 ───────────────────────────────────────── */
+
+.cy-workbench__chat-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.cy-workbench__chat-body > .cy-message-list,
+.cy-workbench__chat-body > div:not(.cy-workbench__chat-composer):not(.cy-workbench__chat-empty) {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.cy-workbench__chat-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6d737b;
+  font-size: 13px;
+}
+
+/* "带上当前文件"开关：把"这一轮发了什么上下文"显式告诉用户，避免黑箱感 */
+.cy-workbench__context-chip {
+  display: inline-flex;
+  align-self: flex-start;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--cy-wb-line);
+  border-radius: 999px;
+  background: transparent;
+  color: #8a9099;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.cy-workbench__context-chip > span.cy-workbench__context-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: #5b6169;
+  transition: background 0.15s;
+}
+
+.cy-workbench__context-chip.is-on {
+  border-color: rgba(47, 111, 235, 0.55);
+  background: rgba(47, 111, 235, 0.14);
+  color: #a9c6f7;
+}
+
+.cy-workbench__context-chip.is-on > span.cy-workbench__context-dot {
+  background: #4d8bf5;
+}
+
+.cy-workbench__context-chip:hover:not(:disabled) {
+  color: #d4d4d4;
+  border-color: var(--cy-wb-line-strong);
+}
+
+.cy-workbench__context-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cy-workbench__chat-composer {
+  flex: none;
+  border-top: var(--cy-wb-line-w) solid var(--cy-wb-line);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #232529;
+}
+
+.cy-workbench__chat-input {
+  width: 100%;
+  min-height: 56px;
+  max-height: 140px;
+  resize: vertical;
+  background: #1b1d21;
+  border: 1px solid var(--cy-wb-line);
+  border-radius: 8px;
+  color: #d4d4d4;
+  font-size: 13px;
+  font-family: inherit;
+  padding: 8px 10px;
+  box-sizing: border-box;
+}
+
+.cy-workbench__chat-input:focus {
+  outline: none;
+  border-color: #2f6feb;
+}
+
+.cy-workbench__chat-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── 右栏对话流紧凑布局 ─────────────────────────────────
+   ChatMessageList 的留白是为宽大主窗口调的（列表 padding 28px）。在可拖窄的工作台侧栏里
+   会显得过松，这里只在工作台作用域内收紧；昔涟一侧的 15% 预留与阅读宽度已在全局移除。 */
+.cy-workbench .cy-message-list {
+  padding: 10px 8px 14px;
+}
+
+/* 用户消息（end）侧仍有 antd-x 默认的 15% 预留，侧栏里还回去 */
+.cy-workbench .ant-bubble-list .ant-bubble-end:not(.ant-bubble-divider):not(.ant-bubble-system) {
+  padding-inline-start: 0;
+}
+
+/* 滚动内容层两侧的 XS padding 与列表 padding 重复 */
+.cy-workbench .ant-bubble-list-scroll-content {
+  padding-inline: 0;
+}
+
+/* 头像与正文之间的间距收一档 */
+.cy-workbench .cy-message .ant-bubble {
+  column-gap: 8px;
+}
+
+/* ── 右栏对话流深色适配 ─────────────────────────────────
+   ChatMessageList 复用自主窗口，整套样式按浅色背景设计（正文 --cy-text: #1d1d1f，
+   且昔涟气泡默认关闭、透明底裸排文字）。直接放进深色工作台会近黑字贴深底、几乎不可见。
+   这里只做工作台作用域内的局部深色化：覆盖"直接贴在面板上"的文字与代码面；
+   自带浅色卡片的组件（文件改动卡、Review 面板等）保持原样不动。 */
+
+/* 昔涟正文气泡：跟随系统气泡开关——开启时给深色气泡，关闭时透明底浅字 */
+.cy-workbench .cy-message--assistant .ant-bubble-content {
+  background: #2a2d33;
+  border: 1px solid #3a3e45;
+  color: #d7dade;
+  box-shadow: none;
+  /* 全局 12px 16px 在窄栏里偏宽，收一档 */
+  padding: 10px 12px;
+}
+
+/* 特异性需压过全局 :root[data-assistant-bubble="off"] 规则（0,4,0），保持无气泡外观 */
+:root[data-assistant-bubble="off"] .cy-workbench .cy-message--assistant .ant-bubble-content {
+  background: transparent;
+  border: 0;
+  color: #d7dade;
+}
+
+/* 气泡内 Markdown 小元素 */
+.cy-workbench .cy-message--assistant .cy-message-markdown :not(pre) > code,
+.cy-workbench .cy-run-activity__process .cy-message-markdown :not(pre) > code {
+  background: rgb(255 255 255 / 10%);
+  color: #f097b8;
+}
+
+.cy-workbench .cy-message--assistant .cy-message-markdown blockquote {
+  border-left-color: #4a4f58;
+  color: #9aa0a8;
+}
+
+/* 代码块（antd-x CodeHighlighter）深色化。
+   注意：组件即使传 prismLightMode={false}，配色仍硬编码 oneLight（浅色白底），
+   且 prism 把颜色以内联 style 注入到 pre/code/token span 上，这里必须 !important 覆盖。
+   主窗口是浅色主题，保持原样不动。 */
+.cy-workbench .ant-code-highlighter-header {
+  background: #262a31;
+  color: #9aa0a8;
+}
+
+.cy-workbench .ant-code-highlighter-header-title {
+  color: #7e858f;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.cy-workbench .ant-code-highlighter-code {
+  background: #16181d;
+  border-color: #34383f;
+}
+
+/* 复制按钮颜色 inherit 自 header；补一个深底下的悬停反馈 */
+.cy-workbench .ant-actions-copy:hover {
+  color: #e8e8e8 !important;
+  background: rgb(255 255 255 / 8%);
+}
+
+/* 代码容器：去白底、窄栏折行（长路径/长 URL 不再撑出横向滚动条）、收紧行距 */
+.cy-workbench .ant-code-highlighter-code pre[class*="language-"],
+.cy-workbench .ant-code-highlighter-code code[class*="language-"] {
+  background: transparent !important;
+  color: #d7dade !important;
+  text-shadow: none !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+/* prism token：oneDark 调色板（全部以内联样式注入，故 !important） */
+.cy-workbench .ant-code-highlighter-code .token.comment,
+.cy-workbench .ant-code-highlighter-code .token.prolog,
+.cy-workbench .ant-code-highlighter-code .token.doctype,
+.cy-workbench .ant-code-highlighter-code .token.cdata {
+  color: #7f848e !important;
+}
+
+.cy-workbench .ant-code-highlighter-code .token.punctuation {
+  color: #abb2bf !important;
+}
+
+.cy-workbench .ant-code-highlighter-code .token.property,
+.cy-workbench .ant-code-highlighter-code .token.tag,
+.cy-workbench .ant-code-highlighter-code .token.constant,
+.cy-workbench .ant-code-highlighter-code .token.symbol,
+.cy-workbench .ant-code-highlighter-code .token.deleted,
+.cy-workbench .ant-code-highlighter-code .token.variable {
+  color: #e06c75 !important;
+}
+
+.cy-workbench .ant-code-highlighter-code .token.boolean,
+.cy-workbench .ant-code-highlighter-code .token.number {
+  color: #d19a66 !important;
+}
+
+.cy-workbench .ant-code-highlighter-code .token.selector,
+.cy-workbench .ant-code-highlighter-code .token.attr-name,
+.cy-workbench .ant-code-highlighter-code .token.string,
+.cy-workbench .ant-code-highlighter-code .token.char,
+.cy-workbench .ant-code-highlighter-code .token.builtin,
+.cy-workbench .ant-code-highlighter-code .token.inserted {
+  color: #98c379 !important;
+}
+
+.cy-workbench .ant-code-highlighter-code .token.operator,
+.cy-workbench .ant-code-highlighter-code .token.entity,
+.cy-workbench .ant-code-highlighter-code .token.url,
+.cy-workbench .ant-code-highlighter-code .language-css .token.string,
+.cy-workbench .ant-code-highlighter-code .style .token.string,
+.cy-workbench .ant-code-highlighter-code .token.regex,
+.cy-workbench .ant-code-highlighter-code .token.important,
+.cy-workbench .ant-code-highlighter-code .token.atrule,
+.cy-workbench .ant-code-highlighter-code .token.attr-value,
+.cy-workbench .ant-code-highlighter-code .token.keyword {
+  color: #c678dd !important;
+}
+
+.cy-workbench .ant-code-highlighter-code .token.function,
+.cy-workbench .ant-code-highlighter-code .token.class-name {
+  color: #61afef !important;
+}
+
+.cy-workbench .cy-message--assistant .cy-message-markdown th,
+.cy-workbench .cy-message--assistant .cy-message-markdown td {
+  border-color: #3a3e45;
+}
+
+/* 运行状态行 / 思考块 / 过程消息：浅主题下用近黑色文字，统一抬亮 */
+.cy-workbench .cy-run-activity__header,
+.cy-workbench .cy-agent-round__header,
+.cy-workbench .cy-message-reasoning,
+.cy-workbench .cy-message-reasoning .ant-think-status-wrapper,
+.cy-workbench .cy-message-reasoning .ant-think-status-text,
+.cy-workbench .cy-message--system,
+.cy-workbench .cy-model-wait,
+.cy-workbench .cy-run-activity__empty {
+  color: #c9cdd4;
+}
+
+.cy-workbench .cy-run-activity__header:hover,
+.cy-workbench .cy-agent-round__header:hover {
+  color: #f097b8;
+}
+
+.cy-workbench .cy-message-reasoning .cy-message-markdown,
+.cy-workbench .cy-run-activity__process {
+  color: #9aa0a8;
+}
+
+.cy-workbench .cy-run-activity__process {
+  border-left-color: rgb(141 180 245 / 45%);
+}
+
+/* 状态小点（--uib-color 原为深海军蓝 #183153，深底上不可见） */
+.cy-workbench .cy-dot-spinner {
+  --uib-color: #8db4f5;
+}
+
+.cy-workbench .cy-dot-spinner__dot::before {
+  box-shadow: 0 0 8px rgb(141 180 245 / 35%);
+}
+
+/* 工具调用 ThoughtChain：antd-x 浅色 token 标题/描述 */
+.cy-workbench .ant-thought-chain-item-title,
+.cy-workbench .ant-thought-chain-item-description {
+  color: #c9cdd4;
+}
+
+.cy-workbench .cy-tool-executions__detail {
+  border-color: rgb(255 255 255 / 14%);
+  background: rgb(255 255 255 / 8%);
+  color: #d3a6bd;
+}
+
+.cy-workbench .cy-tool-executions__result,
+.cy-workbench .cy-message-markdown-fallback {
+  border-color: #2f3238;
+  background: #16171a;
+  color: #aab0ba;
+}
+
+/* 消息操作按钮（复制/语音等 antd 图标按钮浅色 token 偏黑） */
+.cy-workbench .cy-message-actions .cy-copy-button {
+  color: #9aa0a8;
+}
+
+.cy-workbench .cy-message-actions .cy-copy-button:hover {
+  color: #e8e8e8;
+  background: #2f3238;
+}

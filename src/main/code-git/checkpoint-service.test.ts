@@ -1,0 +1,578 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import type { ChatSession } from "../../shared/chat-types";
+import type { ResolvedGitExecutable } from "./git-executable";
+import {
+  buildInitPreflightMessage,
+  buildRestoreConflictMessage,
+  computeFilesToDelete,
+  createCheckpointService,
+  mapWithConcurrency,
+  splitNulOutput,
+  type CheckpointGitClient,
+  type CheckpointLogRecord,
+  type CheckpointStat,
+} from "./checkpoint-service";
+
+const EXECUTABLE: ResolvedGitExecutable = { command: "git", source: "system", version: "2.51.0" };
+
+function fakeSession(workspaceRoot = "D:/ws"): ChatSession {
+  return {
+    mode: "code",
+    workspaceBinding: { workspaceRoot, displayName: "ws" },
+  } as unknown as ChatSession;
+}
+
+interface FakeChainRecord {
+  hash: string;
+  tree: string;
+  message: string;
+  timestamp: string;
+}
+
+interface FakeClientOptions {
+  last?: { hash: string; tree: string } | null;
+  nextTree?: string;
+  log?: CheckpointLogRecord[];
+  treeFiles?: string[];
+  workspaceFiles?: string[];
+  ignoredConflicts?: string[];
+}
+
+function createFakeClient(options: FakeClientOptions = {}) {
+  const calls: Array<{ op: string; args?: unknown[] }> = [];
+  let committed = 0;
+  const client: CheckpointGitClient = {
+    lastCheckpoint: vi.fn(async () => options.last ?? null),
+    writeWorkspaceTree: vi.fn(async () => options.nextTree ?? `tree-${(options.last?.tree ?? "base")}-${committed}`),
+    commitTree: vi.fn(async (tree, parentHash, message) => {
+      committed += 1;
+      calls.push({ op: "commitTree", args: [tree, parentHash, message] });
+      return `hash-${committed}`;
+    }),
+    updateRef: vi.fn(async () => undefined),
+    log: vi.fn(async () => options.log ?? []),
+    diffWithParent: vi.fn(async (): Promise<CheckpointStat> => ({
+      files: [{ file: "a.ts", insertions: 3, deletions: 1 }],
+      insertions: 3,
+      deletions: 1,
+      truncated: false,
+      patch: "diff",
+    })),
+    checkoutTree: vi.fn(async () => undefined),
+    listTreeFiles: vi.fn(async () => options.treeFiles ?? []),
+    findIgnoredCollisions: vi.fn(async () => options.ignoredConflicts ?? []),
+    listWorkspaceFiles: vi.fn(async () => options.workspaceFiles ?? []),
+    deleteWorkspaceFiles: vi.fn(async () => undefined),
+  };
+  return { client, calls };
+}
+
+function createDeps(client: CheckpointGitClient, extra: Partial<Parameters<typeof createCheckpointService>[0]> = {}) {
+  return {
+    getSession: vi.fn(() => fakeSession()),
+    resolveExecutable: vi.fn(async () => EXECUTABLE),
+    createClient: vi.fn(() => client),
+    ...extra,
+  };
+}
+
+describe("checkpoint-service", () => {
+  it("首次快照：commitTree 无 parent 并更新 ref", async () => {
+    const { client, calls } = createFakeClient({ last: null, nextTree: "tree-1" });
+    const service = createCheckpointService(createDeps(client));
+    const entry = await service.snapshot("s1", "auto");
+    expect(entry).toMatchObject({ hash: "hash-1", kind: "auto", files: 1, insertions: 3, deletions: 1 });
+    expect(calls[0]).toEqual({ op: "commitTree", args: ["tree-1", null, expect.stringContaining("checkpoint") ] });
+  });
+
+  it("链式快照：parent 指向链顶", async () => {
+    const { client, calls } = createFakeClient({ last: { hash: "prev", tree: "tree-old" }, nextTree: "tree-new" });
+    const service = createCheckpointService(createDeps(client));
+    await service.snapshot("s1", "manual");
+    expect(calls[0].args?.[1]).toBe("prev");
+  });
+
+  it("内容无变化时跳过快照", async () => {
+    const { client } = createFakeClient({ last: { hash: "prev", tree: "same" }, nextTree: "same" });
+    const service = createCheckpointService(createDeps(client));
+    const entry = await service.snapshot("s1", "auto");
+    expect(entry).toBeNull();
+  });
+
+  it("快照落盘后通知 onSnapshot；无变化时不通知", async () => {
+    const onSnapshot = vi.fn();
+    const { client } = createFakeClient({ last: null, nextTree: "tree-1" });
+    const service = createCheckpointService(createDeps(client, { onSnapshot }));
+    const entry = await service.snapshot("s1", "auto");
+    expect(onSnapshot).toHaveBeenCalledTimes(1);
+    expect(onSnapshot).toHaveBeenCalledWith(entry);
+
+    const unchanged = createFakeClient({ last: { hash: "prev", tree: "same" }, nextTree: "same" });
+    const silent = vi.fn();
+    const serviceForUnchanged = createCheckpointService(createDeps(unchanged.client, { onSnapshot: silent }));
+    expect(await serviceForUnchanged.snapshot("s1", "auto")).toBeNull();
+    expect(silent).not.toHaveBeenCalled();
+  });
+
+  it("onSnapshot 抛错不影响快照结果", async () => {
+    const { client } = createFakeClient({ last: null, nextTree: "tree-1" });
+    const warn = vi.fn();
+    const service = createCheckpointService(createDeps(client, {
+      warn,
+      onSnapshot: () => {
+        throw new Error("broadcast down");
+      },
+    }));
+    const entry = await service.snapshot("s1", "auto");
+    expect(entry).toMatchObject({ hash: "hash-1" });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("快照通知失败"));
+  });
+
+  it("并发快照串行执行：第二次读到第一次的链顶，不产生分叉", async () => {
+    let tip: { hash: string; tree: string } | null = null;
+    let seq = 0;
+    const { client, calls } = createFakeClient();
+    (client.lastCheckpoint as ReturnType<typeof vi.fn>).mockImplementation(async () => tip);
+    (client.writeWorkspaceTree as ReturnType<typeof vi.fn>).mockImplementation(async () => `tree-${++seq}`);
+    (client.commitTree as ReturnType<typeof vi.fn>).mockImplementation(
+      async (tree: string, parentHash: string | null) => {
+        calls.push({ op: "commitTree", args: [tree, parentHash] });
+        const hash = `hash-${seq}`;
+        tip = { hash, tree };
+        return hash;
+      },
+    );
+
+    const service = createCheckpointService(createDeps(client));
+    await Promise.all([service.snapshot("s1", "auto"), service.snapshot("s1", "auto")]);
+
+    // 没有串行化时两次都会读到同一个链顶（parent 都是 null），时间线上出现分叉
+    expect(calls.map((call) => call.args?.[1])).toEqual([null, "hash-1"]);
+  });
+
+  it("notifyActivity 防抖后自动快照，失败只告警不抛出", async () => {
+    vi.useFakeTimers();
+    try {
+      const { client } = createFakeClient({ last: null, nextTree: "tree-1" });
+      const warn = vi.fn();
+      const service = createCheckpointService({ ...createDeps(client), warn });
+      (client.writeWorkspaceTree as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("boom"));
+      service.notifyActivity("s1");
+      service.notifyActivity("s1"); // 重置防抖
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect((client.writeWorkspaceTree as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+      await vi.advanceTimersByTimeAsync(2);
+      expect((client.writeWorkspaceTree as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+      // 第二轮：这次 writeWorkspaceTree 正常，快照成功
+      service.notifyActivity("s1");
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect((client.updateRef as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("list 解析 message 中的 kind 与 sessionId", async () => {
+    const { client } = createFakeClient({
+      log: [
+        { hash: "h1", timestamp: "2026-09-15T10:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+        { hash: "h2", timestamp: "2026-09-15T09:00:00.000Z", message: "checkpoint\u001fpre-restore\u001f-" },
+      ],
+    });
+    const service = createCheckpointService(createDeps(client));
+    const entries = await service.list("s1");
+    expect(entries[0]).toMatchObject({ hash: "h1", kind: "auto", sessionId: "s9" });
+    expect(entries[1]).toMatchObject({ hash: "h2", kind: "pre-restore", sessionId: null });
+  });
+
+  it("diff：链中条目 fromHash 指向下一条（更早的快照）", async () => {
+    const h1 = "1".repeat(40);
+    const h0 = "0".repeat(40);
+    const { client } = createFakeClient({
+      log: [
+        { hash: h1, timestamp: "2026-09-15T10:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+        { hash: h0, timestamp: "2026-09-15T09:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+      ],
+    });
+    const service = createCheckpointService(createDeps(client));
+    const diff = await service.diff("s1", h1);
+    expect(diff).toMatchObject({ fromHash: h0, toHash: h1, insertions: 3 });
+  });
+
+  it("diff：不在链上的 hash 拒绝", async () => {
+    const { client } = createFakeClient({ log: [] });
+    const service = createCheckpointService(createDeps(client));
+    await expect(service.diff("s1", "a".repeat(40))).rejects.toThrow("快照不存在");
+  });
+
+  it("diff：hash 格式不合法直接拒绝", async () => {
+    const { client } = createFakeClient({ log: [] });
+    const service = createCheckpointService(createDeps(client));
+    await expect(service.diff("s1", "HEAD; rm -rf")).rejects.toThrow("快照标识不合法");
+  });
+
+  it("restore：先打 pre-restore 快照，再恢复并删除多余文件", async () => {
+    const hashOld = "0".repeat(40);
+    const { client } = createFakeClient({
+      last: { hash: "top", tree: "tree-top" },
+      nextTree: "tree-backup",
+      log: [
+        { hash: "top".padEnd(40, "a"), timestamp: "2026-09-15T10:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+        { hash: hashOld, timestamp: "2026-09-15T09:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+      ],
+      treeFiles: ["keep.ts"],
+      workspaceFiles: ["keep.ts", "stale.ts"],
+    });
+    const service = createCheckpointService(createDeps(client));
+    const result = await service.restore("s1", hashOld);
+    expect(result.preRestoreHash).toBe("hash-1"); // pre-restore 快照
+    expect(result.restoredHash).toBe(hashOld);
+    expect((client.checkoutTree as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe(hashOld);
+    expect((client.deleteWorkspaceFiles as ReturnType<typeof vi.fn>).mock.calls[0][0]).toEqual(["stale.ts"]);
+  });
+
+  it("restore：目标不在链上拒绝且不打快照", async () => {
+    const { client } = createFakeClient({ log: [] });
+    const service = createCheckpointService(createDeps(client));
+    await expect(service.restore("s1", "b".repeat(40))).rejects.toThrow("快照不存在");
+    expect((client.writeWorkspaceTree as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it("restore：存在被忽略的同名文件时中止，点名且零副作用", async () => {
+    const hashOld = "0".repeat(40);
+    const { client } = createFakeClient({
+      last: { hash: "top", tree: "tree-top" },
+      nextTree: "tree-backup",
+      log: [
+        { hash: "top".padEnd(40, "a"), timestamp: "2026-09-15T10:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+        { hash: hashOld, timestamp: "2026-09-15T09:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+      ],
+      ignoredConflicts: ["secret.local.txt", "密钥.env"],
+    });
+    const service = createCheckpointService(createDeps(client));
+    await expect(service.restore("s1", hashOld)).rejects.toThrow("回退已中止");
+    await expect(service.restore("s1", hashOld)).rejects.toThrow("secret.local.txt");
+    await expect(service.restore("s1", hashOld)).rejects.toThrow("密钥.env");
+    // 保底快照没打、checkout 没执行、多余文件也没删——工作区原封不动
+    expect((client.writeWorkspaceTree as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+    expect((client.checkoutTree as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+    expect((client.deleteWorkspaceFiles as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it("buildRestoreConflictMessage：点名文件并给出处理指引，超过上限折叠数量", () => {
+    const one = buildRestoreConflictMessage(["secret.txt"]);
+    expect(one).toContain("1 个");
+    expect(one).toContain("secret.txt");
+    expect(one).toContain(".gitignore");
+    const many = buildRestoreConflictMessage(Array.from({ length: 12 }, (_, i) => `f${i}.txt`));
+    expect(many).toContain("12 个");
+    expect(many).toContain("另有 2 个文件");
+    expect(many).not.toContain("f11.txt"); // 只显示前 10 个
+  });
+
+  it("buildInitPreflightMessage：三类预检失败都点名原因并给出指引", () => {
+    const system = buildInitPreflightMessage("D:\\", { kind: "system-location" });
+    expect(system).toContain("系统根目录");
+    expect(system).toContain("D:\\");
+    expect(system).toContain("具体的项目文件夹");
+
+    const nested = buildInitPreflightMessage("D:/ws", {
+      kind: "nested-repos",
+      repos: ["project-a/.git", "项目B/.git"],
+    });
+    expect(nested).toContain("2 个独立的 Git 仓库");
+    expect(nested).toContain("project-a/.git");
+    expect(nested).toContain("项目B/.git");
+    expect(nested).toContain("父文件夹");
+
+    const manyRepos = Array.from({ length: 7 }, (_, i) => `p${i}/.git`);
+    const nestedMany = buildInitPreflightMessage("D:/ws", { kind: "nested-repos", repos: manyRepos });
+    expect(nestedMany).toContain("7 个独立的 Git 仓库");
+    expect(nestedMany).toContain("另有 2 个");
+    expect(nestedMany).not.toContain("p6/.git"); // 只点名前 5 个
+
+    const tooLarge = buildInitPreflightMessage("D:/ws", {
+      kind: "too-large",
+      fileCount: 120_000,
+      totalBytes: 6_200_000_000,
+      scanLimitHit: true,
+    });
+    expect(tooLarge).toContain("120000");
+    expect(tooLarge).toContain("6.2 GB");
+    expect(tooLarge).toContain("提前停止");
+    expect(tooLarge).toContain("git init");
+  });
+
+  it("会话校验：非 code 模式与未绑定工作区都拒绝", async () => {
+    const { client } = createFakeClient({});
+    const service = createCheckpointService({
+      getSession: vi.fn(() => ({ mode: "chat" }) as unknown as ChatSession),
+      resolveExecutable: vi.fn(async () => EXECUTABLE),
+      createClient: vi.fn(() => client),
+    });
+    await expect(service.snapshot("s1", "auto")).rejects.toThrow("Code 模式");
+    await expect(service.snapshot("s1", "auto")).rejects.toThrow("Code 模式");
+    const service2 = createCheckpointService({
+      getSession: vi.fn(() => ({ mode: "code", workspaceBinding: null }) as unknown as ChatSession),
+      resolveExecutable: vi.fn(async () => EXECUTABLE),
+      createClient: vi.fn(() => client),
+    });
+    await expect(service2.snapshot("s1", "auto")).rejects.toThrow("尚未绑定代码目录");
+  });
+
+  it("computeFilesToDelete：目标快照里没有的才删", () => {
+    expect(computeFilesToDelete(["a", "b", "c"], new Set(["a"]))).toEqual(["b", "c"]);
+    expect(computeFilesToDelete(["a"], new Set(["a", "new.ts"]))).toEqual([]);
+  });
+
+  it("computeFilesToDelete：中文等非 ASCII 路径按原值精确匹配（不经 quotepath 转义）", () => {
+    // 回归：ls-files 默认把 "你好.ts" 转义成八进制串，按转义串会匹配失败而误删
+    const current = ["src/你好.ts", "src/保留.md", "目录/旧文件.txt"];
+    const target = new Set(["src/你好.ts", "src/保留.md"]);
+    expect(computeFilesToDelete(current, target)).toEqual(["目录/旧文件.txt"]);
+  });
+
+  it("restore：中文文件名的多余文件也能被正确识别删除", async () => {
+    const hashOld = "0".repeat(40);
+    const { client } = createFakeClient({
+      last: { hash: "top", tree: "tree-top" },
+      nextTree: "tree-backup",
+      log: [
+        { hash: "top".padEnd(40, "a"), timestamp: "2026-09-15T10:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+        { hash: hashOld, timestamp: "2026-09-15T09:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+      ],
+      treeFiles: ["src/你好.ts"],
+      workspaceFiles: ["src/你好.ts", "废弃的文件.js"],
+    });
+    const service = createCheckpointService(createDeps(client));
+    const result = await service.restore("s1", hashOld);
+    expect(result.restoredHash).toBe(hashOld);
+    expect((client.deleteWorkspaceFiles as ReturnType<typeof vi.fn>).mock.calls[0][0]).toEqual(["废弃的文件.js"]);
+  });
+
+  it("restore 与 snapshot 并发：回退整段原子，快照不会提交回退的中间态", async () => {
+    const hashOld = "0".repeat(40);
+    const { client } = createFakeClient({
+      last: { hash: "top", tree: "tree-top" },
+      log: [
+        { hash: "top".padEnd(40, "a"), timestamp: "2026-09-15T10:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+        { hash: hashOld, timestamp: "2026-09-15T09:00:00.000Z", message: "checkpoint\u001fauto\u001fs9" },
+      ],
+      treeFiles: ["src/keep.ts"],
+      // 留一个目标快照里没有的文件，让回退走到 deleteWorkspaceFiles
+      workspaceFiles: ["src/keep.ts", "废弃.js"],
+    });
+
+    // 用真实先后顺序记录每一步：commit 按消息区分是 pre-restore 还是 auto
+    const timeline: string[] = [];
+    let seq = 0;
+    (client.writeWorkspaceTree as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      timeline.push(timeline.includes("checkout") ? "write-after-restore" : "write-before-restore");
+      return `tree-${++seq}`;
+    });
+    (client.commitTree as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_tree: string, _parent: string | null, message?: string) => {
+        timeline.push(String(message).includes("pre-restore") ? "commit-pre" : "commit-auto");
+        return "b".repeat(40);
+      },
+    );
+    (client.checkoutTree as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      timeline.push("checkout");
+    });
+    (client.deleteWorkspaceFiles as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      timeline.push("delete");
+    });
+
+    const service = createCheckpointService(createDeps(client));
+    await Promise.all([service.restore("s1", hashOld), service.snapshot("s1", "auto")]);
+
+    // 回退的原子性：checkout 与 delete 之间不能插进任何快照提交
+    const between = timeline.slice(timeline.indexOf("checkout"), timeline.indexOf("delete") + 1);
+    expect(between).toEqual(["checkout", "delete"]);
+    // 并发的那次快照必须等回退整段结束才落盘（否则会把中间态提交并顶掉 CHECKPOINT_REF）
+    expect(timeline.indexOf("commit-auto")).toBeGreaterThan(timeline.indexOf("delete"));
+    // 且回退自己的 pre-restore 保底快照仍在 checkout 之前
+    expect(timeline.indexOf("commit-pre")).toBeLessThan(timeline.indexOf("checkout"));
+  });
+});
+
+describe("mapWithConcurrency（有界并发）", () => {
+  it("结果顺序与输入一致，空数组不启动 worker", async () => {
+    const items = ["a", "b", "c", "d", "e"];
+    const result = await mapWithConcurrency(items, 2, async (item) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return item.toUpperCase();
+    });
+    expect(result).toEqual(["A", "B", "C", "D", "E"]);
+    expect(await mapWithConcurrency([], 4, async () => "never")).toEqual([]);
+  });
+
+  it("同时进行的 worker 数不超过 limit（防止一次性打满文件描述符）", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    await mapWithConcurrency(Array.from({ length: 40 }, (_, i) => i), 8, async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      inFlight -= 1;
+      return null;
+    });
+    expect(peak).toBeLessThanOrEqual(8);
+    expect(peak).toBeGreaterThan(1); // 确实并发，而不是退化成串行
+  });
+
+  it("worker 抛错时整体 reject（fail-closed，不吞错误）", async () => {
+    await expect(
+      mapWithConcurrency([1, 2, 3], 2, async (item) => {
+        if (item === 2) throw new Error("EACCES: 权限不足");
+        return item;
+      }),
+    ).rejects.toThrow("EACCES");
+  });
+});
+
+describe("splitNulOutput（git -z NUL 分隔解析）", () => {
+  it("按 NUL 拆分多个路径", () => {
+    expect(splitNulOutput("src/a.ts\u0000src/b.ts\u0000")).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  it("非 ASCII 路径保持原样，不出现八进制转义", () => {
+    const output = "src/你好.ts\u0000目录/文件.md\u0000";
+    expect(splitNulOutput(output)).toEqual(["src/你好.ts", "目录/文件.md"]);
+  });
+
+  it("空输出与只有结尾 NUL 都得到空数组", () => {
+    expect(splitNulOutput("")).toEqual([]);
+    expect(splitNulOutput("\u0000")).toEqual([]);
+  });
+});
+
+const execFileAsync = promisify(execFile);
+async function systemGitAvailable(): Promise<boolean> {
+  try {
+    await execFileAsync("git", ["--version"], { windowsHide: true, timeout: 5_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe("real git 集成：普通文件夹自动 init + 中文路径 + 固定 ident", () => {
+  const SYSTEM_GIT: ResolvedGitExecutable = { command: "git", source: "system", version: "test" };
+  let root = "";
+  let available = false;
+
+  beforeEach(async () => {
+    available = await systemGitAvailable();
+    if (available) root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-cp-e2e-"));
+  });
+  afterEach(() => {
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("非 git 目录首次快照自动 init；中文文件可 diff；回退还原内容并删除多余文件", async () => {
+    if (!available) return;
+    fs.writeFileSync(path.join(root, "你好.txt"), "第一版\n");
+    const service = createCheckpointService({
+      getSession: vi.fn(() => fakeSession(root)),
+      resolveExecutable: vi.fn(async () => SYSTEM_GIT),
+    });
+
+    const first = await service.snapshot("s1", "auto");
+    expect(first).not.toBeNull();
+    expect(fs.existsSync(path.join(root, ".git"))).toBe(true); // 自动初始化
+    await expect(service.list("s1")).resolves.toHaveLength(1);
+
+    const diff1 = await service.diff("s1", first!.hash);
+    expect(diff1.perFile.some((f) => f.file === "你好.txt")).toBe(true); // 中文路径不被转义
+
+    fs.writeFileSync(path.join(root, "你好.txt"), "第二版内容\n");
+    fs.writeFileSync(path.join(root, "临时文件.md"), "# temp\n");
+    const second = await service.snapshot("s1", "manual");
+    expect(second).not.toBeNull();
+
+    await service.restore("s1", first!.hash);
+    expect(fs.readFileSync(path.join(root, "你好.txt"), "utf8")).toBe("第一版\n");
+    expect(fs.existsSync(path.join(root, "临时文件.md"))).toBe(false);
+  });
+
+  it("回退冲突：快照后被 gitignore 忽略的同名文件会中止回退、点名且零副作用；解除忽略后可正常回退", async () => {
+    if (!available) return;
+    fs.writeFileSync(path.join(root, "secret.txt"), "快照里的原始内容\n");
+    fs.writeFileSync(path.join(root, "密钥.txt"), "原始密钥\n");
+    const service = createCheckpointService({
+      getSession: vi.fn(() => fakeSession(root)),
+      resolveExecutable: vi.fn(async () => SYSTEM_GIT),
+    });
+
+    const first = await service.snapshot("s1", "auto");
+    expect(first).not.toBeNull();
+
+    // 之后把这两个文件加入忽略，并在本地写入"任何快照都没有"的私有内容
+    fs.writeFileSync(path.join(root, ".gitignore"), "secret.txt\n密钥.txt\n");
+    fs.writeFileSync(path.join(root, "secret.txt"), "仅存在于本地的私有配置\n");
+    fs.writeFileSync(path.join(root, "密钥.txt"), "私有密钥内容\n");
+
+    const abort = service.restore("s1", first!.hash).then(
+      () => {
+        throw new Error("应当中止回退");
+      },
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    await expect(abort).resolves.toMatch(/回退已中止/);
+    const message = await abort;
+    expect(message).toContain("secret.txt");
+    expect(message).toContain("密钥.txt"); // 中文路径经 quotepath=false 原样输出
+    // 私有内容原样保留，且没有偷偷写 pre-restore 快照
+    expect(fs.readFileSync(path.join(root, "secret.txt"), "utf8")).toBe("仅存在于本地的私有配置\n");
+    expect(fs.readFileSync(path.join(root, "密钥.txt"), "utf8")).toBe("私有密钥内容\n");
+    await expect(service.list("s1")).resolves.toHaveLength(1);
+
+    // 用户处理冲突（删掉 .gitignore 取消忽略）后，回退恢复成功
+    fs.rmSync(path.join(root, ".gitignore"));
+    await service.restore("s1", first!.hash);
+    expect(fs.readFileSync(path.join(root, "secret.txt"), "utf8")).toBe("快照里的原始内容\n");
+    expect(fs.readFileSync(path.join(root, "密钥.txt"), "utf8")).toBe("原始密钥\n");
+  });
+
+  it("预检：非 git 父目录内含独立仓库时中止快照、点名且不创建 .git", async () => {
+    if (!available) return;
+    // 父目录下放两个嵌套项目（含中文名），各自是独立 git 仓库——正是"绑定错父目录"的场景
+    const projectA = path.join(root, "project-a");
+    const projectB = path.join(root, "项目B");
+    fs.mkdirSync(projectA, { recursive: true });
+    fs.mkdirSync(projectB, { recursive: true });
+    fs.writeFileSync(path.join(projectA, "index.js"), "console.log(1)\n");
+    fs.writeFileSync(path.join(projectB, "main.ts"), "export const x = 1;\n");
+    await execFileAsync("git", ["init", "--quiet"], { cwd: projectA, windowsHide: true });
+    await execFileAsync("git", ["init", "--quiet"], { cwd: projectB, windowsHide: true });
+    fs.writeFileSync(path.join(root, "笔记.txt"), "父目录散文件\n");
+
+    const service = createCheckpointService({
+      getSession: vi.fn(() => fakeSession(root)),
+      resolveExecutable: vi.fn(async () => SYSTEM_GIT),
+    });
+
+    const attempt = service.snapshot("s1", "auto").then(
+      () => {
+        throw new Error("应当中止快照");
+      },
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    await expect(attempt).resolves.toMatch(/时间机器已中止/);
+    const message = await attempt;
+    expect(message).toContain("2 个独立的 Git 仓库");
+    expect(message).toContain("project-a/.git");
+    expect(message).toContain("项目B/.git");
+    // 关键：父目录没有被静默 init，子仓库也没被动过
+    expect(fs.existsSync(path.join(root, ".git"))).toBe(false);
+    expect(fs.existsSync(path.join(projectA, ".git"))).toBe(true);
+    expect(fs.existsSync(path.join(projectB, ".git"))).toBe(true);
+    expect(fs.readFileSync(path.join(root, "笔记.txt"), "utf8")).toBe("父目录散文件\n");
+  });
+});
