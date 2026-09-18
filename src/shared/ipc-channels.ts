@@ -112,6 +112,19 @@ export const IPC = {
    */
   WORKBENCH_FILE_READ_ABSOLUTE: "workbench:file-read-absolute",
   WORKBENCH_FILE_WRITE_ABSOLUTE: "workbench:file-write-absolute",
+  /**
+   * 改动账本（时间线）：只记被改动过的文件内容，不要求工作区是 git 仓库。
+   * 与 checkpoint 通道并存：小仓库继续用整区快照，巨型目录用账本。
+   */
+  WORKBENCH_LEDGER_LIST: "workbench:ledger-list",
+  WORKBENCH_LEDGER_FILE: "workbench:ledger-file",
+  /** 回退前预检：预览本次回退实际触及的全部工作区相对路径（只读） */
+  WORKBENCH_LEDGER_RESTORE_AFFECTED: "workbench:ledger-restore-affected",
+  WORKBENCH_LEDGER_RESTORE: "workbench:ledger-restore",
+  WORKBENCH_LEDGER_USAGE: "workbench:ledger-usage",
+  WORKBENCH_LEDGER_PRUNE: "workbench:ledger-prune",
+  /** 账本写入后的广播（AI 改完 / 你保存 / 回退 / 清理） */
+  WORKBENCH_LEDGER_CHANGED: "workbench:ledger-changed",
 
   // sidebar window (status / schedule / settings entry)
   SIDEBAR_MINIMIZE: "sidebar:minimize",

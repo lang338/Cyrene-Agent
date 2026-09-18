@@ -19,6 +19,7 @@ import { ENTER_PLAN_MODE_TOOL_ID, WRITE_PLAN_TOOL_ID, executeEnterPlanMode, exec
 import { executeReadToolResult, READ_TOOL_RESULT_TOOL_ID } from "./tool-output/read-tool-result";
 import { resolveSideEffect } from "./side-effect-resolver";
 import { extractFileChangesFromOutput } from "../tools/registry/tool-evidence";
+import { beginChangeCapture } from "./change-capture";
 import { isBlockedByUncertainEffect } from "./uncertain-effect-guard";
 import { ExecutionLedger } from "../execution-ledger";
 import type { ToolExecutionOutcome } from "../types";
@@ -84,6 +85,11 @@ export interface ToolDispatchContext {
   /** Harness 内部重试时延后保存，确保最终 observation 对应唯一 record。 */
   deferOutputPersistence?: boolean;
   executionLedger?: ExecutionLedger;
+  /**
+   * 改动账本：写文件类工具在执行前后各取一次内容快照，供工作台的改动时间线使用。
+   * 未注入时完全不记账（零开销）。
+   */
+  changeLedger?: import("../../code-git/change-ledger-service").ChangeLedger;
   taskExecutor?: import("../task-runtime").TaskExecuteRequest extends infer _T ? (request: import("../task-runtime").TaskExecuteRequest) => Promise<import("../task-runtime").TaskExecuteResult> : never;
 }
 
@@ -171,6 +177,18 @@ export async function dispatchToolCall(
     : args.url !== undefined ? [String(args.url)]
     : [];
 
+  // 改动账本：写文件类工具执行前后各记一次内容（回退要用"改动前"的原文，而工具只回路径与行数）
+  const capture = await beginChangeCapture({
+    ledger: ctx.changeLedger,
+    toolId: tool.id,
+    risk: tool.risk,
+    args,
+    conversationId: ctx.toolContext?.conversationId,
+    runId: ctx.toolContext?.runId,
+    workspaceRoot: ctx.toolContext?.resolvedWorkspaceRoot,
+    label: ctx.toolContext?.userQuery?.slice(0, 80),
+  }).catch(() => null);
+
   const run = async (): Promise<ToolExecutionOutcome> => executeToolDefinition(tool, args, ctx.toolContext);
   if (ctx.executionLedger) {
     const ledgerResult = await ctx.executionLedger.execute(
@@ -186,6 +204,8 @@ export async function dispatchToolCall(
   } else {
     result = { toolId: tool.id, args, ...await run() };
   }
+  // 记账放在工具真正执行之后：无论成败都尝试一次（失败时内容可能已部分写入）
+  await capture?.finish(result.output);
 
   // 截断输出（长输出按预算截断，只把可消费的 preview 交给模型）
   const truncationConfig = ctx.truncation ?? DEFAULT_TRUNCATION;

@@ -25,6 +25,7 @@ import { ensureVaultStructure, isEmptyDirectory } from "../learn/obsidian/vault-
 import { getDefaultModelProfile, loadModelSettings, resolveModelSettingsProfile } from "../settings/model-settings";
 import { FileToolOutputStore } from "../orchestrator/harness/tool-output/file-tool-output-store";
 import { getHarnessRunStore } from "../orchestrator/harness/run-store";
+import { getConfiguredChangeLedger } from "../code-git/change-ledger-service";
 import { getRunReviewTracker } from "../orchestrator/review/run-review-tracker";
 import { getAdapterForConfig } from "../orchestrator/vendors";
 import { activeChatTargetRegistry } from "../plugin-host/active-chat-target";
@@ -277,6 +278,12 @@ export function registerChatsIpc(ipcOption?: IpcScope): void {
         getHarnessRunStore(app.getPath("userData")).deleteConversation(id);
       } catch (error) {
         console.error("[ChatsIpc] failed to delete persisted harness runs", error);
+      }
+      try {
+        // 改动账本跟着会话走：否则删掉的会话会在 userData/cyrene-changes 里留下孤儿记录
+        await getConfiguredChangeLedger()?.dropConversation(id);
+      } catch (error) {
+        console.error("[ChatsIpc] failed to delete change ledger records", error);
       }
       broadcastChanged(event.sender);
     }
