@@ -143,6 +143,19 @@ describe("LspClient", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(child.closed).toHaveLength(1);
   });
+
+  it("并发调用 initialize 只会拉起一个语言服务进程", async () => {
+    const { root } = createWorkspace();
+    const child = new FakeLspProcess();
+    const spawnImpl = vi.fn(() => child);
+    const client = new LspClient({ server: resolvedServer(), workspaceRoot: root, spawnImpl });
+
+    // 昔涟的 lsp 工具与工作台编辑器共用同一个 client，两边可能同时进 initialize
+    await Promise.all([client.initialize(), client.initialize(), client.initialize()]);
+
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    await client.dispose();
+  });
 });
 
 describe("resolveLaunchTarget", () => {

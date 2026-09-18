@@ -141,15 +141,34 @@ export class LspClient {
   private readonly diagnosticsListeners = new Set<(filePath: string, diagnostics: Diagnostic[]) => void>();
   private initialized = false;
   private disposed = false;
+  /** 进行中的初始化：把并发调用收敛成一次 spawn，见 initialize */
+  private initPromise: Promise<void> | null = null;
 
   constructor(private readonly options: LspClientOptions) {
     this.spawnImpl = options.spawnImpl ?? defaultSpawn;
   }
 
+  /**
+   * 初始化（幂等，且**并发安全**）。
+   * AI 的 lsp 工具与工作台编辑器共用同一个 client，两边可能同时进这里；
+   * 光靠 `initialized` 标志挡不住——它要等服务端的 initialize 响应回来才置位，
+   * 中间那段窗口两个调用都过得去，结果 spawn 出两个语言服务进程、前一个没人收尸。
+   * 所以用一条"进行中的 Promise"兜住，后来者复用它。
+   */
   async initialize(): Promise<void> {
     if (this.initialized) return;
     if (this.disposed) throw new Error("LSP client has been disposed");
+    if (!this.initPromise) {
+      this.initPromise = this.doInitialize().catch((cause: unknown) => {
+        // 失败要允许下次重试：否则一次启动抖动就把这个 client 永久废掉了
+        this.initPromise = null;
+        throw cause;
+      });
+    }
+    return this.initPromise;
+  }
 
+  private async doInitialize(): Promise<void> {
     const launch = resolveLaunchTarget(this.options.server.executablePath, this.options.server.args);
     let child: LspChildProcess;
     try {
@@ -337,6 +356,7 @@ export class LspClient {
       this.connection = null;
       this.child = null;
       this.initialized = false;
+      this.initPromise = null;
     }
   }
 

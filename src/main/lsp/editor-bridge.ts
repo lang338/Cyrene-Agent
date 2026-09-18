@@ -54,6 +54,8 @@ function relativeToRoot(root: string, absolutePath: string): string {
 export function registerWorkbenchLspBridge(deps: WorkbenchLspBridgeDeps): { dispose: () => void } {
   const ipc: IpcScope = deps.ipc ?? createIpcScope((deps.ipcMain ?? ipcMain) as IpcScopeMainLike);
   const bindings = new Map<string, SessionBinding>();
+  /** 正在建立中的绑定（key = sessionId + root）：把并发请求收敛成一次建立，见 bindingFor */
+  const pendingBindings = new Map<string, Promise<SessionBinding | null>>();
 
   const releaseSession = (sessionId: string): void => {
     const binding = bindings.get(sessionId);
@@ -62,23 +64,41 @@ export function registerWorkbenchLspBridge(deps: WorkbenchLspBridgeDeps): { disp
     binding.unsubscribe();
   };
 
-  /** 取（必要时建立）会话对应的语言服务客户端；拿不到就返回 null 让调用方降级 */
+  /**
+   * 取（必要时建立）会话对应的语言服务客户端；拿不到就返回 null 让调用方降级。
+   *
+   * 并发的两条 sync 可能同时走到这里（那时都还没绑定），各自 await 之后各自 subscribe，
+   * 后写的覆盖 bindings → 前一个退订函数就此丢失 → 同一条诊断被推两次。
+   * 所以给"建立中"也建一张表，后来的请求直接复用同一次建立过程。
+   * key 里必须带 root：换工作区时那个进行中的建立过程不能被复用。
+   */
   const bindingFor = async (sessionId: string, absolutePath: string): Promise<SessionBinding | null> => {
     const root = deps.getWorkspaceRoot(sessionId);
     if (!root) return null;
     const existing = bindings.get(sessionId);
     if (existing && existing.root === root) return existing;
-    // 工作区被换掉：旧绑定必须作废，否则会把新工作区的文件发给上一个工作区的语言服务
-    if (existing) releaseSession(sessionId);
 
-    const client = await deps.lsp.acquireEditorClient(root, absolutePath);
-    if (!client) return null;
-    const unsubscribe = client.onDiagnostics((filePath, diagnostics) => {
-      deps.publishDiagnostics({ sessionId, path: relativeToRoot(root, filePath), diagnostics });
+    const key = `${sessionId}\u0000${root}`;
+    const inflight = pendingBindings.get(key);
+    if (inflight) return inflight;
+
+    const task = (async (): Promise<SessionBinding | null> => {
+      // 工作区被换掉：旧绑定必须作废，否则会把新工作区的文件发给上一个工作区的语言服务
+      if (existing) releaseSession(sessionId);
+      const client = await deps.lsp.acquireEditorClient(root, absolutePath);
+      if (!client) return null;
+      const unsubscribe = client.onDiagnostics((filePath, diagnostics) => {
+        deps.publishDiagnostics({ sessionId, path: relativeToRoot(root, filePath), diagnostics });
+      });
+      const binding: SessionBinding = { root, client, unsubscribe };
+      bindings.set(sessionId, binding);
+      return binding;
+    })().finally(() => {
+      pendingBindings.delete(key);
     });
-    const binding: SessionBinding = { root, client, unsubscribe };
-    bindings.set(sessionId, binding);
-    return binding;
+
+    pendingBindings.set(key, task);
+    return task;
   };
 
   ipc.handle(IPC.WORKBENCH_LSP_SYNC, async (_event, payload: unknown) => {
