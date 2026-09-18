@@ -14,6 +14,7 @@ import { app } from "electron";
 import { toolRegistry } from "./registry/tool-registry";
 import { buildReplacedDiff, countLines, finalizeFileChanges } from "./registry/tool-evidence";
 import { applyStrReplaceEdits } from "./str-replace-core";
+import { assertWritableInsideWorkspace } from "./path-guard";
 import { currentUserTimezone } from "./built-in-tools";
 import { resolveTimeoutPolicy } from "../../runtime-policy";
 import { getDateLocale } from "../../locale-context";
@@ -339,6 +340,17 @@ function registerStrReplaceTool(): void {
     execute: async (args, ctx?) => {
       const filePath = String(args.file_path || "");
       if (!filePath) return JSON.stringify({ success: false, errorCode: "INVALID_PATH", error: "file_path 不能为空", retryable: false });
+      // 沙箱只约束子进程，管不到主进程直调 fs 的写入，边界只能在这里守
+      try {
+        assertWritableInsideWorkspace(filePath, ctx?.resolvedWorkspaceRoot);
+      } catch (cause) {
+        return JSON.stringify({
+          success: false,
+          errorCode: "PATH_OUTSIDE_WORKSPACE",
+          error: cause instanceof Error ? cause.message : String(cause),
+          retryable: false,
+        });
+      }
       if (!fs.existsSync(filePath)) {
         return JSON.stringify({
           success: false,

@@ -14,6 +14,7 @@ import { logger, LogTag } from "../../logger";
 import { ToolExecutionError } from "./registry/tool-execution-error";
 import { app } from "electron";
 import { getRunReviewTracker } from "../review/run-review-tracker";
+import { assertWritableInsideWorkspace } from "./path-guard";
 
 const LOG_PREFIX = "[FsTools]";
 
@@ -293,6 +294,16 @@ async function executeWriteFile(args: Record<string, unknown>, ctx?: ToolContext
       "E_PATH_NOT_ABSOLUTE",
       "path 必须是绝对路径",
       "invalid_arguments",
+    );
+  }
+  // 沙箱只约束子进程，管不到这种"主进程直接调 fs"的写入，边界只能在这里守
+  try {
+    assertWritableInsideWorkspace(filePath, ctx?.resolvedWorkspaceRoot);
+  } catch (cause) {
+    throw new ToolExecutionError(
+      "E_PATH_OUTSIDE_WORKSPACE",
+      cause instanceof Error ? cause.message : String(cause),
+      "permission_denied",
     );
   }
 

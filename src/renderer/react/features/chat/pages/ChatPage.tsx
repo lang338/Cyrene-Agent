@@ -17,6 +17,7 @@ import { ChatMessageList } from "../components/ChatMessageList";
 import { ChatPageNavigation, type ChatPagePanel } from "../components/ChatPageNavigation";
 import { WorkbenchPage } from "../../workbench/WorkbenchPage";
 import { workbenchApi } from "../../workbench/WorkspaceTree";
+import { bumpWorkbenchRound, shouldTakeCadenceSnapshot } from "../../workbench/snapshot-cadence";
 import {
   ContextCompressionNotice,
   FileDropOverlay,
@@ -836,11 +837,15 @@ export function ChatPage() {
         },
         onRunFinished: ({ mode, sessionId }) => {
           void refreshSessions(mode, false);
-          // AI 一回合结束时立刻打一条工作区快照：这比 git 变化防抖更贴近"这一轮改了什么"的语义点。
-          // 服务端会按 tree 去重（没改文件就不产生快照），非 code 模式或未绑定工作区则直接拒绝，静默忽略。
+          // 工作区快照不再每回合都打：一回合动几个文件就留一条，时间线很快被淹掉，
+          // 而"这一轮改了什么"本来就由改动账本按轮记着。用户拍板改成"由用户自己决定保留
+          // 哪个版本，最多加个保底"——所以这里改成每 SNAPSHOT_ROUND_INTERVAL 轮打一条保底快照。
+          // 服务端仍按 tree 去重（没改文件就不产生快照），非 code 模式或未绑定工作区直接拒绝、静默忽略。
           if (mode === "code") {
             const api = workbenchApi();
-            void api?.snapshot(sessionId, "auto").catch(() => undefined);
+            if (api && shouldTakeCadenceSnapshot(bumpWorkbenchRound(sessionId))) {
+              void api.snapshot(sessionId, "auto").catch(() => undefined);
+            }
           }
           // 当前 session 队列中的下一条消息自动消费
           const queue = pendingQueueBySessionRef.current[sessionId] ?? [];
