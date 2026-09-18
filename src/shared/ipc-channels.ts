@@ -130,6 +130,8 @@ export const IPC = {
   WORKBENCH_LSP_SYNC: "workbench:lsp-sync",
   WORKBENCH_LSP_CLOSE: "workbench:lsp-close",
   WORKBENCH_LSP_DIAGNOSTICS: "workbench:lsp-diagnostics",
+  /** 编辑器主动提问：补全 / 悬停 / 跳转 / 查引用 */
+  WORKBENCH_LSP_REQUEST: "workbench:lsp-request",
 
   // sidebar window (status / schedule / settings entry)
   SIDEBAR_MINIMIZE: "sidebar:minimize",

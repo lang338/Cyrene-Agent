@@ -15,6 +15,7 @@ import { MessageFileLinkContext, type MessageFileOpenTarget } from "../chat/comp
 import { ComposerInteractionPanel, type ComposerInteractionCallbacks } from "../chat/components/ComposerSlot";
 import type { ComposerInteraction } from "../chat/components/run-presentation";
 import { monacoLanguageFor, setupMonaco } from "./monaco-setup";
+import { registerLspProviders, setLspProviderSession } from "./lsp-providers";
 import { buildActiveFileContext, type ActiveFileSelection } from "./active-file-context";
 import { resizerKeyDelta, useResizableColumns, type ColumnSide } from "./use-resizable-columns";
 import { workbenchApi, WorkspaceTree } from "./WorkspaceTree";
@@ -251,6 +252,8 @@ export function WorkbenchPage({
 
   useEffect(() => {
     setupMonaco();
+    // 补全/悬停/跳转/引用交给外部语言服务（见 ./lsp-providers.ts）；拿不到服务时静默降级
+    registerLspProviders();
   }, []);
 
   // 进入工作台：做一次 auto 快照（无变化时服务端去重返回 null），刷新时间线
@@ -528,6 +531,13 @@ export function WorkbenchPage({
       if (payload.sessionId !== sessionId) return;
       setLspDiagnostics((current) => ({ ...current, [payload.path]: payload.diagnostics }));
     });
+  }, [sessionId]);
+
+  // Monaco 的 provider 活在 React 之外，靠这个模块级变量知道"替哪个会话发请求"。
+  // 卸载时必须清掉：否则工作台关掉后编辑器还拿着旧会话去问，语言服务白跑一趟。
+  useEffect(() => {
+    setLspProviderSession(sessionId);
+    return () => setLspProviderSession(null);
   }, [sessionId]);
 
   // marker 挂在 model 上，所以要拿到 model 才画；换文件、诊断更新都要重画一遍

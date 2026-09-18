@@ -9,7 +9,11 @@ import path from "node:path";
 import { ipcMain } from "electron";
 import { IPC } from "../../shared/ipc-channels";
 import { createIpcScope, type IpcScope, type IpcScopeMainLike } from "../application/ipc-scope";
+import { buildLspRequestParams, lspMethodFor, normalizeLspResult } from "./editor-requests";
 import type { LspEditorSupport, LspManager } from "./manager";
+
+/** 补全首次触发要等语言服务把项目索引建起来，比诊断宽松得多 */
+const REQUEST_TIMEOUT_MS = 15_000;
 
 interface IpcMainLike {
   handle(channel: string, listener: (event: unknown, ...args: any[]) => unknown): void;
@@ -124,6 +128,41 @@ export function registerWorkbenchLspBridge(deps: WorkbenchLspBridgeDeps): { disp
     if (!binding) return false;
     await binding.client.closeFromEditor(resolveInsideWorkspace(binding.root, input.path));
     return true;
+  });
+
+  // 编辑器主动提问：补全 / 悬停 / 跳转 / 查引用。
+  // 与 SYNC 共用同一个绑定，所以问的是"编辑器里现在这份内容"，而不是磁盘上的旧版本；
+  // 拿不到语言服务（返回 null）时编辑器静默降级，只是弹不出补全。
+  ipc.handle(IPC.WORKBENCH_LSP_REQUEST, async (_event, payload: unknown) => {
+    const input = payload as
+      | { sessionId?: unknown; path?: unknown; method?: unknown; position?: unknown; includeDeclaration?: unknown }
+      | null;
+    if (typeof input?.path !== "string" || !input.path.trim()) throw new Error("缺少文件路径");
+    const method = input?.method;
+    if (method !== "completion" && method !== "hover" && method !== "definition" && method !== "references") {
+      throw new Error("不支持的语言服务请求");
+    }
+    const position = input?.position as { line?: unknown; character?: unknown } | undefined;
+    if (typeof position?.line !== "number" || typeof position?.character !== "number") {
+      throw new Error("缺少位置信息");
+    }
+    const sessionId = requireSessionId(input?.sessionId);
+    const root = deps.getWorkspaceRoot(sessionId);
+    if (!root) return null;
+    const absolutePath = resolveInsideWorkspace(root, input.path);
+    const binding = await bindingFor(sessionId, absolutePath);
+    if (!binding) return null;
+    const raw = await binding.client.request(
+      lspMethodFor(method),
+      buildLspRequestParams({
+        method,
+        absolutePath,
+        position: { line: position.line, character: position.character },
+        includeDeclaration: typeof input?.includeDeclaration === "boolean" ? input.includeDeclaration : undefined,
+      }),
+      REQUEST_TIMEOUT_MS,
+    );
+    return normalizeLspResult(method, raw, binding.root);
   });
 
   return {

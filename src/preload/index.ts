@@ -2,7 +2,11 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { IPC } from "../shared/ipc-channels";
 import type { StartTtsRequest, TtsSessionEvent, TtsStartResult } from "../shared/tts-session";
 import type { ScreenshotInsertPayload } from "../shared/ipc-channels";
-import type { WorkbenchLspDiagnostic } from "../shared/code-workbench-types";
+import type {
+  WorkbenchLspDiagnostic,
+  WorkbenchLspRequestInput,
+  WorkbenchLspRequestResult,
+} from "../shared/code-workbench-types";
 import type {
   SpeechInputCommitRequest,
   SpeechInputCommitResult,
@@ -840,6 +844,11 @@ const workbenchApi = {
     ipcRenderer.invoke(IPC.WORKBENCH_LSP_SYNC, { sessionId, path, content, languageId }) as Promise<boolean>,
   closeLspDocument: (sessionId: string, path: string) =>
     ipcRenderer.invoke(IPC.WORKBENCH_LSP_CLOSE, { sessionId, path }) as Promise<boolean>,
+  // 编辑器主动提问：补全 / 悬停 / 跳转 / 查引用。
+  // 主进程把语言服务的原始返回拍平成 WorkbenchLspRequestResult，渲染端不必懂 LSP 结构；
+  // 返回 null 表示当前没有可用语言服务，编辑器静默降级（补全菜单不弹，其他照常）
+  requestLsp: (input: WorkbenchLspRequestInput) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_LSP_REQUEST, input) as Promise<WorkbenchLspRequestResult | null>,
   onLspDiagnostics: (
     callback: (payload: { sessionId: string; path: string; diagnostics: WorkbenchLspDiagnostic[] }) => void,
   ) => {

@@ -23,6 +23,8 @@ export interface LspEditorSupport {
   syncFromEditor(filePath: string, languageId: string, content: string): Promise<void>;
   closeFromEditor(filePath: string): Promise<void>;
   onDiagnostics(listener: (filePath: string, diagnostics: Diagnostic[]) => void): () => void;
+  /** 编辑器主动提问（补全/悬停/跳转/查引用）：返回语言服务的原始结果，形状由调用方拍平 */
+  request<T = unknown>(method: string, params: unknown, timeoutMs?: number): Promise<T>;
 }
 
 function asEditorSupport(client: LspClientLike): LspEditorSupport | null {
@@ -30,7 +32,8 @@ function asEditorSupport(client: LspClientLike): LspEditorSupport | null {
   const supported =
     typeof candidate.syncFromEditor === "function" &&
     typeof candidate.closeFromEditor === "function" &&
-    typeof candidate.onDiagnostics === "function";
+    typeof candidate.onDiagnostics === "function" &&
+    typeof candidate.request === "function";
   return supported ? (candidate as LspEditorSupport) : null;
 }
 

@@ -140,3 +140,58 @@ export interface WorkbenchLspDiagnostic {
   source?: string;
   code?: string | number;
 }
+
+// ── 语言服务（LSP）请求：编辑器主动提问 ────────────────────
+//
+// 诊断是"服务端推"，这里是"编辑器问"，方向相反，所以要带上问谁、问哪里。
+// 服务端返回的是各种花样的 LSP 原始结构，主进程负责拍平成下面这几个简单形状，
+// 渲染端因此不必依赖整个 LSP 类型包。
+
+export type WorkbenchLspRequestMethod = "completion" | "hover" | "definition" | "references";
+
+export interface WorkbenchLspRequestInput {
+  sessionId: string;
+  /** 工作区相对路径；工作区外的文件不属于任何项目，不参与语言服务 */
+  path: string;
+  method: WorkbenchLspRequestMethod;
+  /** LSP 位置（行列都从 0 开始）——渲染端把 Monaco 的 1-based 减 1 后传进来 */
+  position: LspPosition;
+  /** 查引用时是否把声明本身也算进去（默认算） */
+  includeDeclaration?: boolean;
+}
+
+/** 补全项：只保留渲染 Monaco 补全菜单需要的字段 */
+export interface WorkbenchLspCompletionItem {
+  label: string;
+  /** LSP CompletionItemKind（1=Text…25=TypeParameter），渲染端映射成 Monaco 图标 */
+  kind?: number;
+  detail?: string;
+  /** 已拍平成纯文本的文档说明 */
+  documentation?: string;
+  insertText?: string;
+  sortText?: string;
+  filterText?: string;
+  /** 补全要替换的范围（LSP 0 起编码）；缺省表示按当前词的默认范围 */
+  textEditRange?: LspRange;
+}
+
+export interface WorkbenchLspHover {
+  /** 已拍平成多行纯文本：渲染端不需要懂 markdown 结构 */
+  contents: string;
+  range?: LspRange;
+}
+
+export interface WorkbenchLspLocation {
+  /** 工作区相对路径；定义落在工作区外（依赖里）时为 null */
+  path: string | null;
+  /** 工作区外时的绝对路径，用来告诉用户"这个定义在依赖里" */
+  externalPath?: string;
+  range: LspRange;
+}
+
+export interface WorkbenchLspRequestResult {
+  method: WorkbenchLspRequestMethod;
+  completions?: WorkbenchLspCompletionItem[];
+  hover?: WorkbenchLspHover | null;
+  locations?: WorkbenchLspLocation[];
+}

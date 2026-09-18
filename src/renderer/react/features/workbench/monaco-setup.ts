@@ -44,11 +44,22 @@ export function setupMonaco(): void {
   // 打开会大面积误报"找不到模块 xx"。工作台的诊断改由主进程里的外部语言服务提供
   // （见 lsp/editor-bridge.ts，渲染端在 WorkbenchPage 里画成 marker）——
   // 两套诊断同时开只会互相打架。
-  // 注意：补全仍走内置服务（由 WorkbenchPage 的编辑器选项打开），两者互不影响。
   // monaco-editor 0.56+：语言服务命名空间挂在根导出（monaco.typescript / monaco.json）。
   const noDiagnostics = { noSemanticValidation: true, noSyntaxValidation: true, noSuggestionDiagnostics: true } as const;
   monaco.typescript.typescriptDefaults.setDiagnosticsOptions(noDiagnostics);
   monaco.typescript.javascriptDefaults.setDiagnosticsOptions(noDiagnostics);
+  // 语言智能（补全/悬停/跳转/引用）同样交给外部语言服务，见 ./lsp-providers.ts：
+  // 内置服务看不到别的文件和依赖（补全只剩"同文件词汇"），且两套都开会让补全菜单出现重复项。
+  // 只关这四项，其余（签名帮助、格式化、重命名等）保持默认，编辑器基本能力不受影响。
+  for (const defaults of [monaco.typescript.typescriptDefaults, monaco.typescript.javascriptDefaults]) {
+    defaults.setModeConfiguration({
+      ...defaults.modeConfiguration,
+      completionItems: false,
+      hovers: false,
+      definitions: false,
+      references: false,
+    });
+  }
   monaco.json.jsonDefaults.setDiagnosticsOptions({ validate: false, allowComments: true });
   loader.config({ monaco });
 }
