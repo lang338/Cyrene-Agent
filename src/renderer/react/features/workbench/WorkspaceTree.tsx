@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "../../i18n";
-import type { WorkbenchFileEntry } from "../../../../shared/code-workbench-types";
+import type { WorkbenchFileEntry, WorkbenchLspDiagnostic } from "../../../../shared/code-workbench-types";
 import { FileTypeIcon } from "./file-type-icon";
 import { ancestorDirs } from "./follow-changes";
 
@@ -28,6 +28,10 @@ interface WorkbenchApi {
   ledgerUsage?(): Promise<unknown>;
   pruneLedgerRounds?(sessionId: string, roundIds: string[]): Promise<unknown>;
   onLedgerChanged?(callback: (payload: { sessionId: string }) => void): () => void;
+  /** 语言服务（LSP）：把编辑器内容同步给外部语言服务；返回 false = 没有可用服务，编辑器静默降级 */
+  syncLspDocument?(sessionId: string, path: string, content: string, languageId: string): Promise<boolean>;
+  closeLspDocument?(sessionId: string, path: string): Promise<boolean>;
+  onLspDiagnostics?(callback: (payload: { sessionId: string; path: string; diagnostics: WorkbenchLspDiagnostic[] }) => void): () => void;
 }
 
 export function workbenchApi(): WorkbenchApi | undefined {

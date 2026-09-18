@@ -9,7 +9,7 @@ import Editor from "@monaco-editor/react";
 import * as monacoNs from "monaco-editor";
 import { useTranslation } from "../../i18n";
 import type { ConversationMode } from "../../../../shared/chat-types";
-import type { LedgerRestoreResult, WorkbenchFileContent, WorkbenchFileEntry } from "../../../../shared/code-workbench-types";
+import type { LedgerRestoreResult, WorkbenchFileContent, WorkbenchFileEntry, WorkbenchLspDiagnostic } from "../../../../shared/code-workbench-types";
 import { ChatMessageList, type ChatMessageItem } from "../chat/components/ChatMessageList";
 import { MessageFileLinkContext, type MessageFileOpenTarget } from "../chat/components/message-file-link";
 import { ComposerInteractionPanel, type ComposerInteractionCallbacks } from "../chat/components/ComposerSlot";
@@ -67,8 +67,9 @@ type LoadOutcome = "ok" | "stale" | "failed";
 /**
  * 编辑器选项。
  * 补全已打开：语言智能属于"方便编码"的一部分，不自我设限。
- * 诊断仍不渲染，理由见 monaco-setup：Monaco 的 TS 服务没有项目上下文
- * （不读 tsconfig、不解析依赖），打开会大面积误报"找不到模块"。
+ * 诊断渲染也开着，但来源不是 Monaco 自带的 TS 服务——那套在 monaco-setup 里已关掉
+ * （它没有项目上下文，会大面积误报"找不到模块 xx"），这里显示的是主进程里
+ * 外部语言服务（能读 tsconfig 与依赖）回推的诊断。
  */
 const EDITOR_OPTIONS = {
   automaticLayout: true,
@@ -79,11 +80,36 @@ const EDITOR_OPTIONS = {
   quickSuggestions: true,
   suggestOnTriggerCharacters: true,
   parameterHints: { enabled: true },
-  renderValidationDecorations: "off" as const,
+  renderValidationDecorations: "on" as const,
   occurrencesHighlight: "off" as const,
   selectionHighlight: false,
   tabSize: 2,
 };
+
+/**
+ * LSP 诊断 → Monaco marker。
+ * 两边严重级别的编码不同（LSP 1=Error…4=Hint；Monaco Error=8/Warning=4/Info=2/Hint=1），
+ * 必须显式映射，否则错误会被画成提示、提示会被画成错误。
+ */
+function toMonacoMarker(diagnostic: WorkbenchLspDiagnostic): monacoNs.editor.IMarkerData {
+  const severity =
+    diagnostic.severity === 2
+      ? monacoNs.MarkerSeverity.Warning
+      : diagnostic.severity === 3
+        ? monacoNs.MarkerSeverity.Info
+        : diagnostic.severity === 4
+          ? monacoNs.MarkerSeverity.Hint
+          : monacoNs.MarkerSeverity.Error; // 缺省按 LSP 规范视为 Error
+  return {
+    severity,
+    message: diagnostic.message,
+    source: diagnostic.source ?? "lsp",
+    startLineNumber: diagnostic.range.start.line + 1,
+    startColumn: diagnostic.range.start.character + 1,
+    endLineNumber: diagnostic.range.end.line + 1,
+    endColumn: diagnostic.range.end.character + 1,
+  };
+}
 
 function fileBaseName(path: string): string {
   const normalized = path.split("\\").join("/");
@@ -487,6 +513,41 @@ export function WorkbenchPage({
     editor.setPosition({ lineNumber: line, column: 1 });
     setPendingReveal(null);
   }, [pendingReveal, activePath, buffers]);
+
+  // ── 语言服务（LSP）诊断 ─────────────────────────────────
+  // 主进程里的外部语言服务推回诊断（它读得到 tsconfig 和依赖，不像 Monaco 自带的 TS 服务那样误报），
+  // 这里只负责画成 Monaco 的 marker。服务不存在时什么都不会来，编辑器照常可用。
+  const [lspDiagnostics, setLspDiagnostics] = useState<Record<string, WorkbenchLspDiagnostic[]>>({});
+
+  useEffect(() => {
+    const api = workbenchApi();
+    if (!api?.onLspDiagnostics) return;
+    return api.onLspDiagnostics((payload) => {
+      if (payload.sessionId !== sessionId) return;
+      setLspDiagnostics((current) => ({ ...current, [payload.path]: payload.diagnostics }));
+    });
+  }, [sessionId]);
+
+  // marker 挂在 model 上，所以要拿到 model 才画；换文件、诊断更新都要重画一遍
+  useEffect(() => {
+    const model = editorRef.current?.getModel();
+    if (!model || !activePath) return;
+    monacoNs.editor.setModelMarkers(model, "lsp", (lspDiagnostics[activePath] ?? []).map(toMonacoMarker));
+  }, [activePath, lspDiagnostics, buffers]);
+
+  // 把编辑器当前内容同步给语言服务。防抖是必须的：每敲一个字往返一趟会把语言服务压垮。
+  // 二进制/被截断/读失败的文件内容不可信，工作区外的文件不属于任何项目，都不送。
+  useEffect(() => {
+    if (!activePath || isExternalPath(activePath)) return;
+    const entry = buffers[activePath];
+    if (!entry || entry.loading || entry.error || entry.binary || entry.truncated) return;
+    const api = workbenchApi();
+    if (!api?.syncLspDocument) return;
+    const timer = window.setTimeout(() => {
+      void api.syncLspDocument(sessionId, activePath, entry.content, monacoLanguageFor(activePath)).catch(() => undefined);
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [activePath, buffers, sessionId]);
 
   /**
    * 跟随昔涟：它刚改动了某个工作区文件，切过去并刷新内容。

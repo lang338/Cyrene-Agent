@@ -114,3 +114,29 @@ export interface LedgerFileVersions {
   before: string | null | undefined;
   after: string | null | undefined;
 }
+
+// ── 语言服务（LSP）诊断 ────────────────────────────────────
+//
+// 只挑编辑器画红线需要的字段：渲染端不该为了几个字段去依赖整个 LSP 类型包。
+
+/** LSP 位置（行、列都是从 0 开始） */
+export interface LspPosition {
+  line: number;
+  character: number;
+}
+
+export interface LspRange {
+  start: LspPosition;
+  end: LspPosition;
+}
+
+/** LSP 约定：1=Error、2=Warning、3=Information、4=Hint */
+export type LspSeverity = 1 | 2 | 3 | 4;
+
+export interface WorkbenchLspDiagnostic {
+  message: string;
+  severity?: LspSeverity;
+  range: LspRange;
+  source?: string;
+  code?: string | number;
+}

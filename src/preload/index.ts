@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { IPC } from "../shared/ipc-channels";
 import type { StartTtsRequest, TtsSessionEvent, TtsStartResult } from "../shared/tts-session";
 import type { ScreenshotInsertPayload } from "../shared/ipc-channels";
+import type { WorkbenchLspDiagnostic } from "../shared/code-workbench-types";
 import type {
   SpeechInputCommitRequest,
   SpeechInputCommitResult,
@@ -832,6 +833,22 @@ const workbenchApi = {
     const listener = (_event: Electron.IpcRendererEvent, payload: { sessionId: string }) => callback(payload);
     ipcRenderer.on(IPC.WORKBENCH_LEDGER_CHANGED, listener);
     return () => ipcRenderer.removeListener(IPC.WORKBENCH_LEDGER_CHANGED, listener);
+  },
+  // 语言服务（LSP）：把编辑器当前内容同步给外部语言服务，并订阅回推的诊断。
+  // 主进程找不到语言服务时会静默返回 false，编辑器据此保持"没有诊断"的状态
+  syncLspDocument: (sessionId: string, path: string, content: string, languageId: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_LSP_SYNC, { sessionId, path, content, languageId }) as Promise<boolean>,
+  closeLspDocument: (sessionId: string, path: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_LSP_CLOSE, { sessionId, path }) as Promise<boolean>,
+  onLspDiagnostics: (
+    callback: (payload: { sessionId: string; path: string; diagnostics: WorkbenchLspDiagnostic[] }) => void,
+  ) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      payload: { sessionId: string; path: string; diagnostics: WorkbenchLspDiagnostic[] },
+    ) => callback(payload);
+    ipcRenderer.on(IPC.WORKBENCH_LSP_DIAGNOSTICS, listener);
+    return () => ipcRenderer.removeListener(IPC.WORKBENCH_LSP_DIAGNOSTICS, listener);
   },
 };
 contextBridge.exposeInMainWorld("workbench", workbenchApi);

@@ -113,6 +113,7 @@ import { createCheckpointService } from "../code-git/checkpoint-service";
 import { configureChangeLedger, createChangeLedger, getConfiguredChangeLedger } from "../code-git/change-ledger-service";
 import { createWorkspaceFileService } from "../code-git/workspace-files";
 import { registerWorkbenchIpc } from "../code-git/workbench-ipc";
+import { registerWorkbenchLspBridge } from "../lsp/editor-bridge";
 import { installSingleInstanceGuard } from "../single-instance";
 import { createWindowManager } from "../windows/window-manager";
 import { createTray } from "../tray";
@@ -533,6 +534,19 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
             }
           },
           getWorkspaceRoot: (sessionId) => chatsStore.getSession(sessionId)?.workspaceBinding?.workspaceRoot,
+        });
+
+        // 工作台编辑器的语言服务桥：编辑器内容同步给外部语言服务，诊断回推给 Monaco 画红线。
+        // 找不到语言服务时整条链静默降级（编辑器照常可用）。
+        registerWorkbenchLspBridge({
+          ipc,
+          lsp: services.lsp,
+          getWorkspaceRoot: (sessionId) => chatsStore.getSession(sessionId)?.workspaceBinding?.workspaceRoot,
+          publishDiagnostics: (payload) => {
+            for (const win of BrowserWindow.getAllWindows()) {
+              if (!win.isDestroyed()) win.webContents.send(IPC.WORKBENCH_LSP_DIAGNOSTICS, payload);
+            }
+          },
         });
 
         // AG-UI 事件流桥：渲染进程 invoke(AGUI_RUN) → CyreneAgent 跑 Agent 循环 → 事件透传

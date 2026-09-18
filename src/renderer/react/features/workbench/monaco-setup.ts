@@ -40,9 +40,11 @@ export function setupMonaco(): void {
       }
     },
   };
-  // 诊断关闭：Monaco 的 TS 服务没有项目上下文（不读 tsconfig、不解析依赖），
-  // 打开会大面积误报"找不到模块 xx"——要开得先解决喂项目上下文的问题。
-  // 注意：补全不在这里控制（由 WorkbenchPage 的编辑器选项打开），两者互不影响。
+  // 内置 TS 服务的诊断保持关闭：它没有项目上下文（不读 tsconfig、不解析依赖），
+  // 打开会大面积误报"找不到模块 xx"。工作台的诊断改由主进程里的外部语言服务提供
+  // （见 lsp/editor-bridge.ts，渲染端在 WorkbenchPage 里画成 marker）——
+  // 两套诊断同时开只会互相打架。
+  // 注意：补全仍走内置服务（由 WorkbenchPage 的编辑器选项打开），两者互不影响。
   // monaco-editor 0.56+：语言服务命名空间挂在根导出（monaco.typescript / monaco.json）。
   const noDiagnostics = { noSemanticValidation: true, noSyntaxValidation: true, noSuggestionDiagnostics: true } as const;
   monaco.typescript.typescriptDefaults.setDiagnosticsOptions(noDiagnostics);
