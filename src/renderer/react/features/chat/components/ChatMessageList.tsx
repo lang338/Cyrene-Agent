@@ -131,8 +131,9 @@ function MarkdownCode({ children, lang, block }: ComponentProps<{ children?: Rea
 }
 
 /**
- * 段落与列表项：正文里裸写的路径（"我改了 src/a.ts"）也要能点。
- * 只切分字符串子节点，不递归进元素内部——代码块、加粗里的内容不该被改写。
+ * 段落、列表项、表格单元格、加粗/斜体：正文里裸写的路径（"我改了 src/a.ts"）都要能点。
+ * 只切分字符串子节点，不递归进元素内部——代码块里的内容不该被改写。
+ * 这几类块是模型报告改动时最常用的排版，漏掉任何一个都会出现"有的能点、有的不能"。
  */
 function MarkdownParagraph({ children, className }: ComponentProps<{ children?: ReactNode }>) {
   return <p className={className}>{linkifyNode(children)}</p>;
@@ -142,7 +143,47 @@ function MarkdownListItem({ children, className }: ComponentProps<{ children?: R
   return <li className={className}>{linkifyNode(children)}</li>;
 }
 
-const markdownComponents = { code: MarkdownCode, p: MarkdownParagraph, li: MarkdownListItem };
+/**
+ * 单元格只透传影响表格结构的属性（合并单元格、对齐）：
+ * XMarkdown 会把整个 html attribs 展开成 props，其中还混着 domNode/streamStatus
+ * 这类内部字段，整包展开到 DOM 上会触发 React 的未知属性告警。
+ */
+function cellLayoutProps(source: Record<string, unknown>): Record<string, unknown> {
+  const layout: Record<string, unknown> = {};
+  // 属性名按 HTML 原名传来（colspan/rowspan），落到 React 要换成驼峰
+  const colSpan = source.colSpan ?? source.colspan;
+  const rowSpan = source.rowSpan ?? source.rowspan;
+  if (colSpan !== undefined) layout.colSpan = colSpan;
+  if (rowSpan !== undefined) layout.rowSpan = rowSpan;
+  if (source.align !== undefined) layout.align = source.align;
+  return layout;
+}
+
+function MarkdownTableCell({ children, className, ...rest }: ComponentProps<{ children?: ReactNode }>) {
+  return <td className={className} {...cellLayoutProps(rest)}>{linkifyNode(children)}</td>;
+}
+
+function MarkdownTableHeaderCell({ children, className, ...rest }: ComponentProps<{ children?: ReactNode }>) {
+  return <th className={className} {...cellLayoutProps(rest)}>{linkifyNode(children)}</th>;
+}
+
+function MarkdownStrong({ children, className }: ComponentProps<{ children?: ReactNode }>) {
+  return <strong className={className}>{linkifyNode(children)}</strong>;
+}
+
+function MarkdownEmphasis({ children, className }: ComponentProps<{ children?: ReactNode }>) {
+  return <em className={className}>{linkifyNode(children)}</em>;
+}
+
+const markdownComponents = {
+  code: MarkdownCode,
+  p: MarkdownParagraph,
+  li: MarkdownListItem,
+  td: MarkdownTableCell,
+  th: MarkdownTableHeaderCell,
+  strong: MarkdownStrong,
+  em: MarkdownEmphasis,
+};
 const completedMarkdownOptions = {
   hasNextChunk: false,
   enableAnimation: false,
