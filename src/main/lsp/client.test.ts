@@ -210,6 +210,30 @@ describe("resolveLaunchTarget", () => {
     expect(() => resolveLaunchTarget(shim, [], "win32", "C:\\node\\node.exe")).toThrow(/无法解析语言服务的启动壳/);
   });
 
+  it("打包后把 asar 内的入口换成 asar.unpacked 的真实路径", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-asar-"));
+    roots.push(root);
+    const relative = path.join("node_modules", "typescript-language-server", "lib", "cli.mjs");
+    const packedEntry = path.join(root, "app.asar", relative);
+    const unpackedEntry = path.join(root, "app.asar.unpacked", relative);
+    // 模拟 Electron 的 asar 感知 fs：两个路径都"读得到"（真实文件在 unpacked）
+    for (const target of [packedEntry, unpackedEntry]) {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, "// entry\n", "utf8");
+    }
+    const shim = path.join(root, "app.asar", "node_modules", ".bin", "typescript-language-server.cmd");
+    fs.mkdirSync(path.dirname(shim), { recursive: true });
+    fs.writeFileSync(
+      shim,
+      "@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\..\\typescript-language-server\\lib\\cli.mjs\" %*\r\n",
+      "utf8",
+    );
+
+    const target = resolveLaunchTarget(shim, ["--stdio"], "win32", "C:\\app\\electron.exe", true);
+    // 子进程（node）不认识 asar 虚拟路径，必须给真实磁盘路径
+    expect(target.args[0]).toBe(unpackedEntry);
+  });
+
   it("adds the Node-mode env var only when running under Electron", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-shim-electron-"));
     roots.push(root);

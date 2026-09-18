@@ -73,6 +73,17 @@ function readNpmShimEntry(shimPath: string): string | null {
 }
 
 /**
+ * 打包后（asar）的路径要换回真实磁盘路径。
+ * 语言服务是交给 **node 子进程**跑的，而子进程不认识 asar 虚拟路径——
+ * 与 srt-win 踩过的是同一个坑（见 sandbox-exec 的 toUnpackedSrtWinPath）。
+ * 开发模式下路径里没有 app.asar，这里是 no-op。
+ */
+function toRealDiskPath(target: string): string {
+  const marker = `${path.sep}app.asar${path.sep}`;
+  return target.includes(marker) ? target.replace(marker, `${path.sep}app.asar.unpacked${path.sep}`) : target;
+}
+
+/**
  * 计算实际要 spawn 的命令。Windows 上三个坑叠在一起：
  * 1. npm 装的 CLI 是 `.cmd` 壳，Node 20+ 出于安全不再允许直接 spawn（EINVAL）；
  * 2. 改用 `shell: true` 后，路径里的空格会被 cmd 拆断（本项目路径就含空格与中文）；
@@ -99,7 +110,7 @@ export function resolveLaunchTarget(
   }
   return {
     command: execPath,
-    args: [entry, ...args],
+    args: [toRealDiskPath(entry), ...args],
     ...(isElectron ? { env: { ELECTRON_RUN_AS_NODE: "1" } } : {}),
   };
 }
