@@ -59,6 +59,7 @@ import type { PluginManager } from "../../plugins/manager";
 import { setLive2dWindowSender } from "../orchestrator/tools/built-in-tools";
 import { registerAllTools } from "../orchestrator/tools/registry/tool-registration";
 import { LspManager } from "../lsp/manager";
+import { resolveLspServer } from "../lsp/server-discovery";
 import { initSandbox } from "../orchestrator/sandbox/sandbox-exec";
 import {
   enterPlanDiscussing,
@@ -353,9 +354,14 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         const changeLedger = createChangeLedger({ rootDir: path.join(app.getPath("userData"), "cyrene-changes") });
         configureChangeLedger(changeLedger);
 
-        // LSP：管理器预创建；具体语言服务进程按需启动
+        // LSP：管理器预创建；具体语言服务进程按需启动。
+        // 查找目录里额外加一档"应用自带"（app 根下的 node_modules/.bin）：
+        // 用户不必自己安装语言服务，开箱就有诊断可用；项目里自己装了的话仍优先用项目那份。
+        const bundledLspBinDir = path.join(app.getAppPath(), "node_modules", ".bin");
         const lsp = new LspManager({
           getServerOverrides: () => loadGeneralSettings().lspServerOverrides,
+          resolveServer: (definition, workspaceRoot) =>
+            resolveLspServer(definition, workspaceRoot, { extraBinDirs: [bundledLspBinDir] }),
         });
 
         // 截图：原生 helper IPC、全局热键。预热在 background 阶段执行。

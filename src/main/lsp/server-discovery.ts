@@ -12,6 +12,12 @@ export interface LspDiscoveryOptions {
   PATH?: string;
   PATHEXT?: string;
   platform?: NodeJS.Platform;
+  /**
+   * 额外的可执行文件搜索目录（应用自带的语言服务放这里）。
+   * 顺序排在工作区之后、系统 PATH 之前：项目里自己装了的优先用项目那份，
+   * 版本跟项目更贴；都没有时才回落到应用自带的那份。
+   */
+  extraBinDirs?: readonly string[];
 }
 
 function isRegularFile(candidate: string): boolean {
@@ -58,15 +64,18 @@ export function resolveLspServer(
   const platform = options.platform ?? process.platform;
   const pathExt = options.PATHEXT ?? process.env.PATHEXT;
   const systemPath = options.PATH ?? process.env.PATH ?? "";
-  const localBin = path.join(workspaceRoot, "node_modules", ".bin");
+  // 工作区自带 → 应用自带 → 系统 PATH，越靠前越优先
+  const binDirs = [path.join(workspaceRoot, "node_modules", ".bin"), ...(options.extraBinDirs ?? [])];
   const pathEntries = systemPath.split(path.delimiter).filter(Boolean);
 
   for (const command of definition.commands) {
     const explicit = findExecutable(command.command, undefined, platform, pathExt);
     if (explicit) return { definition, executablePath: explicit, args: [...command.args] };
 
-    const local = findExecutable(command.command, localBin, platform, pathExt);
-    if (local) return { definition, executablePath: local, args: [...command.args] };
+    for (const directory of binDirs) {
+      const found = findExecutable(command.command, directory, platform, pathExt);
+      if (found) return { definition, executablePath: found, args: [...command.args] };
+    }
 
     for (const directory of pathEntries) {
       const resolved = findExecutable(command.command, directory, platform, pathExt);
