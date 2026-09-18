@@ -22,7 +22,7 @@ export interface LspChildProcess {
 export interface LspClientOptions {
   server: ResolvedLspServer;
   workspaceRoot: string;
-  spawnImpl?: (command: string, args: string[], options: { cwd: string; shell: false; windowsHide: true; stdio: ["pipe", "pipe", "pipe"] }) => LspChildProcess;
+  spawnImpl?: (command: string, args: string[], options: { cwd: string; shell: false; windowsHide: true; stdio: ["pipe", "pipe", "pipe"]; env?: NodeJS.ProcessEnv }) => LspChildProcess;
 }
 
 interface OpenDocument {
@@ -36,7 +36,7 @@ interface OpenDocument {
 function defaultSpawn(
   command: string,
   args: string[],
-  options: { cwd: string; shell: false; windowsHide: true; stdio: ["pipe", "pipe", "pipe"] },
+  options: { cwd: string; shell: false; windowsHide: true; stdio: ["pipe", "pipe", "pipe"]; env?: NodeJS.ProcessEnv },
 ): LspChildProcess {
   return spawn(command, args, options) as unknown as LspChildProcess;
 }
@@ -44,6 +44,13 @@ function defaultSpawn(
 export interface LspLaunchTarget {
   command: string;
   args: string[];
+  /**
+   * 子进程要额外附加的环境变量。
+   * Electron 主进程里 process.execPath 是 electron(.exe)：直接拿它跑一个 .mjs 不会执行脚本，
+   * 而是被当成"启动一个新应用"（实测无任何输出）。必须带 ELECTRON_RUN_AS_NODE=1，
+   * 这是 Electron 官方的纯 Node 模式开关，加上它行为才等价于 node。
+   */
+  env?: Record<string, string>;
 }
 
 /**
@@ -66,10 +73,12 @@ function readNpmShimEntry(shimPath: string): string | null {
 }
 
 /**
- * 计算实际要 spawn 的命令。Windows 有两个坑叠在一起：
+ * 计算实际要 spawn 的命令。Windows 上三个坑叠在一起：
  * 1. npm 装的 CLI 是 `.cmd` 壳，Node 20+ 出于安全不再允许直接 spawn（EINVAL）；
- * 2. 改用 `shell: true` 后，路径里的空格会被 cmd 拆断（本项目路径就含空格与中文）。
- * 所以这里把壳里的 JS 入口解析出来，用 node 直接跑——与壳等价，且没有引号与转义问题。
+ * 2. 改用 `shell: true` 后，路径里的空格会被 cmd 拆断（本项目路径就含空格与中文）；
+ * 3. 壳里最终用 node 跑一个 JS 入口，而 Electron 主进程的 execPath 是 electron(.exe)，
+ *    拿它跑脚本会被当成"启动一个新应用"，脚本根本不执行（实测无输出）。
+ * 所以这里把壳里的 JS 入口解析出来直接用 execPath 跑，并按需补上纯 Node 模式的环境变量。
  * 非 Windows、或 `.exe` 这类本就可直接执行的目标，一律原样返回。
  */
 export function resolveLaunchTarget(
@@ -77,13 +86,18 @@ export function resolveLaunchTarget(
   args: readonly string[],
   platform: NodeJS.Platform = process.platform,
   execPath: string = process.execPath,
+  isElectron = Boolean(process.versions?.electron),
 ): LspLaunchTarget {
   if (platform !== "win32" || !/\.(cmd|bat)$/i.test(executablePath)) {
     return { command: executablePath, args: [...args] };
   }
   const entry = readNpmShimEntry(executablePath);
   if (!entry) return { command: executablePath, args: [...args] };
-  return { command: execPath, args: [entry, ...args] };
+  return {
+    command: execPath,
+    args: [entry, ...args],
+    ...(isElectron ? { env: { ELECTRON_RUN_AS_NODE: "1" } } : {}),
+  };
 }
 
 function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message: string, signal?: AbortSignal): Promise<T> {
@@ -140,6 +154,8 @@ export class LspClient {
         shell: false,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
+        // Electron 下必须带上纯 Node 模式变量，否则 execPath 只会把脚本当成新应用启动
+        ...(launch.env ? { env: { ...process.env, ...launch.env } } : {}),
       });
     } catch (cause) {
       // spawn 失败是同步抛出的（例如 Windows 上直接跑 .cmd 得到的 EINVAL），
@@ -148,6 +164,11 @@ export class LspClient {
       throw new Error(`无法启动语言服务 ${this.options.server.definition.id}（${launch.command}）：${detail}`);
     }
     if (!child.stdin || !child.stdout) throw new Error("LSP server did not expose stdio pipes");
+    // 语言服务进程意外退出后，再往管道里写会 EPIPE；没有 error 监听的话
+    // 这会变成未处理错误（Node 15+ 默认直接终止进程），把整个应用带崩。
+    // 这里吞掉管道错误，交给下面的 exit 回调去标记"未初始化"。
+    child.stdin.on("error", () => undefined);
+    child.stdout.on("error", () => undefined);
 
     const connection = createMessageConnection(child.stdout, child.stdin);
     connection.onNotification("textDocument/publishDiagnostics", (params: { uri?: string; diagnostics?: Diagnostic[] }) => {

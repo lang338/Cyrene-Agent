@@ -195,4 +195,29 @@ describe("resolveLaunchTarget", () => {
 
     expect(resolveLaunchTarget(shim, [], "win32", "C:\\node\\node.exe")).toEqual({ command: shim, args: [] });
   });
+
+  it("adds the Node-mode env var only when running under Electron", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-shim-electron-"));
+    roots.push(root);
+    const entry = path.join(root, "node_modules", "typescript-language-server", "lib", "cli.mjs");
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    fs.writeFileSync(entry, "// entry\n", "utf8");
+    const binDir = path.join(root, "node_modules", ".bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    const shim = path.join(binDir, "typescript-language-server.cmd");
+    fs.writeFileSync(
+      shim,
+      "@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\..\\typescript-language-server\\lib\\cli.mjs\" %*\r\n",
+      "utf8",
+    );
+
+    // 纯 node 环境：直接跑脚本即可，不需要额外变量
+    expect(resolveLaunchTarget(shim, ["--stdio"], "win32", "C:\\node\\node.exe", false).env).toBeUndefined();
+    // Electron：execPath 是 electron.exe，不补这个变量脚本根本不会被执行
+    expect(resolveLaunchTarget(shim, ["--stdio"], "win32", "C:\\app\\electron.exe", true)).toEqual({
+      command: "C:\\app\\electron.exe",
+      args: [entry, "--stdio"],
+      env: { ELECTRON_RUN_AS_NODE: "1" },
+    });
+  });
 });
