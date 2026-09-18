@@ -13,7 +13,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { LedgerChangeKind, LedgerSkipReason, LedgerSource } from "../../../shared/code-workbench-types";
-import { DEFAULT_MAX_TEXT_BYTES, type ChangeLedger } from "../../code-git/change-ledger-service";
+import { DEFAULT_MAX_TEXT_BYTES, isMissingFileError, type ChangeLedger } from "../../code-git/change-ledger-service";
 import { extractFileChangesFromOutput } from "../tools/registry/tool-evidence";
 
 /** 永不记账的目录：这些位置的改动不需要回退（要么是依赖，要么是产物，重装/重建即可） */
@@ -183,15 +183,22 @@ type LedgerReadOutcome =
  * 读一份文件内容给账本用。
  * 判定顺序刻意是"先 stat 看大小再读"：避免为一个 200MB 的文件白读一遍。
  * 返回 content:null 表示"文件不在"（删除语义），skipped 表示"内容没入库、不可回退"。
+ *
+ * ⚠️ "文件不在"必须严格等于 ENOENT：null 在账本里是"回退时删除"的语义，
+ * 权限/句柄耗尽等暂时性错误若也记成 null，回退就会删掉一个真实存在的文件
+ * （与 workbench-ipc 保存侧同一口径）。同理，"路径存在但不是常规文件"（目录等）
+ * 也不等于"不存在"——否则回退会去 rm 一个目录。
  */
 async function readFileForLedger(absolute: string): Promise<LedgerReadOutcome> {
   let stat: fs.Stats;
   try {
     stat = await fs.promises.stat(absolute);
-  } catch {
-    return { kind: "content", content: null };
+  } catch (error) {
+    return isMissingFileError(error)
+      ? { kind: "content", content: null }
+      : { kind: "skipped", reason: "unreadable" };
   }
-  if (!stat.isFile()) return { kind: "content", content: null };
+  if (!stat.isFile()) return { kind: "skipped", reason: "unreadable" };
   if (stat.size > DEFAULT_MAX_TEXT_BYTES) return { kind: "skipped", reason: "too-large" };
   let buffer: Buffer;
   try {

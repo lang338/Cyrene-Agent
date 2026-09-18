@@ -162,6 +162,38 @@ describe("beginChangeCapture", () => {
     expect(records[0].afterSkipped).toBe("binary");
   });
 
+  it("stat 抛非 ENOENT（权限/句柄）：记成无基线，绝不能记成 null", async () => {
+    const { ledger, records } = fakeLedger();
+    await seed("src/a.ts", "before\n");
+    // EACCES 只说明"这次没读到"，不等于"文件不存在"。
+    // 若记成 null，账本会把它读作"当时不存在"，回退时删掉这个真实文件。
+    const stat = vi.spyOn(fs.promises, "stat").mockRejectedValueOnce(
+      Object.assign(new Error("denied"), { code: "EACCES" }),
+    );
+    let session: Awaited<ReturnType<typeof beginChangeCapture>>;
+    try {
+      session = await beginChangeCapture(captureInput({ ledger }));
+    } finally {
+      stat.mockRestore();
+    }
+    await seed("src/a.ts", "after\n");
+    await session?.finish(JSON.stringify({ changes: [{ file: path.join(workspaceRoot, "src/a.ts"), kind: "modified", insertions: 1, deletions: 1 }] }));
+
+    expect(records[0].before).toBeUndefined(); // 无基线 → 回退跳过该文件
+    expect(records[0].after).toBe("after\n");
+  });
+
+  it("路径存在但不是常规文件（目录）：同样不给 null 基线，不当成可回退", async () => {
+    const { ledger, records } = fakeLedger();
+    await fs.promises.mkdir(path.join(workspaceRoot, "assets"), { recursive: true });
+    const session = await beginChangeCapture(captureInput({ args: { path: "assets" }, ledger }));
+    await session?.finish(JSON.stringify({ changes: [{ file: path.join(workspaceRoot, "assets"), kind: "modified", insertions: 0, deletions: 0 }] }));
+
+    expect(records[0].before).toBeUndefined();
+    expect(records[0].after).toBeUndefined();
+    expect(records[0].afterSkipped).toBe("unreadable");
+  });
+
   it("同一轮同一文件改两次：基线保留最早那份（不会记成中间态）", async () => {
     const { ledger, records } = fakeLedger();
     const evidence = (kind: string) => JSON.stringify({
