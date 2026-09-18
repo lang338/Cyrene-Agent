@@ -4,6 +4,7 @@ import Latex from "@ant-design/x-markdown/plugins/Latex";
 import { Component, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ErrorInfo, type KeyboardEvent, type ReactNode } from "react";
 import { t, useTranslation } from "../../../i18n";
 import { normalizeModelMarkdown } from "./markdown-normalize";
+import { FilePathLink, linkifyNode, parseMessageFilePath } from "./message-file-link";
 import { resolveAsset } from "../../../../../shared/renderer-base";
 import type { AgentRoundRecord, ChatMessageChannelSource, ConversationMode, ProcessMessageRecord, ReasoningBlock, RunActivityRecord, TaskDelegationDisplayRecord, ToolExecutionRecord, ToolFileChange } from "../../../../../shared/chat-types";
 import type { ContextUsageSnapshot } from "../../../../../shared/context-usage";
@@ -107,7 +108,14 @@ const MessageStreamingContext = createContext(false);
 
 function MarkdownCode({ children, lang, block }: ComponentProps<{ children?: ReactNode }>) {
   const streaming = useContext(MessageStreamingContext);
-  if (!block) return <code>{children}</code>;
+  if (!block) {
+    // 行内代码里最常见的内容就是文件路径（`src/a.ts:42`）。有提供方（工作台）时它变成可点，
+    // 没有（主聊天页）时 FilePathLink 原样输出文本——同一段 JSX 两处行为不同，但主链路零改动
+    const text = String(children ?? "");
+    const fileTarget = parseMessageFilePath(text, { allowSpaces: true });
+    if (fileTarget) return <code><FilePathLink target={fileTarget} label={text} /></code>;
+    return <code>{children}</code>;
+  }
   const source = String(children ?? "").replace(/\n$/, "");
   if ((lang ?? "").split(/\s+/)[0] === "mermaid") {
     return <MermaidBlock code={source} streaming={streaming} />;
@@ -122,7 +130,19 @@ function MarkdownCode({ children, lang, block }: ComponentProps<{ children?: Rea
   );
 }
 
-const markdownComponents = { code: MarkdownCode };
+/**
+ * 段落与列表项：正文里裸写的路径（"我改了 src/a.ts"）也要能点。
+ * 只切分字符串子节点，不递归进元素内部——代码块、加粗里的内容不该被改写。
+ */
+function MarkdownParagraph({ children, className }: ComponentProps<{ children?: ReactNode }>) {
+  return <p className={className}>{linkifyNode(children)}</p>;
+}
+
+function MarkdownListItem({ children, className }: ComponentProps<{ children?: ReactNode }>) {
+  return <li className={className}>{linkifyNode(children)}</li>;
+}
+
+const markdownComponents = { code: MarkdownCode, p: MarkdownParagraph, li: MarkdownListItem };
 const completedMarkdownOptions = {
   hasNextChunk: false,
   enableAnimation: false,

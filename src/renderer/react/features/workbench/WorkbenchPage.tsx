@@ -11,6 +11,7 @@ import { useTranslation } from "../../i18n";
 import type { ConversationMode } from "../../../../shared/chat-types";
 import type { LedgerRestoreResult, WorkbenchFileContent, WorkbenchFileEntry } from "../../../../shared/code-workbench-types";
 import { ChatMessageList, type ChatMessageItem } from "../chat/components/ChatMessageList";
+import { MessageFileLinkContext, type MessageFileOpenTarget } from "../chat/components/message-file-link";
 import { ComposerInteractionPanel, type ComposerInteractionCallbacks } from "../chat/components/ComposerSlot";
 import type { ComposerInteraction } from "../chat/components/run-presentation";
 import { monacoLanguageFor, setupMonaco } from "./monaco-setup";
@@ -188,6 +189,9 @@ export function WorkbenchPage({
   const [historyView, setHistoryView] = useState<"changes" | "snapshots">("changes");
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
+  // 从消息里的路径点进来且带行号时，先把"待跳转"记下：切换文件会重建编辑器实例，
+  // 得等目标文件真的载入后再落到编辑器上（见下面那个 effect）
+  const [pendingReveal, setPendingReveal] = useState<{ path: string; line: number } | null>(null);
   const [buffers, setBuffers] = useState<Record<string, BufferEntry>>({});
   const [treeRefresh, setTreeRefresh] = useState(0);
   const [timelineRefresh, setTimelineRefresh] = useState(0);
@@ -355,28 +359,34 @@ export function WorkbenchPage({
   }, [loadBuffer]);
 
   /**
-   * 路径栏里手输路径后跳转。两种写法都接受：
+   * 路径栏里手输路径后跳转；消息里的文件链接也走这里（同一条通道，行为一致）。
+   * 两种写法都接受：
    * - 工作区相对路径（判定复用跟随昔涟那套 resolveWorkspaceRelative，绝对路径只要落在工作区内也走这条）
    * - 全盘绝对路径 → 工作区外的文件
    *
    * 存在性判定分两路，都是为了"别把用户丢进英文报错页"：
    * 工作区内可枚举父目录列表；工作区外没法枚举，就直接读一次——读到的内容顺手当装载结果，不读第二遍。
+   *
+   * 返回实际打开的文件键（与 activePath 同一个值空间：工作区内是相对路径、工作区外是绝对路径），
+   * 没打开则返回 null。调用方需要这个值：消息里的链接要按它做行号跳转（用户写的 `./src/a.ts`
+   * 和编辑器里的键 `src/a.ts` 不是一个字符串），失败时也要额外提示一次
+   * （那时路径栏可能根本没渲染，错误会看不见）。
    */
-  const openByPath = useCallback(async (raw: string) => {
+  const openByPath = useCallback(async (raw: string): Promise<string | null> => {
     const api = workbenchApi();
-    if (!api) return;
+    if (!api) return null;
     const insidePath = resolveWorkspaceRelative(raw, workspaceRoot);
     const outsidePath = insidePath ? null : absolutePathInput(raw);
     if (!insidePath && !outsidePath) {
       setPathError(t("workbench.pathInvalid"));
-      return;
+      return null;
     }
 
     if (insidePath) {
       if (insidePath === activePath) {
         setPathDraft(null);
         setPathError(null);
-        return;
+        return insidePath;
       }
       const slash = insidePath.lastIndexOf("/");
       const parent = slash === -1 ? "" : insidePath.slice(0, slash);
@@ -386,7 +396,7 @@ export function WorkbenchPage({
         entries = await api.listDir(sessionId, parent);
       } catch (cause) {
         setPathError(cleanIpcError(cause));
-        return;
+        return null;
       }
       // Windows 的文件名大小写不敏感：按原样找不到时再宽松匹配一次，并采用磁盘上的真实写法
       const match =
@@ -394,18 +404,18 @@ export function WorkbenchPage({
         entries.find((entry) => entry.name.toLowerCase() === name.toLowerCase());
       if (!match) {
         setPathError(t("workbench.pathMissing"));
-        return;
+        return null;
       }
       if (match.type === "dir") {
         setPathError(t("workbench.pathIsDir"));
-        return;
+        return null;
       }
       setPathError(null);
       setPathDraft(null);
       // 左栏也定位过去：既然用户明确指到了这个文件，树里看不到它会显得像没生效
       setRevealPath(match.path);
       await openFile(match.path);
-      return;
+      return match.path;
     }
 
     // 工作区外：读盘结果直接当缓冲，key 用主进程解析后的绝对路径（见 absolutePathInput 说明）
@@ -414,14 +424,14 @@ export function WorkbenchPage({
       file = (await api.readOutsideFile(sessionId, outsidePath as string)) as WorkbenchFileContent;
     } catch (cause) {
       setPathError(cleanIpcError(cause));
-      return;
+      return null;
     }
     setPathError(null);
     setPathDraft(null);
     setMiddleTab("code");
     if (buffersRef.current[file.path]) {
       setActivePath(file.path);
-      return;
+      return file.path;
     }
     setOpenTabs((current) => (current.includes(file.path) ? current : [...current, file.path]));
     setActivePath(file.path);
@@ -436,7 +446,38 @@ export function WorkbenchPage({
         error: null,
       },
     }));
+    return file.path;
   }, [activePath, openFile, sessionId, t, workspaceRoot]);
+
+  /**
+   * 消息正文里的文件路径被点开：走与路径栏完全同一条通道（解析、存在性校验、错误提示都一致）。
+   * 失败时额外在顶栏提示一次——用户刚点的是正文里的链接，视线不在路径栏，而路径栏没打开文件时根本不渲染。
+   */
+  const handleFileLink = useCallback(async (target: MessageFileOpenTarget) => {
+    const openedPath = await openByPath(target.path);
+    if (!openedPath) {
+      setError(t("workbench.fileLinkFailed", { path: target.path }));
+      return;
+    }
+    if (target.line !== undefined) setPendingReveal({ path: openedPath, line: target.line });
+  }, [openByPath, t]);
+
+  // 带行号的链接（`src/a.ts:42`）：文件载入完成后滚到那一行。
+  // 不写在 Editor 的 onMount 里，是因为"这个文件本来就开着"时编辑器不会重新挂载。
+  // 时序上这里是安全的：切文件时 Editor 因 key 变化重建，子组件的 effect 先于本组件的 effect 执行，
+  // 所以读到的一定是新实例。
+  useEffect(() => {
+    if (!pendingReveal || !activePath) return;
+    if (pendingReveal.path !== activePath) return;
+    const entry = buffers[activePath];
+    if (!entry || entry.loading) return;
+    const editor = editorRef.current;
+    if (!editor || !editor.getModel()) return;
+    const line = Math.max(1, pendingReveal.line);
+    editor.revealLineInCenter(line);
+    editor.setPosition({ lineNumber: line, column: 1 });
+    setPendingReveal(null);
+  }, [pendingReveal, activePath, buffers]);
 
   /**
    * 跟随昔涟：它刚改动了某个工作区文件，切过去并刷新内容。
@@ -1001,14 +1042,18 @@ export function WorkbenchPage({
           <div className="cy-workbench__col-header">{t("workbench.chatHeader")}</div>
           <div className="cy-workbench__col-body cy-workbench__chat-body">
             {messages.length > 0 && (
-              <ChatMessageList
-                messages={messages}
-                conversationId={sessionId}
-                mode={mode}
-                preferredAddress={preferredAddress}
-                stickerSize={stickerSize}
-                onTtsCacheKey={onTtsCacheKey}
-              />
+              // 只有工作台提供这个上下文：右栏消息里的文件路径才变成可点开的链接。
+              // 主聊天页不提供，同一份 ChatMessageList 在那里仍渲染纯文本，行为一行没变。
+              <MessageFileLinkContext.Provider value={handleFileLink}>
+                <ChatMessageList
+                  messages={messages}
+                  conversationId={sessionId}
+                  mode={mode}
+                  preferredAddress={preferredAddress}
+                  stickerSize={stickerSize}
+                  onTtsCacheKey={onTtsCacheKey}
+                />
+              </MessageFileLinkContext.Provider>
             )}
             {messages.length === 0 && (
               <div className="cy-workbench__chat-empty">{t("workbench.chatEmpty")}</div>
