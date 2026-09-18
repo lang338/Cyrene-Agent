@@ -679,6 +679,7 @@
     "pathInvalid": "路径不合法：相对路径不能含 ..，全盘路径要有盘符",
     "pathMissing": "工作区里没有这个文件",
     "pathIsDir": "这是一个目录，不是文件",
+    "fileLinkFailed": "打不开这个文件：{{path}}",
     "externalFileNotice": "工作区外的文件：可以改、可以存，但不进快照——回退不会恢复它的改动",
     "ledgerTab": "改动",
     "snapshotsTab": "快照",

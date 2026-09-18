@@ -54,6 +54,7 @@
     "pathInvalid": "Invalid path: relative paths cannot contain .., absolute paths need a drive letter",
     "pathMissing": "No such file in the workspace",
     "pathIsDir": "That is a directory, not a file",
+    "fileLinkFailed": "Cannot open this file: {{path}}",
     "externalFileNotice": "File outside the workspace: editable and savable, but not captured by checkpoints — restoring will not bring its changes back",
     "ledgerTab": "Changes",
     "snapshotsTab": "Snapshots",

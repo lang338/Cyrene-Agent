@@ -76,7 +76,9 @@ describe("assistantRenderStages", () => {
       fileURLToPath(new URL("./ChatMessageList.tsx", import.meta.url)),
       "utf8",
     );
-    expect(source).toContain("const markdownComponents = { code: MarkdownCode };");
+    // components 必须是同一个模块级常量对象，不能按流式状态切换渲染配置；
+    // 允许往里追加渲染器（如正文里的文件路径），但 code 这条基础通道必须还在
+    expect(source).toMatch(/const markdownComponents = \{[^}]*code: MarkdownCode[^}]*\};/);
     expect(source).toContain("components={markdownComponents}");
     expect(source).toContain("streaming={completedMarkdownOptions}");
     expect(source).not.toContain("streaming={streaming ? streamingMarkdownOptions : completedMarkdownOptions}");
