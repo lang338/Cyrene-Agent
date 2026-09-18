@@ -362,6 +362,10 @@ export class LspClient {
     } catch {
       // 进程已退出时仍应继续释放本地资源。
     } finally {
+      // exit 通知是异步写出的：紧接着 dispose 连接会把还没落地的帧打断，
+      // jsonrpc 会在已销毁的流上继续写，抛出**未处理**的 ERR_STREAM_DESTROYED
+      // （测试里表现为 vitest 报 unhandled error 而失败）。给一个极短窗口让它写完。
+      await new Promise((resolve) => setTimeout(resolve, 50));
       this.connection?.dispose();
       this.child?.kill();
       this.connection = null;

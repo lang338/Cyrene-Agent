@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { LspClient } from "./client";
 import { BUILTIN_LSP_SERVERS } from "./server-catalog";
@@ -72,6 +73,55 @@ describe.skipIf(!available)("LspClient + 真实 typescript-language-server", () 
       // Windows 上 fileURLToPath 会把盘符转成小写，比较时忽略大小写
       expect(withMessages!.filePath.toLowerCase()).toBe(path.normalize(file).toLowerCase());
       expect(withMessages!.messages.join("\n")).toContain("not assignable");
+    } finally {
+      await client.dispose();
+    }
+  }, 60_000);
+
+  it("同步编辑器内容后能拿到补全项，且包含跨文件的类型成员", async () => {
+    const workspaceRoot = createTsProject();
+    // 造一个必须跨文件才能答对的场景：接口在 types.ts，使用点在 main.ts
+    fs.writeFileSync(
+      path.join(workspaceRoot, "types.ts"),
+      "export interface Probe { alpha: number; beta: string }\n",
+      "utf8",
+    );
+    const mainFile = path.join(workspaceRoot, "main.ts");
+    const content = [
+      'import type { Probe } from "./types";',
+      'const probe: Probe = { alpha: 1, beta: "x" };',
+      "probe.",
+      "",
+    ].join("\n");
+    fs.writeFileSync(mainFile, content, "utf8");
+
+    const client = new LspClient({ server: available!, workspaceRoot });
+    try {
+      // 必须先把内容同步过去（didOpen），否则语言服务手里没有这份文档，补全必然为空
+      await client.syncFromEditor(mainFile, "typescript", content);
+      // 语言服务刚起来时项目还没索引完，补全会先返回空——就像诊断那条用例一样，
+      // 要等的是"非空且包含跨文件成员"的那一刻，而不是第一次的返回值
+      const deadline = Date.now() + 40_000;
+      let labels: string[] = [];
+      while (Date.now() < deadline) {
+        const raw = await client.request<unknown>(
+          "textDocument/completion",
+          {
+            textDocument: { uri: pathToFileURL(mainFile).toString() },
+            position: { line: 2, character: "probe.".length },
+          },
+          30_000,
+        );
+        const container = raw as { items?: Array<{ label: string }> } | Array<{ label: string }> | null;
+        const items = Array.isArray(container) ? container : (container?.items ?? []);
+        labels = items.map((item) => item.label);
+        if (labels.includes("alpha") && labels.includes("beta")) break;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      expect(labels, "语言服务没有返回任何补全项").not.toHaveLength(0);
+      // 关键：跨文件的类型成员必须出现——这正是内置 TS 服务做不到、所以要换外部服务的原因
+      expect(labels).toContain("alpha");
+      expect(labels).toContain("beta");
     } finally {
       await client.dispose();
     }

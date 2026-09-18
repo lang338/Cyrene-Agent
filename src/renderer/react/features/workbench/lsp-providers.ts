@@ -57,6 +57,17 @@ async function askLsp(
   if (!path) return null;
   const api = workbenchApi();
   if (!api?.requestLsp) return null;
+  // 问之前必须先同步：工作台那侧的文档同步带 400ms 防抖（避免每敲一个字往返一趟），
+  // 但补全是打字时触发的——请求会先到，语言服务手里还是旧文本、位置也偏，
+  // 结果要么补出错误内容、要么返回空（表现为只剩"同文件词汇"建议）。
+  // 悬停/跳转同理：刚敲完就悬停，看到的是上一版的类型。
+  if (api.syncLspDocument) {
+    try {
+      await api.syncLspDocument(sessionId, path, model.getValue(), model.getLanguageId());
+    } catch {
+      // 同步失败就照常问：语言服务可能只是暂时不可用，让它自己降级
+    }
+  }
   try {
     return await api.requestLsp({
       sessionId,
