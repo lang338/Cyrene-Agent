@@ -56,7 +56,8 @@ const MODEL_SAMPLING_RULES: readonly ModelSamplingRule[] = [
   },
   {
     providerId: "deepseek",
-    modelPattern: /^deepseek-v4-(?:pro|flash)$/i,
+    // V4.1 Flash（deepseek-flash）与 V4 旧名；思考模式下 temperature 不生效，需关闭思考
+    modelPattern: /^deepseek-(?:v4-(?:pro|flash)|flash)$/i,
     diversity: true,
     requiresReasoningOff: true,
   },

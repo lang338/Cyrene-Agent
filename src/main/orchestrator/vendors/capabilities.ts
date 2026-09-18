@@ -33,14 +33,15 @@ export const PROVIDER_CAPABILITIES = [
     baseUrl: "https://api.deepseek.com",
     authStyle: "bearer",
     anthropicAuthStyle: "x-api-key",
-    defaultModel: "deepseek-v4-pro",
+    defaultModel: "deepseek-flash",
     supportsTools: true,
     supportsThinking: true,
     thinkingField: "reasoning_content",
     cacheStrategy: "auto",
     testStrategy: "text",
-    // 文档未明示视觉版，默认模型不支持
-    supportsVision: false,
+    // V4.1 Flash（2026-09-10）原生多模态视觉理解；v4-pro 不支持视觉但官方已宣布
+    // 2026-09-14 起全部路由到 V4.1 Flash
+    supportsVision: true,
     // 三格式原生全支持（官方文档）
     supportedTransports: ["openai", "anthropic", "responses"],
   },

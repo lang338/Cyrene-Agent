@@ -26,6 +26,10 @@ export interface PluginListEntry {
   canOpen: boolean;
   /** Icon as a data URL when the plugin provides a valid image file. */
   icon?: string;
+  /** 设置面板 HTML 裸文件名；仅已启用且校验通过时透出（渲染端据此挂载 iframe） */
+  settingsPanel?: string;
+  /** 面板挂载的设置分区；缺省挂「插件」分区 */
+  settingsSection?: "channels" | "plugins";
 }
 
 export interface PluginScanIssue {
@@ -51,10 +55,21 @@ export interface MarketPluginEntry {
   homepage?: string;
 }
 
+/** 插件市场索引源的健康状态：市场面板据此展示各源（Gitee / GitHub）的实时死活 */
+export interface MarketSourceStatus {
+  url: string;
+  /** 拉取并通过校验 */
+  ok: boolean;
+  /** 是否为本次列表的实际数据源（按优先级取第一个可用源） */
+  used: boolean;
+}
+
 export interface MarketListResult {
   ok: boolean;
   error?: string;
   plugins: MarketPluginEntry[];
+  /** 各索引源的探测结果；旧版本宿主返回的结果可能没有该字段 */
+  sources?: MarketSourceStatus[];
 }
 
 export type MarketInstallResult =
@@ -76,4 +91,12 @@ export interface PluginManagementApi {
   uninstall(id: string): Promise<{ ok: boolean; error?: string; overview?: PluginOverview }>;
   marketList(): Promise<MarketListResult>;
   marketInstall(id: string): Promise<MarketInstallResult>;
+}
+
+/**
+ * 设置面板桥的渲染端转发 API：pluginId 由设置页宿主脚本按 iframe 归属
+ * 填入，不来自面板消息（主进程还会做 sender 窗口校验）。
+ */
+export interface PluginPanelApi {
+  invoke(pluginId: string, channel: string, args: unknown[]): Promise<unknown>;
 }

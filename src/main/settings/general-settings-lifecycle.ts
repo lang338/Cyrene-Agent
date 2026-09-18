@@ -25,12 +25,25 @@ export interface GeneralSettingsLifecycleDependencies {
 /** MiniMax 搜索 MCP Server 的固定 ID。 */
 const MINIMAX_SEARCH_MCP_ID = "minimax-web-search";
 
-export function applyGeneralSettings(settings: GeneralSettings, deps: GeneralSettingsLifecycleDependencies): void {
-  deps.windowManager?.setPetWindowAlwaysOnTop(settings.petAlwaysOnTop);
-  if (settings.petVisible) deps.windowManager?.showPetWindow();
-  else deps.windowManager?.hidePetWindow();
-  syncLaunchAtLogin(settings.launchAtLogin, app);
-  deps.windowManager?.applyPetWindowZoom(settings.petZoom);
+export function applyGeneralSettings(
+  settings: GeneralSettings,
+  deps: GeneralSettingsLifecycleDependencies,
+  before?: GeneralSettings,
+): void {
+  // 启动时完整应用；保存设置时只应用变化项，保留托盘临时隐藏等窗口状态。
+  if (!before || before.petAlwaysOnTop !== settings.petAlwaysOnTop) {
+    deps.windowManager?.setPetWindowAlwaysOnTop(settings.petAlwaysOnTop);
+  }
+  if (!before || before.petVisible !== settings.petVisible) {
+    if (settings.petVisible) deps.windowManager?.showPetWindow();
+    else deps.windowManager?.hidePetWindow();
+  }
+  if (!before || before.launchAtLogin !== settings.launchAtLogin) {
+    syncLaunchAtLogin(settings.launchAtLogin, app);
+  }
+  if (!before || before.petZoom !== settings.petZoom) {
+    deps.windowManager?.applyPetWindowZoom(settings.petZoom);
+  }
 }
 
 export function applyUiIcon(iconSetting: UiIcon, deps: GeneralSettingsLifecycleDependencies): void {
@@ -114,7 +127,7 @@ export function handleGeneralSettingsChanged(
   after: GeneralSettings,
   deps: GeneralSettingsLifecycleDependencies,
 ): void {
-  applyGeneralSettings(after, deps);
+  applyGeneralSettings(after, deps, before);
   syncBuiltInToolToggles(after);
   if (before.language !== after.language || before.asrLanguage !== after.asrLanguage) {
     updateLocaleContext({

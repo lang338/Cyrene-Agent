@@ -158,18 +158,27 @@ describe("MODEL_REASONING_RULES — 9 家全部存在性", () => {
     expect(cap.requestStyle).toBe("anthropic-adaptive");
   });
 
-  test("deepseek deepseek-v4-pro → toggle-effort + thinking-type + [low,high,max] + autoEffort=high", () => {
+  test("deepseek deepseek-flash（V4.1 Flash，2026-09-10）→ toggle-effort + thinking-type + [high,max] + autoEffort=high", () => {
+    const cap = resolveReasoningCapability("deepseek", "deepseek-flash");
+    expect(cap.control).toBe("toggle-effort");
+    // 官方思考模式文档：effort 仅 high/max 两档，low/medium 服务端映射为 high（不提供误导性 low 档）
+    expect(cap.supportedEfforts).toEqual(["high", "max"]);
+    expect(cap.autoEffort).toBe("high");
+    expect(cap.requestStyle).toBe("thinking-type");
+    expect(cap.supportsDisable).toBe(true);
+  });
+
+  test("deepseek deepseek-v4-pro → 命中统一规则（旧名官方路由到 V4.1 Flash）", () => {
     const cap = resolveReasoningCapability("deepseek", "deepseek-v4-pro");
     expect(cap.control).toBe("toggle-effort");
-    // 官方 2026-08-13 起 V4 系列三档 effort；auto 映射 high（agent 请求服务端 auto 会上 max）
-    expect(cap.supportedEfforts).toEqual(["low", "high", "max"]);
+    expect(cap.supportedEfforts).toEqual(["high", "max"]);
     expect(cap.autoEffort).toBe("high");
   });
 
-  test("deepseek deepseek-v4-flash-vision-exp（2026-08-21 视觉实验版）→ 命中 v4 系列规则", () => {
+  test("deepseek deepseek-v4-flash-vision-exp（2026-08-21 视觉实验版）→ 命中统一规则", () => {
     const cap = resolveReasoningCapability("deepseek", "deepseek-v4-flash-vision-exp");
     expect(cap.control).toBe("toggle-effort");
-    expect(cap.supportedEfforts).toEqual(["low", "high", "max"]);
+    expect(cap.supportedEfforts).toEqual(["high", "max"]);
     expect(cap.autoEffort).toBe("high");
     expect(cap.requestStyle).toBe("thinking-type");
   });

@@ -81,7 +81,7 @@ export interface CoreDependencies {
   createRuntime(services: CoreServices): AgentRuntime;
   createChannels(runtime: AgentRuntime, services: CoreServices): ChannelsSubsystem;
   /** 必须在内置渠道适配器注册完成后调用；scheduler 先于本步完成 initialize。 */
-  startPlugins(services: CoreServices, scheduler: SchedulerSubsystem): Promise<PluginManager>;
+  startPlugins(services: CoreServices, scheduler: SchedulerSubsystem, runtime: AgentRuntime): Promise<PluginManager>;
   createScheduler(runtime: AgentRuntime, services: CoreServices): SchedulerSubsystem;
   registerCoreIpc(input: RegisterCoreIpcInput): void;
   /** 组合根装配提醒中心：注册 toast IPC、订阅事件总线、预创建隐藏窗口。 */
@@ -162,7 +162,7 @@ export async function startCore(deps: CoreDependencies): Promise<CoreResult> {
   scheduler.initialize();
 
   // 插件严格晚于内置 adapter id 预留，避免插件抢占 feishu/wechat/qq 等内置 id。
-  const plugins = await timedStep("startPlugins", () => deps.startPlugins(services, scheduler));
+  const plugins = await timedStep("startPlugins", () => deps.startPlugins(services, scheduler, runtime));
 
   // 注册聊天渲染进程可能调用的全部 IPC 处理器 —— 必须先于 chat.load()
   deps.registerCoreIpc({ ipc: shell.ipc, runtime, services, channels, scheduler });
@@ -173,22 +173,22 @@ export async function startCore(deps: CoreDependencies): Promise<CoreResult> {
   // 全部处理器就绪后才加载聊天页面；页面加载失败属于致命错误（向上抛出）
   await timedStep("chat-load", () => shell.chat.load());
 
-  // 桌宠：仅在设置开启时创建（不创建后隐藏、不闪现）；辅助窗口按设置创建
+  // 桌宠：窗口始终创建，petVisible 只决定是否显示（隐藏时不闪现）。
+  // 始终创建是为了保证托盘"显示/隐藏桌宠"与设置面板开关随时能把窗口救回来，
+  // 且 alwaysOnTop / zoom / live2d 生命周期在隐藏状态下同样完成接线。
   const generalSettings = deps.loadGeneralSettings();
-  // 启动期一次性应用通用设置（登录项同步等）；此时桌宠未创建，show/hide 为 no-op
+  // 启动期一次性完整应用通用设置（登录项同步等）；此时桌宠未创建，show/hide 为 no-op
   deps.applyGeneralSettings(generalSettings, services);
-  if (generalSettings.petVisible) {
-    // showOnReady=true：页面就绪才显示，避免空窗口闪现；创建本身在核心 IPC 注册之后
-    shell.windowManager.createPetWindow(true);
-    shell.windowManager.onPetWindowReady((win) => {
-      shell.live2dWindowLifecycle.attach(win);
-    });
-    shell.windowManager.onPetWindowClosed(() => {
-      shell.live2dWindowLifecycle.clear();
-    });
-    shell.windowManager.setPetWindowAlwaysOnTop(generalSettings.petAlwaysOnTop);
-    shell.windowManager.applyPetWindowZoom(generalSettings.petZoom);
-  }
+  // showOnReady=petVisible：页面就绪才显示，避免空窗口闪现；创建本身在核心 IPC 注册之后
+  shell.windowManager.createPetWindow(generalSettings.petVisible);
+  shell.windowManager.onPetWindowReady((win) => {
+    shell.live2dWindowLifecycle.attach(win);
+  });
+  shell.windowManager.onPetWindowClosed(() => {
+    shell.live2dWindowLifecycle.clear();
+  });
+  shell.windowManager.setPetWindowAlwaysOnTop(generalSettings.petAlwaysOnTop);
+  shell.windowManager.applyPetWindowZoom(generalSettings.petZoom);
   if (generalSettings.sidebarVisible) shell.windowManager.createSidebarWindow();
   if (generalSettings.tasksVisible) shell.windowManager.createTasksWindow();
 

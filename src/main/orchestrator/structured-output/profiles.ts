@@ -62,7 +62,8 @@ const DEFINITIONS: readonly ProfileDefinition[] = [
     id: "deepseek-json-object",
     provider: "deepseek",
     transport: "openai",
-    modelPattern: /^deepseek-v4-(?:pro|flash)$/i,
+    // V4.1 Flash（deepseek-flash）与 V4 旧名（官方路由到 V4.1 Flash）均支持 JSON Output
+    modelPattern: /^deepseek-(?:v4-(?:pro|flash)|flash)$/i,
     tier: "B",
     mode: "provider_json_object",
     verification: "official",

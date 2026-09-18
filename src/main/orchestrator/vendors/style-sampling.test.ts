@@ -194,6 +194,7 @@ describe("resolveApprovedStyleSampling", () => {
     ["minimax", "minimax-m2.5"],
     ["glm", "GLM-5-TURBO"],
     ["deepseek", "DEEPSEEK-V4-FLASH"],
+    ["deepseek", "DEEPSEEK-FLASH"],
     ["mimo", "MIMO-V2.5-PRO"],
   ])("matches exact allowlisted model case-insensitively for %s/%s", (providerId, model) => {
     expect(resolveApprovedStyleSampling({
