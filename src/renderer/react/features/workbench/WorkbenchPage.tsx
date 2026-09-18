@@ -349,13 +349,20 @@ export function WorkbenchPage({
     }
   }, [sessionId]);
 
-  /** 用户点开文件：已打开（含脏缓冲）只切过去，绝不重新读盘覆盖未保存修改 */
-  const openFile = useCallback(async (filePath: string) => {
+  /**
+   * 用户点开文件：已打开（含脏缓冲）只切过去，绝不重新读盘覆盖未保存修改。
+   * 返回装载结果给调用方判定"到底打开没有"：消息里的链接必须知道这个答案——
+   * 读盘失败时编辑器不会挂载（页签区显示错误），若还当成功去跳行号，
+   * 行号请求会一直悬着，用户也看不到"打不开这个文件"的提示。
+   */
+  const openFile = useCallback(async (filePath: string): Promise<LoadOutcome> => {
     setActivePath(filePath);
     setMiddleTab("code");
-    if (buffersRef.current[filePath]) return;
+    const existing = buffersRef.current[filePath];
+    // 错误态说明上一次读盘失败、编辑器没挂载，对调用方而言等同于没打开
+    if (existing) return existing.error ? "failed" : "ok";
     setOpenTabs((current) => (current.includes(filePath) ? current : [...current, filePath]));
-    await loadBuffer(filePath, "fresh");
+    return loadBuffer(filePath, "fresh");
   }, [loadBuffer]);
 
   /**
@@ -414,8 +421,10 @@ export function WorkbenchPage({
       setPathDraft(null);
       // 左栏也定位过去：既然用户明确指到了这个文件，树里看不到它会显得像没生效
       setRevealPath(match.path);
-      await openFile(match.path);
-      return match.path;
+      const outcome = await openFile(match.path);
+      // 读盘失败时标签仍在（用户能在编辑器区看到失败原因），但对外算"没打开"：
+      // 调用方据此提示失败，而不是拿着一个没挂载的文件去跳行号
+      return outcome === "ok" ? match.path : null;
     }
 
     // 工作区外：读盘结果直接当缓冲，key 用主进程解析后的绝对路径（见 absolutePathInput 说明）
