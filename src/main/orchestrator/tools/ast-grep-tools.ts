@@ -13,6 +13,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { parse, type Edit, type SgNode } from "@ast-grep/napi";
+import { isInsideWorkspace, resolveRealPath } from "./path-guard";
 import { toolRegistry } from "./registry/tool-registry";
 import type { ToolContext } from "./registry/tool-context";
 import type { ToolDiffLine, ToolFileChange } from "../../../shared/chat-types";
@@ -71,10 +72,17 @@ const MAX_MATCHES_DEFAULT = 50;
 
 // ── 路径安全 ──────────────────────────────────────────────
 
+/**
+ * 路径是否在工作区内。
+ * 词法判断挡不住"工作区里指向外部的符号链接"，所以再按 realpath 复核一次
+ * （目标可能还不存在——新建文件时，对最近的已存在祖先取 realpath 再拼回去）。
+ */
 function isWithinWorkspace(filePath: string, workspaceRoot: string): boolean {
   const resolved = path.resolve(workspaceRoot, filePath);
   const normalizedRoot = path.normalize(workspaceRoot);
-  return resolved === normalizedRoot || resolved.startsWith(normalizedRoot + path.sep);
+  const lexicalInside = resolved === normalizedRoot || resolved.startsWith(normalizedRoot + path.sep);
+  if (!lexicalInside) return false;
+  return isInsideWorkspace(resolveRealPath(workspaceRoot), resolveRealPath(resolved));
 }
 
 /** 归一化展示路径：反斜杠 → 正斜杠，去掉开头 "./"，根目录归为空串 */

@@ -37,10 +37,15 @@ registerLifeTools();
 
 function getTool(id: string) {
   const tool = registry.get(id) as
-    | { execute: (args: Record<string, unknown>, ctx?: { runId?: string }) => Promise<string> }
+    | { execute: (args: Record<string, unknown>, ctx?: { runId?: string; resolvedWorkspaceRoot?: string }) => Promise<string> }
     | undefined;
   if (!tool) throw new Error(`工具未注册：${id}`);
-  return tool;
+  // 写文件工具现在要求"写路径必须落在工作区内"，这里把临时目录当成工作区注入，
+  // 免得每个用例都得手写一遍 ctx
+  return {
+    execute: (args: Record<string, unknown>, ctx?: { runId?: string }) =>
+      tool.execute(args, { resolvedWorkspaceRoot: tmpDir, ...ctx }),
+  };
 }
 
 beforeEach(() => {

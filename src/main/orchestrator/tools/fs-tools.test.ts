@@ -199,9 +199,18 @@ describe("read_file structured output", () => {
 
 describe("write_file truthful contract", () => {
   function writeTool() {
-    return vi.mocked(toolRegistry.register).mock.calls.find(
+    const registered = vi.mocked(toolRegistry.register).mock.calls.find(
       (call) => call[0].id === "write_file",
-    )?.[0];
+    )?.[0] as unknown as
+      | { execute: (args: Record<string, unknown>, ctx?: Record<string, unknown>) => Promise<unknown> }
+      | undefined;
+    if (!registered) return undefined;
+    // write_file 现在要求"写路径必须落在工作区内"，这里把临时目录当成工作区注入，
+    // 免得每个用例都得手写一遍 ctx
+    return {
+      execute: (args: Record<string, unknown>, ctx?: Record<string, unknown>) =>
+        registered.execute(args, { resolvedWorkspaceRoot: tmpDir, ...ctx }),
+    };
   }
 
   it("rejects a relative path with a typed error", async () => {
@@ -251,9 +260,18 @@ describe("write_file truthful contract", () => {
 
 describe("write_file 覆盖写骤降防护", () => {
   function writeTool() {
-    return vi.mocked(toolRegistry.register).mock.calls.find(
+    const registered = vi.mocked(toolRegistry.register).mock.calls.find(
       (call) => call[0].id === "write_file",
-    )?.[0];
+    )?.[0] as unknown as
+      | { execute: (args: Record<string, unknown>, ctx?: Record<string, unknown>) => Promise<unknown> }
+      | undefined;
+    if (!registered) return undefined;
+    // write_file 现在要求"写路径必须落在工作区内"，这里把临时目录当成工作区注入，
+    // 免得每个用例都得手写一遍 ctx
+    return {
+      execute: (args: Record<string, unknown>, ctx?: Record<string, unknown>) =>
+        registered.execute(args, { resolvedWorkspaceRoot: tmpDir, ...ctx }),
+    };
   }
 
   function lines(n: number): string {
