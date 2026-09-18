@@ -15,6 +15,12 @@ import HtmlWorker from "monaco-editor/language/html/html.worker?worker";
 import TsWorker from "monaco-editor/language/typescript/ts.worker?worker";
 
 let configured = false;
+/** Monaco 的 TS 语言智能开关对象（从 setter 参数反推类型，避免依赖具体命名空间路径） */
+type TsModeConfiguration = Parameters<typeof monaco.typescript.typescriptDefaults.setModeConfiguration>[0];
+/** setupMonaco 时抓一份默认开关，之后反复切换都要能原样还原 */
+let builtinModeConfiguration: TsModeConfiguration | null = null;
+/** null = 还没设置过；与 setupMonaco 留下的默认状态（全开）保持一致 */
+let builtinIntelligenceEnabled: boolean | null = null;
 
 export function setupMonaco(): void {
   if (configured) return;
@@ -48,20 +54,38 @@ export function setupMonaco(): void {
   const noDiagnostics = { noSemanticValidation: true, noSyntaxValidation: true, noSuggestionDiagnostics: true } as const;
   monaco.typescript.typescriptDefaults.setDiagnosticsOptions(noDiagnostics);
   monaco.typescript.javascriptDefaults.setDiagnosticsOptions(noDiagnostics);
-  // 语言智能（补全/悬停/跳转/引用）同样交给外部语言服务，见 ./lsp-providers.ts：
-  // 内置服务看不到别的文件和依赖（补全只剩"同文件词汇"），且两套都开会让补全菜单出现重复项。
-  // 只关这四项，其余（签名帮助、格式化、重命名等）保持默认，编辑器基本能力不受影响。
-  for (const defaults of [monaco.typescript.typescriptDefaults, monaco.typescript.javascriptDefaults]) {
-    defaults.setModeConfiguration({
-      ...defaults.modeConfiguration,
-      completionItems: false,
-      hovers: false,
-      definitions: false,
-      references: false,
-    });
-  }
+  // 语言智能（补全/悬停/跳转/引用）默认**保持内建开启**，等外部语言服务被证实
+  // 对这个工作区可用之后，再由 lsp-providers.ts 关掉（见下面的 setBuiltinTsIntelligence）。
+  // 顺序很重要：先关后开要靠"运行期切换"，一旦那个信号永远不来（没装服务、工作区
+  // 没绑定、语言不支持），用户就会连改动前就有的"同文件补全"都失去——那比不加这个
+  // 功能还差。这里只抓一份默认开关，切换时用它还原（签名帮助/格式化/重命名等其余项不动）。
+  builtinModeConfiguration = { ...monaco.typescript.typescriptDefaults.modeConfiguration };
   monaco.json.jsonDefaults.setDiagnosticsOptions({ validate: false, allowComments: true });
   loader.config({ monaco });
+}
+
+/**
+ * 开关 Monaco 内建的 TS/JS 语言智能（补全/悬停/跳转/引用四项）。
+ *
+ * 为什么必须能来回切：主进程里的外部语言服务读得到 tsconfig 和 node_modules，
+ * 它**可用**时要关掉内建——两套同开会让补全菜单出现重复项，而内建那套没有项目上下文；
+ * 它**不可用**时必须把内建打开兜底，理由见上面 setupMonaco 里的说明。
+ *
+ * 已知边界：它只反映"语言服务在不在"，不反映"这个项目的配置好不好"。服务活着但项目
+ * 没有任何 TS 配置时，两边解析依赖的能力都有限，差别不大，就不再单独判断了。
+ */
+export function setBuiltinTsIntelligence(enabled: boolean): void {
+  if (!builtinModeConfiguration || builtinIntelligenceEnabled === enabled) return;
+  builtinIntelligenceEnabled = enabled;
+  const mode: TsModeConfiguration = {
+    ...builtinModeConfiguration,
+    completionItems: enabled,
+    hovers: enabled,
+    definitions: enabled,
+    references: enabled,
+  };
+  monaco.typescript.typescriptDefaults.setModeConfiguration(mode);
+  monaco.typescript.javascriptDefaults.setModeConfiguration(mode);
 }
 
 /** 按文件扩展名猜 monaco 语言（猜不出就是 plaintext） */

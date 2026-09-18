@@ -126,4 +126,54 @@ describe.skipIf(!available)("LspClient + 真实 typescript-language-server", () 
       await client.dispose();
     }
   }, 60_000);
+
+  /**
+   * 真机踩过的坑：工作台有两条同步路径（提问前一次、防抖一次），落后那条曾把新内容覆盖成旧的，
+   * 于是补全按旧内容算——表现是"刚敲的那行拿不到成员补全，而悬停却是对的"。
+   * 这条用例盯住的就是"迟到的旧同步不能污染补全结果"。
+   */
+  it("迟到的旧同步不能把内容拉回旧版（否则补全按旧内容算）", async () => {
+    const workspaceRoot = createTsProject();
+    fs.writeFileSync(
+      path.join(workspaceRoot, "types.ts"),
+      "export interface Probe { alpha: number; beta: string }\n",
+      "utf8",
+    );
+    const mainFile = path.join(workspaceRoot, "main.ts");
+    const withDot = ['import type { Probe } from "./types";', 'const probe: Probe = { alpha: 1, beta: "x" };', "probe.", ""].join("\n");
+    const withoutDot = ['import type { Probe } from "./types";', 'const probe: Probe = { alpha: 1, beta: "x" };', "probe", ""].join("\n");
+    fs.writeFileSync(mainFile, withDot, "utf8");
+
+    const client = new LspClient({ server: available!, workspaceRoot });
+    const ask = async (): Promise<string[]> => {
+      const raw = await client.request<unknown>(
+        "textDocument/completion",
+        { textDocument: { uri: pathToFileURL(mainFile).toString() }, position: { line: 2, character: "probe.".length } },
+        30_000,
+      );
+      const container = raw as { items?: Array<{ label: string }> } | Array<{ label: string }> | null;
+      const items = Array.isArray(container) ? container : (container?.items ?? []);
+      return items.map((item) => item.label);
+    };
+    try {
+      // 修订号 2 = 最新内容；先等索引建好（首次补全可能为空）
+      await client.syncFromEditor(mainFile, "typescript", withDot, 2);
+      const deadline = Date.now() + 40_000;
+      let ready = false;
+      while (Date.now() < deadline) {
+        if ((await ask()).includes("alpha")) {
+          ready = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      expect(ready, "语言服务始终没有给出跨文件成员").toBe(true);
+
+      // 迟到的旧同步（修订号更小）：必须被丢弃，补全结果不受影响
+      await client.syncFromEditor(mainFile, "typescript", withoutDot, 1);
+      expect(await ask()).toContain("alpha");
+    } finally {
+      await client.dispose();
+    }
+  }, 90_000);
 });

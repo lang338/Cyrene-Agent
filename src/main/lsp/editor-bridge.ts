@@ -106,7 +106,9 @@ export function registerWorkbenchLspBridge(deps: WorkbenchLspBridgeDeps): { disp
   };
 
   ipc.handle(IPC.WORKBENCH_LSP_SYNC, async (_event, payload: unknown) => {
-    const input = payload as { sessionId?: unknown; path?: unknown; content?: unknown; languageId?: unknown } | null;
+    const input = payload as
+      | { sessionId?: unknown; path?: unknown; content?: unknown; languageId?: unknown; revision?: unknown }
+      | null;
     if (typeof input?.path !== "string" || !input.path.trim()) throw new Error("缺少文件路径");
     if (typeof input?.content !== "string") throw new Error("文件内容必须是文本");
     const sessionId = requireSessionId(input?.sessionId);
@@ -116,7 +118,9 @@ export function registerWorkbenchLspBridge(deps: WorkbenchLspBridgeDeps): { disp
     const binding = await bindingFor(sessionId, absolutePath);
     if (!binding) return false;
     const languageId = typeof input?.languageId === "string" && input.languageId.trim() ? input.languageId : "plaintext";
-    await binding.client.syncFromEditor(absolutePath, languageId, input.content);
+    // 编辑器模型的版本号（可选）：client 用它丢弃迟到的旧同步，避免旧内容覆盖新内容
+    const revision = typeof input?.revision === "number" ? input.revision : undefined;
+    await binding.client.syncFromEditor(absolutePath, languageId, input.content, revision);
     return true;
   });
 

@@ -20,7 +20,8 @@ export interface LspClientLike {
  * LspClientLike 是给 AI 工具链用的最小契约，让它背上编辑器的方法会逼着所有替身一起实现。
  */
 export interface LspEditorSupport {
-  syncFromEditor(filePath: string, languageId: string, content: string): Promise<void>;
+  /** revision = 编辑器模型的版本号，用于丢弃迟到的旧同步（可选） */
+  syncFromEditor(filePath: string, languageId: string, content: string, revision?: number): Promise<void>;
   closeFromEditor(filePath: string): Promise<void>;
   onDiagnostics(listener: (filePath: string, diagnostics: Diagnostic[]) => void): () => void;
   /** 编辑器主动提问（补全/悬停/跳转/查引用）：返回语言服务的原始结果，形状由调用方拍平 */

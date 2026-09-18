@@ -252,7 +252,8 @@ export function WorkbenchPage({
 
   useEffect(() => {
     setupMonaco();
-    // 补全/悬停/跳转/引用交给外部语言服务（见 ./lsp-providers.ts）；拿不到服务时静默降级
+    // 补全/悬停/跳转/引用交给外部语言服务（见 ./lsp-providers.ts）。
+    // 拿不到服务时它会返回空并把 Monaco 内建的那套重新打开兜底，用户不会反而更差
     registerLspProviders();
   }, []);
 
@@ -556,7 +557,21 @@ export function WorkbenchPage({
     const api = workbenchApi();
     if (!api?.syncLspDocument) return;
     const sync = () => {
-      void api.syncLspDocument(sessionId, activePath, entry.content, monacoLanguageFor(activePath)).catch(() => undefined);
+      // 优先用编辑器模型的**实时内容**，而不是 buffers 里的镜像：后者是 React state，
+      // 可能比模型旧一帧。一次落后的同步落到语言服务上，补全就会按旧内容算
+      // （表现为"刚敲的那行拿不到成员补全，但悬停却是对的"）。模型对不上当前文件时才退回镜像。
+      const model = editorRef.current?.getModel();
+      const modelPath = (model?.uri.path ?? "").replace(/^\/+/, "");
+      const live = model && modelPath === activePath ? model : null;
+      void api
+        .syncLspDocument(
+          sessionId,
+          activePath,
+          live ? live.getValue() : entry.content,
+          monacoLanguageFor(activePath),
+          live ? live.getVersionId() : undefined,
+        )
+        .catch(() => undefined);
     };
     const timer = window.setTimeout(sync, 400);
     return () => {

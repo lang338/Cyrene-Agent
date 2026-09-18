@@ -34,7 +34,7 @@ interface WorkbenchApi {
   pruneLedgerRounds?(sessionId: string, roundIds: string[]): Promise<unknown>;
   onLedgerChanged?(callback: (payload: { sessionId: string }) => void): () => void;
   /** 语言服务（LSP）：把编辑器内容同步给外部语言服务；返回 false = 没有可用服务，编辑器静默降级 */
-  syncLspDocument?(sessionId: string, path: string, content: string, languageId: string): Promise<boolean>;
+  syncLspDocument?(sessionId: string, path: string, content: string, languageId: string, revision?: number): Promise<boolean>;
   closeLspDocument?(sessionId: string, path: string): Promise<boolean>;
   /** 编辑器主动提问（补全/悬停/跳转/查引用）；null = 没有可用服务，编辑器静默降级 */
   requestLsp?(input: WorkbenchLspRequestInput): Promise<WorkbenchLspRequestResult | null>;

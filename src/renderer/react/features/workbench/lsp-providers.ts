@@ -3,8 +3,9 @@
 // 为什么用模块级变量而不是 React context：Monaco 的 provider 是按"语言"全局注册的，
 // 回调活在 React 之外，读不到 context。工作台挂载时把会话写进来即可。
 //
-// 拿不到语言服务时全部返回 null / 空数组——编辑器静默降级：补全菜单不弹、跳转没反应，
-// 但输入和保存照常，不会报错打扰用户。
+// 拿不到语言服务时全部返回 null / 空数组，同时把 Monaco 内建的 TS 语言智能打开兜底
+// （见 setBuiltinTsIntelligence）——只"静默降级"是不够的，那等于把用户原本就有的
+// 同文件补全也一并拿走了。输入和保存始终照常，不会报错打扰用户。
 
 import * as monaco from "monaco-editor";
 import type {
@@ -14,6 +15,7 @@ import type {
   WorkbenchLspRequestResult,
 } from "../../../../shared/code-workbench-types";
 import { workbenchApi } from "./WorkspaceTree";
+import { setBuiltinTsIntelligence } from "./monaco-setup";
 
 /** 当前活动的会话；null = 不在工作台里，provider 一律不响应 */
 let activeSessionId: string | null = null;
@@ -21,6 +23,9 @@ let registered = false;
 
 export function setLspProviderSession(sessionId: string | null): void {
   activeSessionId = sessionId;
+  // 离开工作台就把内建语言智能还原成默认开启：外部服务这条路径已经不再响应，
+  // 留着"关闭"既没有意义，也会让下次进来时短暂没有兜底。
+  if (!sessionId) setBuiltinTsIntelligence(true);
 }
 
 /**
@@ -52,10 +57,10 @@ async function askLsp(
   method: WorkbenchLspRequestMethod,
 ): Promise<WorkbenchLspRequestResult | null> {
   const sessionId = activeSessionId;
-  if (!sessionId) return null;
   const path = relativePathFromModel(model);
-  if (!path) return null;
   const api = workbenchApi();
+  if (!sessionId) return null;
+  if (!path) return null;
   if (!api?.requestLsp) return null;
   // 问之前必须先同步：工作台那侧的文档同步带 400ms 防抖（避免每敲一个字往返一趟），
   // 但补全是打字时触发的——请求会先到，语言服务手里还是旧文本、位置也偏，
@@ -63,9 +68,20 @@ async function askLsp(
   // 悬停/跳转同理：刚敲完就悬停，看到的是上一版的类型。
   if (api.syncLspDocument) {
     try {
-      await api.syncLspDocument(sessionId, path, model.getValue(), model.getLanguageId());
+      // 这个返回值就是主进程侧"有没有拿到这个工作区的语言服务"：true 才敢关掉内建兜底
+      // 带上模型版本号：主进程据此丢弃迟到的旧同步（旧内容一旦落进去，补全就按旧内容算，
+      // 表现为"刚敲的那行拿不到成员补全，而悬停却是对的"）
+      const synced = await api.syncLspDocument(
+        sessionId,
+        path,
+        model.getValue(),
+        model.getLanguageId(),
+        model.getVersionId(),
+      );
+      setBuiltinTsIntelligence(!synced);
     } catch {
-      // 同步失败就照常问：语言服务可能只是暂时不可用，让它自己降级
+      // 同步失败就照常问：语言服务可能只是暂时不可用，让它自己降级；兜底先放回去
+      setBuiltinTsIntelligence(true);
     }
   }
   try {
@@ -82,7 +98,45 @@ async function askLsp(
   }
 }
 
-/** 补全项 → Monaco 补全项。两边的 kind 编码刻意保持一致（Monaco 照 LSP 抄的），可以直接透传 */
+/**
+ * LSP 的 CompletionItemKind 与 Monaco 的不是同一套编号：LSP 是 Text=1、Method=2…，
+ * Monaco 是 Method=0、Function=1、…、Text=18。直接透传会把图标画错（变量显示成方法
+ * 图标、片段显示成枚举图标），所以显式翻译一遍；未知值退回 Text。
+ */
+const LSP_KIND_TO_MONACO: Record<number, monaco.languages.CompletionItemKind> = {
+  1: monaco.languages.CompletionItemKind.Text,
+  2: monaco.languages.CompletionItemKind.Method,
+  3: monaco.languages.CompletionItemKind.Function,
+  4: monaco.languages.CompletionItemKind.Constructor,
+  5: monaco.languages.CompletionItemKind.Field,
+  6: monaco.languages.CompletionItemKind.Variable,
+  7: monaco.languages.CompletionItemKind.Class,
+  8: monaco.languages.CompletionItemKind.Interface,
+  9: monaco.languages.CompletionItemKind.Module,
+  10: monaco.languages.CompletionItemKind.Property,
+  11: monaco.languages.CompletionItemKind.Unit,
+  12: monaco.languages.CompletionItemKind.Value,
+  13: monaco.languages.CompletionItemKind.Enum,
+  14: monaco.languages.CompletionItemKind.Keyword,
+  15: monaco.languages.CompletionItemKind.Snippet,
+  16: monaco.languages.CompletionItemKind.Color,
+  17: monaco.languages.CompletionItemKind.File,
+  18: monaco.languages.CompletionItemKind.Reference,
+  19: monaco.languages.CompletionItemKind.Folder,
+  20: monaco.languages.CompletionItemKind.EnumMember,
+  21: monaco.languages.CompletionItemKind.Constant,
+  22: monaco.languages.CompletionItemKind.Struct,
+  23: monaco.languages.CompletionItemKind.Event,
+  24: monaco.languages.CompletionItemKind.Operator,
+  25: monaco.languages.CompletionItemKind.TypeParameter,
+};
+
+function toMonacoKind(kind: number | undefined): monaco.languages.CompletionItemKind {
+  const mapped = kind === undefined ? undefined : LSP_KIND_TO_MONACO[kind];
+  return mapped ?? monaco.languages.CompletionItemKind.Text;
+}
+
+/** 补全项 → Monaco 补全项 */
 function toMonacoCompletion(
   item: WorkbenchLspCompletionItem,
   defaultRange: monaco.IRange,
@@ -92,7 +146,7 @@ function toMonacoCompletion(
   const isSnippet = insertText.includes("${");
   return {
     label: item.label,
-    kind: (item.kind ?? monaco.languages.CompletionItemKind.Text) as monaco.languages.CompletionItemKind,
+    kind: toMonacoKind(item.kind),
     detail: item.detail,
     documentation: item.documentation ? { value: item.documentation } : undefined,
     insertText,

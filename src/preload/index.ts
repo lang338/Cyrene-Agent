@@ -839,9 +839,10 @@ const workbenchApi = {
     return () => ipcRenderer.removeListener(IPC.WORKBENCH_LEDGER_CHANGED, listener);
   },
   // 语言服务（LSP）：把编辑器当前内容同步给外部语言服务，并订阅回推的诊断。
-  // 主进程找不到语言服务时会静默返回 false，编辑器据此保持"没有诊断"的状态
-  syncLspDocument: (sessionId: string, path: string, content: string, languageId: string) =>
-    ipcRenderer.invoke(IPC.WORKBENCH_LSP_SYNC, { sessionId, path, content, languageId }) as Promise<boolean>,
+  // 主进程找不到语言服务时会静默返回 false，编辑器据此保持"没有诊断"的状态。
+  // revision = 编辑器模型的版本号：主进程用它丢弃"迟到的旧同步"，防止旧内容覆盖新内容。
+  syncLspDocument: (sessionId: string, path: string, content: string, languageId: string, revision?: number) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_LSP_SYNC, { sessionId, path, content, languageId, revision }) as Promise<boolean>,
   closeLspDocument: (sessionId: string, path: string) =>
     ipcRenderer.invoke(IPC.WORKBENCH_LSP_CLOSE, { sessionId, path }) as Promise<boolean>,
   // 编辑器主动提问：补全 / 悬停 / 跳转 / 查引用。

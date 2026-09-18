@@ -101,6 +101,24 @@ describe("LspClient", () => {
     expect(child.initializeParams?.capabilities?.textDocument?.publishDiagnostics).toBeDefined();
   });
 
+  it("丢弃迟到的旧同步：修订号更小的那次不能覆盖新内容", async () => {
+    const { root, file } = createWorkspace();
+    const child = new FakeLspProcess();
+    const client = new LspClient({ server: resolvedServer(), workspaceRoot: root, spawnImpl: () => child });
+
+    // 编辑器与防抖同步两条路都会送内容，一次落后的同步若被照单全收，
+    // 语言服务就会按旧内容算补全（真机上表现为"刚敲那行拿不到成员补全"）。
+    await client.syncFromEditor(file, "typescript", "export const value = 2;\n", 7);
+    await client.syncFromEditor(file, "typescript", "export const value = 1;\n", 3); // 迟到的旧同步：应被丢弃
+    await client.syncFromEditor(file, "typescript", "export const value = 3;\n", 9); // 更新的：应发出去
+    await client.dispose();
+
+    expect(child.opened).toHaveLength(1);
+    // 两次变更只放行了一次，且放行的是修订号更大的那次
+    expect(child.changed).toHaveLength(1);
+    expect(JSON.stringify(child.changed[0])).toContain("value = 3");
+  });
+
   it("rejects a cancelled request without disposing the shared server", async () => {
     const { root } = createWorkspace();
     const child = new FakeLspProcess();
