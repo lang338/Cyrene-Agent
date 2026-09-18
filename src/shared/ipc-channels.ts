@@ -126,6 +126,11 @@ export const IPC = {
   /** 账本写入后的广播（AI 改完 / 你保存 / 回退 / 清理） */
   WORKBENCH_LEDGER_CHANGED: "workbench:ledger-changed",
 
+  // 工作台编辑器 ↔ 语言服务（LSP）：编辑器内容同步 + 诊断回推
+  WORKBENCH_LSP_SYNC: "workbench:lsp-sync",
+  WORKBENCH_LSP_CLOSE: "workbench:lsp-close",
+  WORKBENCH_LSP_DIAGNOSTICS: "workbench:lsp-diagnostics",
+
   // sidebar window (status / schedule / settings entry)
   SIDEBAR_MINIMIZE: "sidebar:minimize",
   SIDEBAR_CLOSE: "sidebar:close",

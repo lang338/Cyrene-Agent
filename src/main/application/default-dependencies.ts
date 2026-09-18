@@ -59,6 +59,7 @@ import type { PluginManager } from "../../plugins/manager";
 import { setLive2dWindowSender } from "../orchestrator/tools/built-in-tools";
 import { registerAllTools } from "../orchestrator/tools/registry/tool-registration";
 import { LspManager } from "../lsp/manager";
+import { resolveLspServer } from "../lsp/server-discovery";
 import { initSandbox } from "../orchestrator/sandbox/sandbox-exec";
 import {
   enterPlanDiscussing,
@@ -113,6 +114,7 @@ import { createCheckpointService } from "../code-git/checkpoint-service";
 import { configureChangeLedger, createChangeLedger, getConfiguredChangeLedger } from "../code-git/change-ledger-service";
 import { createWorkspaceFileService } from "../code-git/workspace-files";
 import { registerWorkbenchIpc } from "../code-git/workbench-ipc";
+import { registerWorkbenchLspBridge } from "../lsp/editor-bridge";
 import { installSingleInstanceGuard } from "../single-instance";
 import { createWindowManager } from "../windows/window-manager";
 import { createTray } from "../tray";
@@ -352,9 +354,14 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         const changeLedger = createChangeLedger({ rootDir: path.join(app.getPath("userData"), "cyrene-changes") });
         configureChangeLedger(changeLedger);
 
-        // LSP：管理器预创建；具体语言服务进程按需启动
+        // LSP：管理器预创建；具体语言服务进程按需启动。
+        // 查找目录里额外加一档"应用自带"（app 根下的 node_modules/.bin）：
+        // 用户不必自己安装语言服务，开箱就有诊断可用；项目里自己装了的话仍优先用项目那份。
+        const bundledLspBinDir = path.join(app.getAppPath(), "node_modules", ".bin");
         const lsp = new LspManager({
           getServerOverrides: () => loadGeneralSettings().lspServerOverrides,
+          resolveServer: (definition, workspaceRoot) =>
+            resolveLspServer(definition, workspaceRoot, { extraBinDirs: [bundledLspBinDir] }),
         });
 
         // 截图：原生 helper IPC、全局热键。预热在 background 阶段执行。
@@ -533,6 +540,19 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
             }
           },
           getWorkspaceRoot: (sessionId) => chatsStore.getSession(sessionId)?.workspaceBinding?.workspaceRoot,
+        });
+
+        // 工作台编辑器的语言服务桥：编辑器内容同步给外部语言服务，诊断回推给 Monaco 画红线。
+        // 找不到语言服务时整条链静默降级（编辑器照常可用）。
+        registerWorkbenchLspBridge({
+          ipc,
+          lsp: services.lsp,
+          getWorkspaceRoot: (sessionId) => chatsStore.getSession(sessionId)?.workspaceBinding?.workspaceRoot,
+          publishDiagnostics: (payload) => {
+            for (const win of BrowserWindow.getAllWindows()) {
+              if (!win.isDestroyed()) win.webContents.send(IPC.WORKBENCH_LSP_DIAGNOSTICS, payload);
+            }
+          },
         });
 
         // AG-UI 事件流桥：渲染进程 invoke(AGUI_RUN) → CyreneAgent 跑 Agent 循环 → 事件透传

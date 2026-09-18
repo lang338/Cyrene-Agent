@@ -5,6 +5,7 @@ import { LspClient } from "./client";
 import { BUILTIN_LSP_SERVERS, findServerCandidates } from "./server-catalog";
 import { resolveLspServer, type ResolvedLspServer } from "./server-discovery";
 import { LspContractError, toProtocolPosition, type LspQuery, type LspServerOverride, type LspToolResult } from "./types";
+import type { Diagnostic } from "vscode-languageserver-types";
 
 export interface LspClientLike {
   initialize(): Promise<void>;
@@ -12,6 +13,25 @@ export interface LspClientLike {
   request(method: string, params: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<unknown>;
   getDiagnostics(filePath: string): unknown[];
   dispose(): Promise<void>;
+}
+
+/**
+ * 工作台编辑器需要的能力。单列一个接口而不是扩展 LspClientLike：
+ * LspClientLike 是给 AI 工具链用的最小契约，让它背上编辑器的方法会逼着所有替身一起实现。
+ */
+export interface LspEditorSupport {
+  syncFromEditor(filePath: string, languageId: string, content: string): Promise<void>;
+  closeFromEditor(filePath: string): Promise<void>;
+  onDiagnostics(listener: (filePath: string, diagnostics: Diagnostic[]) => void): () => void;
+}
+
+function asEditorSupport(client: LspClientLike): LspEditorSupport | null {
+  const candidate = client as Partial<LspEditorSupport>;
+  const supported =
+    typeof candidate.syncFromEditor === "function" &&
+    typeof candidate.closeFromEditor === "function" &&
+    typeof candidate.onDiagnostics === "function";
+  return supported ? (candidate as LspEditorSupport) : null;
 }
 
 export interface LspManagerOptions {
@@ -94,6 +114,26 @@ export class LspManager {
 
     const items = Array.isArray(value) ? value : value == null ? [] : [value];
     return { serverId, operation: query.operation, workspaceRoot, items, message: items.length > 0 ? "已获得语言服务结果。" : "语言服务未返回结果。" };
+  }
+
+  /**
+   * 工作台编辑器取语言服务客户端。与 AI 工具链共用同一个 client（同一工作区同一服务只跑一个进程）。
+   * 找不到服务、工作区无效、或 client 不具备编辑器能力时返回 null——
+   * 工作台据此降级为"没有诊断"，不影响编辑本身。
+   */
+  async acquireEditorClient(workspaceRoot: string, filePath: string): Promise<LspEditorSupport | null> {
+    let root: string;
+    try {
+      root = fs.realpathSync(workspaceRoot);
+    } catch {
+      return null;
+    }
+    try {
+      const { client } = await this.clientFor(root, filePath);
+      return asEditorSupport(client);
+    } catch {
+      return null;
+    }
   }
 
   async releaseWorkspace(workspaceRoot: string): Promise<void> {

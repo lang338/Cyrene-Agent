@@ -15,6 +15,10 @@ asarUnpack:
   - "**/node_modules/@playwright/**"
   - "**/node_modules/playwright/**"
   - "**/node_modules/playwright-core/**"
+  # 语言服务同样以 ELECTRON_RUN_AS_NODE 模式运行（node 直接执行它的 .mjs 入口），
+  # asar 虚拟路径 spawn 不了，必须解到真实磁盘；typescript 是它的 peer 依赖，一并解包
+  - "**/node_modules/typescript-language-server/**"
+  - "**/node_modules/typescript/**"
 electronDist: node_modules/electron/dist
 files:
   - dist/**/*
