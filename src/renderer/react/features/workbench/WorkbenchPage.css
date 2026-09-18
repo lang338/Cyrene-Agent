@@ -964,11 +964,11 @@
 /* ── 消息里的文件路径（点一下直接在中栏打开）──────────────
    只有工作台提供"打开文件"的能力，样式也就只落在工作台作用域内：
    主聊天页里同一段文字是纯文本，压根没有这个元素。
-   底色不铺满、只用虚线下划线：能看出可点，又不像实线链接那样打断阅读节奏。 */
+   不画下划线：模型列文件时一行一个路径，每条底下加横线会连成一片很扎眼；
+   可点这件事交给颜色 + 悬停时的底色来表达。 */
 .cy-workbench .cy-file-link {
   padding: 0;
   border: 0;
-  border-bottom: 1px dashed rgba(138, 180, 248, 0.6);
   background: none;
   color: #8ab4f8;
   font: inherit;
@@ -976,24 +976,25 @@
 }
 
 .cy-workbench .cy-file-link:hover {
-  color: #b6d2fc;
-  border-bottom-color: #b6d2fc;
+  color: #c2d9fd;
+  background: rgba(138, 180, 248, 0.16);
+  border-radius: 3px;
 }
 
 .cy-workbench .cy-file-link:focus-visible {
   outline: 1px solid #4d8bf5;
   outline-offset: 1px;
-  border-radius: 2px;
+  border-radius: 3px;
 }
 
-/* 行内代码里的路径：代码本来就有底色，只换颜色表示可点，不再叠一层下划线 */
+/* 行内代码里的路径：代码本来就有底色，悬停只提亮文字，不再叠背景 */
 .cy-workbench code .cy-file-link {
-  border-bottom: 0;
   color: #8fc0fa;
 }
 
 .cy-workbench code .cy-file-link:hover {
-  color: #b6d2fc;
+  color: #c2d9fd;
+  background: none;
 }
 
 .cy-workbench .cy-message--assistant .cy-message-markdown blockquote {
