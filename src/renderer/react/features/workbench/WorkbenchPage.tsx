@@ -287,6 +287,8 @@ export function WorkbenchPage({
     setBuffers({});
     setFollowBlockedPath(null);
     setError(null);
+    // 诊断是按"工作区相对路径"存的：换了根，新工作区里的同名文件会顶着上一份诊断，必须一起清掉
+    setLspDiagnostics({});
     // 根换了，左栏必须重列，否则还停在上一个工作区的目录快照上
     setTreeRefresh((value) => value + 1);
   }, [workspaceRoot]);
@@ -543,10 +545,15 @@ export function WorkbenchPage({
     if (!entry || entry.loading || entry.error || entry.binary || entry.truncated) return;
     const api = workbenchApi();
     if (!api?.syncLspDocument) return;
-    const timer = window.setTimeout(() => {
+    const sync = () => {
       void api.syncLspDocument(sessionId, activePath, entry.content, monacoLanguageFor(activePath)).catch(() => undefined);
-    }, 400);
-    return () => window.clearTimeout(timer);
+    };
+    const timer = window.setTimeout(sync, 400);
+    return () => {
+      // 别把这次改动一起丢掉：切走文件时语言服务手里还是旧内容，诊断会跟眼前对不上
+      window.clearTimeout(timer);
+      sync();
+    };
   }, [activePath, buffers, sessionId]);
 
   /**

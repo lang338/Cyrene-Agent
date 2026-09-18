@@ -61,14 +61,17 @@ describe.skipIf(!available)("LspClient + 真实 typescript-language-server", () 
       await client.syncFromEditor(file, "typescript", 'export const ok = 1;\nconst bad: number = "nope";\n');
 
       const deadline = Date.now() + 40_000;
-      while (seen.length === 0 && Date.now() < deadline) {
+      // 服务端在 didOpen 阶段可能先推一条**空**诊断，别据此就断定"没有诊断"——
+      // 要等的是真正带内容的那条
+      while (Date.now() < deadline && !seen.some((item) => item.messages.length > 0)) {
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
 
-      expect(seen.length, "语言服务没有推回任何诊断").toBeGreaterThan(0);
+      const withMessages = seen.find((item) => item.messages.length > 0);
+      expect(withMessages, "语言服务没有推回任何诊断").toBeDefined();
       // Windows 上 fileURLToPath 会把盘符转成小写，比较时忽略大小写
-      expect(seen[0].filePath.toLowerCase()).toBe(path.normalize(file).toLowerCase());
-      expect(seen[0].messages.join("\n")).toContain("not assignable");
+      expect(withMessages!.filePath.toLowerCase()).toBe(path.normalize(file).toLowerCase());
+      expect(withMessages!.messages.join("\n")).toContain("not assignable");
     } finally {
       await client.dispose();
     }

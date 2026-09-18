@@ -187,13 +187,14 @@ describe("resolveLaunchTarget", () => {
     });
   });
 
-  it("keeps the original command when the shim has no node entry", () => {
+  it("throws a readable error when the shim has no node entry", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-shim-bad-"));
     roots.push(root);
     const shim = path.join(root, "broken.cmd");
     fs.writeFileSync(shim, "@ECHO off\r\nrem nothing useful\r\n", "utf8");
 
-    expect(resolveLaunchTarget(shim, [], "win32", "C:\\node\\node.exe")).toEqual({ command: shim, args: [] });
+    // 解析不出入口还硬 spawn，Windows 上只会得到 EINVAL；不如在这里说清楚
+    expect(() => resolveLaunchTarget(shim, [], "win32", "C:\\node\\node.exe")).toThrow(/无法解析语言服务的启动壳/);
   });
 
   it("adds the Node-mode env var only when running under Electron", () => {

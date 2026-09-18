@@ -92,7 +92,11 @@ export function resolveLaunchTarget(
     return { command: executablePath, args: [...args] };
   }
   const entry = readNpmShimEntry(executablePath);
-  if (!entry) return { command: executablePath, args: [...args] };
+  if (!entry) {
+    // 解析不出 JS 入口还硬 spawn，Windows 上必然 EINVAL，报错比这里更难懂；
+    // 宁可在这里说清楚"这个壳不是 npm 生成的标准格式"
+    throw new Error(`无法解析语言服务的启动壳：${executablePath}（不是 npm 生成的 .cmd/.bat 格式）`);
+  }
   return {
     command: execPath,
     args: [entry, ...args],
