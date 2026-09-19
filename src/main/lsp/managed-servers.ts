@@ -63,6 +63,23 @@ export const MANAGED_SERVER_PACKAGES: readonly ManagedServerPackage[] = [
     // tarball 本体（npmmirror 与 npmjs 是同一份字节，故两边同一个上限）
     distBytes: 4_226_827,
   },
+  {
+    serverId: "intelephense",
+    packageName: "intelephense",
+    version: "1.18.5",
+    integrity: "sha512-dqCH1YNCRlHGBLND+iUFjBJlGwM4pPimX2jm8AaP/6K2WZNM2K2+E8dOWCD3ZYMP2zC2ICBD9Soe2oxKtU9d9A==",
+    urls: [
+      "https://registry.npmmirror.com/intelephense/-/intelephense-1.18.5.tgz",
+      "https://registry.npmjs.org/intelephense/-/intelephense-1.18.5.tgz",
+    ],
+    stripComponents: 1,
+    // 入口就是包里的 bin（与包内 package.json 的 bin/main 一致）
+    entry: "lib/intelephense.js",
+    args: ["--stdio"],
+    // npm 报的 unpackedSize（25.88 MB）
+    installBytes: 25_883_024,
+    distBytes: 5_072_793,
+  },
 ];
 
 export function findManagedPackage(serverId: string): ManagedServerPackage | null {

@@ -322,4 +322,16 @@ describe("语言服务应用内安装", () => {
     }).map((pkg) => pkg.serverId);
     expect(mismatched).toEqual([]);
   });
+
+  it("每个托管包都钉了校验值、入口与体积（漏一个字段就会装出个跑不了的东西）", () => {
+    const incomplete = MANAGED_SERVER_PACKAGES.filter(
+      (pkg) =>
+        !/^sha(256|512)-[A-Za-z0-9+/=]+$/.test(pkg.integrity) ||
+        !pkg.entry ||
+        pkg.urls.length === 0 ||
+        !(pkg.distBytes > 0) ||
+        !(pkg.installBytes > 0),
+    ).map((pkg) => `${pkg.serverId}(${pkg.integrity.slice(0, 12)}…, entry=${pkg.entry}, urls=${pkg.urls.length}, dist=${pkg.distBytes}, install=${pkg.installBytes})`);
+    expect(incomplete).toEqual([]);
+  });
 });
