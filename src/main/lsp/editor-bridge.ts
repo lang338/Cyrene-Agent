@@ -10,6 +10,7 @@ import { ipcMain } from "electron";
 import { IPC } from "../../shared/ipc-channels";
 import { createIpcScope, type IpcScope, type IpcScopeMainLike } from "../application/ipc-scope";
 import { buildLspRequestParams, lspMethodFor, normalizeLspResult } from "./editor-requests";
+import { buildRecommendedTsconfig, findProjectConfig } from "./project-config";
 import type { LspEditorSupport, LspManager } from "./manager";
 
 /** 补全首次触发要等语言服务把项目索引建起来，比诊断宽松得多 */
@@ -137,6 +138,29 @@ export function registerWorkbenchLspBridge(deps: WorkbenchLspBridgeDeps): { disp
     if (!binding) return false;
     await binding.client.closeFromEditor(resolveInsideWorkspace(binding.root, input.path));
     return true;
+  });
+
+  // 查"这个文件的语言服务环境"：有没有可用服务 / 往上有没有项目配置 / 没有的话该往哪写。
+  // 编辑器拿它把"为什么补全很弱"说明白，并给一键生成配置一个落点。
+  ipc.handle(IPC.WORKBENCH_LSP_ENV, async (_event, payload: unknown) => {
+    const input = payload as { sessionId?: unknown; path?: unknown } | null;
+    if (typeof input?.path !== "string" || !input.path.trim()) throw new Error("缺少文件路径");
+    const sessionId = requireSessionId(input?.sessionId);
+    const root = deps.getWorkspaceRoot(sessionId);
+    if (!root) return null;
+    const absolutePath = resolveInsideWorkspace(root, input.path);
+    const binding = await bindingFor(sessionId, absolutePath);
+    const lookup = findProjectConfig(path.dirname(absolutePath), root);
+    // 写配置复用既有的 workbench:file-write（只收工作区内相对路径），这里先把相对路径算好
+    const relativeRoot = path.relative(root, lookup.projectRoot).split(path.sep).join("/");
+    return {
+      hasService: Boolean(binding),
+      configFile: lookup.configFile,
+      projectRoot: lookup.projectRoot,
+      configRelativePath: relativeRoot ? `${relativeRoot}/tsconfig.json` : "tsconfig.json",
+      // 内容由主进程给：渲染端只负责"给你看 + 你确认后写入"，两边不重复实现一份
+      recommendedConfig: buildRecommendedTsconfig(),
+    };
   });
 
   // 编辑器主动提问：补全 / 悬停 / 跳转 / 查引用。

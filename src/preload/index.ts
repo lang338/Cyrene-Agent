@@ -6,6 +6,7 @@ import type {
   WorkbenchLspDiagnostic,
   WorkbenchLspRequestInput,
   WorkbenchLspRequestResult,
+  WorkbenchLspEnv,
 } from "../shared/code-workbench-types";
 import type {
   SpeechInputCommitRequest,
@@ -843,6 +844,10 @@ const workbenchApi = {
   // revision = 编辑器模型的版本号：主进程用它丢弃"迟到的旧同步"，防止旧内容覆盖新内容。
   syncLspDocument: (sessionId: string, path: string, content: string, languageId: string, revision?: number) =>
     ipcRenderer.invoke(IPC.WORKBENCH_LSP_SYNC, { sessionId, path, content, languageId, revision }) as Promise<boolean>,
+  // 查语言服务环境：有没有可用服务 / 往上有没有项目配置（tsconfig、jsconfig）/ 配置该写在哪。
+  // 编辑器用它把"为什么补全很弱"说明白，并给一键生成配置一个落点；没绑定工作区时返回 null。
+  lspEnv: (sessionId: string, path: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_LSP_ENV, { sessionId, path }) as Promise<WorkbenchLspEnv | null>,
   closeLspDocument: (sessionId: string, path: string) =>
     ipcRenderer.invoke(IPC.WORKBENCH_LSP_CLOSE, { sessionId, path }) as Promise<boolean>,
   // 编辑器主动提问：补全 / 悬停 / 跳转 / 查引用。

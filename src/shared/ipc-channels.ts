@@ -132,6 +132,11 @@ export const IPC = {
   WORKBENCH_LSP_DIAGNOSTICS: "workbench:lsp-diagnostics",
   /** 编辑器主动提问：补全 / 悬停 / 跳转 / 查引用 */
   WORKBENCH_LSP_REQUEST: "workbench:lsp-request",
+  /**
+   * 查这个文件的语言服务环境：有没有可用服务、往上有没有项目配置（tsconfig/jsconfig）、
+   * 没有的话该把配置写在哪。用来"把降级原因说明白"，并提供一键生成配置的落点。
+   */
+  WORKBENCH_LSP_ENV: "workbench:lsp-env",
 
   // sidebar window (status / schedule / settings entry)
   SIDEBAR_MINIMIZE: "sidebar:minimize",

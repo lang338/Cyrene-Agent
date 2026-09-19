@@ -16,6 +16,7 @@ import { ComposerInteractionPanel, type ComposerInteractionCallbacks } from "../
 import type { ComposerInteraction } from "../chat/components/run-presentation";
 import { monacoLanguageFor, setupMonaco } from "./monaco-setup";
 import { registerLspProviders, setLspProviderSession } from "./lsp-providers";
+import { WorkbenchLspStatus } from "./lsp-status";
 import { buildActiveFileContext, type ActiveFileSelection } from "./active-file-context";
 import { resizerKeyDelta, useResizableColumns, type ColumnSide } from "./use-resizable-columns";
 import { workbenchApi, WorkspaceTree } from "./WorkspaceTree";
@@ -1119,6 +1120,23 @@ export function WorkbenchPage({
                   )}
                 </div>
               )}
+
+              {/* 语言智能状态：只在"语义能力变弱"时出现（缺语言服务 / 缺项目配置），
+                  说明原因并给一键生成配置的动作；一切正常时不占位 */}
+              <WorkbenchLspStatus
+                sessionId={sessionId}
+                activePath={activePath}
+                external={Boolean(activePath && isExternalPath(activePath))}
+                fileReady={Boolean(
+                  activePath &&
+                    buffers[activePath] &&
+                    !buffers[activePath].loading &&
+                    !buffers[activePath].error &&
+                    !buffers[activePath].binary &&
+                    !buffers[activePath].truncated,
+                )}
+                language={activePath ? monacoLanguageFor(activePath) : null}
+              />
 
               {/* 昔涟刚改了这个文件，但缓冲里有未保存改动：内容以你的版本为准，只告知 */}
               {followBlockedPath && followBlockedPath === activePath && activeEntry?.dirty && (
