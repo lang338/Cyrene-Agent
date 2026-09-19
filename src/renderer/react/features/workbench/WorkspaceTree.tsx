@@ -5,6 +5,7 @@ import { useTranslation } from "../../i18n";
 import type {
   WorkbenchFileEntry,
   WorkbenchLspDiagnostic,
+  WorkbenchLspEnv,
   WorkbenchLspRequestInput,
   WorkbenchLspRequestResult,
 } from "../../../../shared/code-workbench-types";
@@ -35,6 +36,8 @@ interface WorkbenchApi {
   onLedgerChanged?(callback: (payload: { sessionId: string }) => void): () => void;
   /** 语言服务（LSP）：把编辑器内容同步给外部语言服务；返回 false = 没有可用服务，编辑器静默降级 */
   syncLspDocument?(sessionId: string, path: string, content: string, languageId: string, revision?: number): Promise<boolean>;
+  /** 查语言服务环境：有没有可用服务 / 往上有没有项目配置 / 配置该写在哪（渲染端据此说明降级原因） */
+  lspEnv?(sessionId: string, path: string): Promise<WorkbenchLspEnv | null>;
   closeLspDocument?(sessionId: string, path: string): Promise<boolean>;
   /** 编辑器主动提问（补全/悬停/跳转/查引用）；null = 没有可用服务，编辑器静默降级 */
   requestLsp?(input: WorkbenchLspRequestInput): Promise<WorkbenchLspRequestResult | null>;

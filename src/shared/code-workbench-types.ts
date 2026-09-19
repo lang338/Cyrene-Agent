@@ -141,6 +141,25 @@ export interface WorkbenchLspDiagnostic {
   code?: string | number;
 }
 
+/**
+ * 编辑器问"这个文件的语言服务环境"。
+ *
+ * 用来把"为什么补全很弱"说明白（而不是让用户以为功能做得很烂），
+ * 并给"一键生成配置"一个落点。三种结果：没有可用服务 / 有服务但缺项目配置（精度受限）/ 一切正常。
+ */
+export interface WorkbenchLspEnv {
+  /** 这个工作区能不能拿到语言服务；拿不到就只能退化成文本级建议 */
+  hasService: boolean;
+  /** 往上找到的项目配置（tsconfig.json / jsconfig.json）；没有则为 null */
+  configFile: string | null;
+  /** 建议把配置写在哪（绝对路径，始终落在工作区内） */
+  projectRoot: string;
+  /** 写配置用的工作区相对路径（复用 workbench:file-write） */
+  configRelativePath: string;
+  /** 推荐配置的内容（主进程生成，渲染端只负责显示与确认后写入） */
+  recommendedConfig: string;
+}
+
 // ── 语言服务（LSP）请求：编辑器主动提问 ────────────────────
 //
 // 诊断是"服务端推"，这里是"编辑器问"，方向相反，所以要带上问谁、问哪里。
