@@ -201,11 +201,20 @@ function provideHover(
   });
 }
 
-/** 位置列表 → Monaco 可跳转的位置；工作区外的定义（在依赖里）跳不过去，直接滤掉 */
+/**
+ * 位置列表 → Monaco 可跳转的位置。
+ *
+ * 工作区内的定义用相对路径（工作台的模型键就是这个）；**工作区外的（依赖、标准库存根）也要给**——
+ * 工作台是能打开全盘文件的（路径栏支持绝对路径），所以跳进依赖里看类型声明是合理诉求。
+ * 两边的 URI 形式不同：相对路径沿用工作台约定的 `file:///<相对路径>`，绝对路径交给
+ * `monaco.Uri.file`（它会正确地百分号编码，中文路径、空格都不会坏）。
+ */
 function toMonacoLocations(result: WorkbenchLspRequestResult | null): monaco.languages.Location[] {
   return (result?.locations ?? []).flatMap((location) => {
-    if (!location.path) return [];
-    return [{ uri: monaco.Uri.parse(`file:///${location.path}`), range: toMonacoRange(location.range) }];
+    const range = toMonacoRange(location.range);
+    if (location.path) return [{ uri: monaco.Uri.parse(`file:///${location.path}`), range }];
+    if (location.externalPath) return [{ uri: monaco.Uri.file(location.externalPath), range }];
+    return [];
   });
 }
 
