@@ -455,7 +455,8 @@ describe("splitNulOutput（git -z NUL 分隔解析）", () => {
 const execFileAsync = promisify(execFile);
 async function systemGitAvailable(): Promise<boolean> {
   try {
-    await execFileAsync("git", ["--version"], { windowsHide: true, timeout: 5_000 });
+    // 探针超时给得宽一点：CI 的 windows runner 冷启动 git 明显比本机慢
+    await execFileAsync("git", ["--version"], { windowsHide: true, timeout: 15_000 });
     return true;
   } catch {
     return false;
@@ -467,12 +468,21 @@ describe("real git 集成：普通文件夹自动 init + 中文路径 + 固定 i
   let root = "";
   let available = false;
 
+  // 这些用例会真的跑 git（init/commit/diff/checkout），CI 的 windows runner 冷启动下
+  // 单条就能到十几秒，默认 5 秒超时会随机红——所以探针与用例都显式给足预算。
   beforeEach(async () => {
     available = await systemGitAvailable();
     if (available) root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-cp-e2e-"));
-  });
+  }, 30_000);
   afterEach(() => {
-    if (root) fs.rmSync(root, { recursive: true, force: true });
+    if (!root) return;
+    try {
+      // maxRetries/retryDelay 是给 Windows 准备的：git 进程可能还持有目录句柄，
+      // 立刻删会 EPERM。删不掉也不该让用例失败——那只是临时目录没回收。
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch {
+      // 忽略：清理失败不影响断言的正确性
+    }
   });
 
   it("非 git 目录首次快照自动 init；中文文件可 diff；回退还原内容并删除多余文件", async () => {
@@ -499,7 +509,7 @@ describe("real git 集成：普通文件夹自动 init + 中文路径 + 固定 i
     await service.restore("s1", first!.hash);
     expect(fs.readFileSync(path.join(root, "你好.txt"), "utf8")).toBe("第一版\n");
     expect(fs.existsSync(path.join(root, "临时文件.md"))).toBe(false);
-  });
+  }, 60_000);
 
   it("回退冲突：快照后被 gitignore 忽略的同名文件会中止回退、点名且零副作用；解除忽略后可正常回退", async () => {
     if (!available) return;
@@ -538,7 +548,7 @@ describe("real git 集成：普通文件夹自动 init + 中文路径 + 固定 i
     await service.restore("s1", first!.hash);
     expect(fs.readFileSync(path.join(root, "secret.txt"), "utf8")).toBe("快照里的原始内容\n");
     expect(fs.readFileSync(path.join(root, "密钥.txt"), "utf8")).toBe("原始密钥\n");
-  });
+  }, 60_000);
 
   it("预检：非 git 父目录内含独立仓库时中止快照、点名且不创建 .git", async () => {
     if (!available) return;
@@ -574,5 +584,5 @@ describe("real git 集成：普通文件夹自动 init + 中文路径 + 固定 i
     expect(fs.existsSync(path.join(projectA, ".git"))).toBe(true);
     expect(fs.existsSync(path.join(projectB, ".git"))).toBe(true);
     expect(fs.readFileSync(path.join(root, "笔记.txt"), "utf8")).toBe("父目录散文件\n");
-  });
+  }, 60_000);
 });
