@@ -87,15 +87,17 @@ function readNpmShimEntry(shimPath: string): string | null {
 
 /**
  * 这个文件能不能直接交给 node 跑。
- * 带 .js/.mjs/.cjs 的直接认；无扩展名的必须是**带 shebang 的脚本**——
- * 那是 npm 允许的 bin 形态，壳里的 `_prog` 也正是 node；但不是脚本的东西（二进制、数据文件）
- * 塞给 node 只会得到更难懂的报错。
+ * 带 .js/.mjs/.cjs 的直接认；无扩展名的必须是**以 node 为解释器的 shebang 脚本**——
+ * 那是 npm 允许的 bin 形态，壳里的 `_prog` 也正是 node。
+ * ⚠️ 不能只判"有没有 `#!`"：npm 的 cmd-shim 对**任何**解释器都会生成 `.cmd` 壳，
+ * `#!/bin/sh` 之类同样会出现在 `.bin` 里，塞给 node 只会得到更难懂的报错。
  */
 function isNodeScript(target: string): boolean {
   if (!fs.existsSync(target)) return false;
   if (/\.(?:mjs|cjs|js)$/i.test(target)) return true;
   try {
-    return fs.readFileSync(target, "utf8").startsWith("#!");
+    const [shebang = ""] = fs.readFileSync(target, "utf8").split(/\r?\n/, 1);
+    return /^#!.*\bnode(?:\.exe)?\b/i.test(shebang);
   } catch {
     return false;
   }

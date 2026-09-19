@@ -328,6 +328,20 @@ describe("resolveLaunchTarget", () => {
 
     expect(() => resolveLaunchTarget(shim, [], "win32", "C:\\node\\node.exe")).toThrow(/无法解析语言服务的启动壳/);
   });
+
+  it("壳指向非 node 的 shebang 脚本（如 /bin/sh）也要拒绝：cmd-shim 对任何解释器都生成壳", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-shim-sh-"));
+    roots.push(root);
+    const entry = path.join(root, "node_modules", "shell-lsp", "bin", "shell-lsp");
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    fs.writeFileSync(entry, "#!/bin/sh\nexec something --stdio\n", "utf8");
+    const shim = path.join(root, "node_modules", ".bin", "shell-lsp.cmd");
+    fs.mkdirSync(path.dirname(shim), { recursive: true });
+    fs.writeFileSync(shim, "@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\..\\shell-lsp\\bin\\shell-lsp\" %*\r\n", "utf8");
+
+    // 拿 node 去跑一个 shell 脚本只会报一堆看不懂的语法错误，不如在这里说清楚
+    expect(() => resolveLaunchTarget(shim, ["--stdio"], "win32", "C:\\node\\node.exe")).toThrow(/无法解析语言服务的启动壳/);
+  });
 });
 
 describe("withBundledL10nDir", () => {
