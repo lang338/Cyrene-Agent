@@ -63,12 +63,27 @@ function isInsideWorkspace(dir: string, workspaceRoot: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-/** 取真实路径（解掉符号链接）；路径不存在时退回词法解析结果（工作区还没建好之类） */
+/**
+ * 取真实路径（解掉符号链接）。
+ *
+ * ⚠️ 传进来的路径**可能还不存在**（刚被删掉、或指向一个不存在的子目录），这时不能直接
+ * 退回词法路径：`link/missing`（link 是工作区里指向外面的软链、missing 不存在）在词法上
+ * 看着还在工作区里，可紧接着的 `statSync` 会顺着 link 去读工作区外那棵树——越界检查被绕过。
+ * 所以往上找**最近的已存在祖先**取真实路径，再把剩下解析不出来的部分拼回去。
+ */
 function canonicalize(target: string): string {
-  try {
-    return fs.realpathSync(target);
-  } catch {
-    return target;
+  let current = target;
+  const unresolved: string[] = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(current), ...unresolved);
+    } catch {
+      const parent = path.dirname(current);
+      // 一路退到根还解析不出来（例如整盘不可访问）：只能退回词法路径
+      if (parent === current) return target;
+      unresolved.unshift(path.basename(current));
+      current = parent;
+    }
   }
 }
 

@@ -42,4 +42,14 @@ describe("built-in LSP server catalog", () => {
       expect(server.installHint).not.toBe("");
     }
   });
+
+  it("自带副本的入口名必须是 <服务 id>.cjs：这是 scripts/build/lsp-servers.mjs 的产出约定", () => {
+    // 约定：多出来的那条命令就是随应用打包的单文件入口（见 lsp-servers.mjs 的产物布局）。
+    // 两边名字对不上时不会有任何报错，只会静默回落成"没有语言服务可用"，所以这里钉住。
+    const withBundledCopy = BUILTIN_LSP_SERVERS.filter((server) => server.commands.length > 1);
+    expect(withBundledCopy.map((server) => server.id)).toContain("yaml-language-server");
+    for (const server of withBundledCopy) {
+      expect(server.commands[1].command).toBe(`${server.id}.cjs`);
+    }
+  });
 });

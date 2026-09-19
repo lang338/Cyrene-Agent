@@ -46,6 +46,28 @@ const available = definition
   : null;
 fs.rmSync(probeRoot, { recursive: true, force: true });
 
+// 随应用打包的单文件语言服务（`vendor/lsp-servers/<id>/`，由 npm run build:lsp-servers 生成）：
+// 这条专门盯"开发模式看不出来"的那类问题——单文件包旁边少了 l10n 目录时，服务会在 initialize
+// 里抛 ENOENT，现象只是静默降级、没有补全，不写这条根本查不出来。没构建过就整组跳过。
+const yamlDefinition = BUILTIN_LSP_SERVERS.find((item) => item.id === "yaml-language-server");
+const bundledSingleFileDirs = (() => {
+  const root = path.join(process.cwd(), "vendor", "lsp-servers");
+  try {
+    return fs.readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(root, entry.name));
+  } catch {
+    return [];
+  }
+})();
+const bundledYamlProbeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-yaml-probe-"));
+const bundledYaml = yamlDefinition && bundledSingleFileDirs.length > 0
+  // PATH 清空：npm 跑脚本时会把 node_modules/.bin 塞进 PATH，不清掉就会命中开发环境
+  // 装的那份（devDependency），这条用例要证的恰恰是"只有自带副本时也能跑"
+  ? resolveLspServer(yamlDefinition, bundledYamlProbeRoot, { extraBinDirs: bundledSingleFileDirs, PATH: "" })
+  : null;
+fs.rmSync(bundledYamlProbeRoot, { recursive: true, force: true });
+
 describe.skipIf(!available)("LspClient + 真实 typescript-language-server", () => {
   it("把编辑器内容同步过去后能收到诊断", async () => {
     const workspaceRoot = createTsProject();
@@ -193,4 +215,54 @@ describe.skipIf(!available)("LspClient + 真实 typescript-language-server", () 
       await client.dispose();
     }
   }, 90_000);
+});
+
+describe.skipIf(!bundledYaml)("LspClient + 应用自带的 YAML 单文件包", () => {
+  it("能起来并按 schema 给出补全（单文件包缺 l10n 时 initialize 会直接失败）", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-yaml-"));
+    roots.push(workspaceRoot);
+    // 用 schema 驱动补全：语言服务要先读到这份 schema，才可能报出 properties 里的键
+    fs.writeFileSync(
+      path.join(workspaceRoot, "schema.json"),
+      JSON.stringify({
+        type: "object",
+        properties: { name: { type: "string" }, services: { type: "object" } },
+      }),
+      "utf8",
+    );
+    const file = path.join(workspaceRoot, "sample.yaml");
+    const content = "# yaml-language-server: $schema=./schema.json\nname: cyrene\n";
+    fs.writeFileSync(file, content, "utf8");
+
+    const client = new LspClient({ server: bundledYaml!, workspaceRoot });
+    try {
+      await client.syncFromEditor(file, "yaml", content);
+      const deadline = Date.now() + 30_000;
+      let labels: string[] = [];
+      while (Date.now() < deadline) {
+        let raw: unknown;
+        try {
+          raw = await client.request<unknown>(
+            "textDocument/completion",
+            {
+              textDocument: { uri: pathToFileURL(file).toString() },
+              // 末尾空行（第 3 行）：在根上补键，schema 里已出现的 name 会被服务端过滤掉
+              position: { line: 2, character: 0 },
+            },
+            Math.max(1_000, deadline - Date.now()),
+          );
+        } catch {
+          break;
+        }
+        const container = raw as { items?: Array<{ label: string }> } | Array<{ label: string }> | null;
+        const items = Array.isArray(container) ? container : (container?.items ?? []);
+        labels = items.map((item) => item.label);
+        if (labels.includes("services")) break;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      expect(labels, "自带的 YAML 语言服务没有返回任何补全项").toContain("services");
+    } finally {
+      await client.dispose();
+    }
+  }, 60_000);
 });
