@@ -109,16 +109,16 @@
     "lspInstallHints": {
       "typescript-language-server": "Run npm i -g typescript-language-server typescript in a terminal, then restart the app.",
       "python-pyright": "Run npm i -g pyright in a terminal, then restart the app.",
-      "gopls": "Run go install golang.org/x/tools/gopls@latest (requires Go), then restart the app.",
-      "rust-analyzer": "Run rustup component add rust-analyzer (requires Rust), then restart the app.",
+      "gopls": "Requires Go first: the official release ships source only, so run go install golang.org/x/tools/gopls@latest (gopls also needs the go command to resolve modules; without Go, completion and navigation stay unavailable). Then restart the app.",
+      "rust-analyzer": "Requires Rust first: the server loads your project through cargo, so without a Rust toolchain completion and navigation do not work. Install Rust, run rustup component add rust-analyzer, then restart the app.",
       "clangd": "Install LLVM with clangd on your PATH, or download a standalone clangd release. Cross-file completion also needs a compile_commands.json in the project (generate it with CMake's -DCMAKE_EXPORT_COMPILE_COMMANDS=ON).",
-      "jdtls": "Download Eclipse JDT Language Server and put jdtls on your PATH (requires JDK 17+), then restart the app.",
-      "omnisharp": "Download OmniSharp and put OmniSharp on your PATH (requires the .NET SDK), then restart the app.",
+      "jdtls": "Requires JDK 17+ first: jdtls is itself a Java program, and project features need pom.xml / build.gradle. Put jdtls on your PATH, then restart the app.",
+      "omnisharp": "Requires the .NET SDK first: OmniSharp needs the .NET runtime, and .sln / .csproj for full features. Put OmniSharp on your PATH, then restart the app.",
       "intelephense": "Run npm i -g intelephense in a terminal, then restart the app.",
-      "ruby-lsp": "Run gem install ruby-lsp (requires Ruby), then restart the app.",
-      "kotlin-language-server": "Download the kotlin-language-server release and put its executable on your PATH, then restart the app.",
+      "ruby-lsp": "Requires Ruby first: run gem install ruby-lsp (a Gemfile is needed for project features), then restart the app.",
+      "kotlin-language-server": "Requires a JVM (Java 17+) first: this server is a JVM program. Put its executable on your PATH, then restart the app.",
       "lua-language-server": "Download the lua-language-server release and put its executable on your PATH, then restart the app.",
-      "yaml-language-server": "Run npm i -g yaml-language-server in a terminal, then restart the app."
+      "yaml-language-server": "The official npm package does not bundle its dependencies, so it cannot be fetched and enabled directly: run npm i -g yaml-language-server, then restart the app."
     },
     "chatHeader": "Chat",
     "chatEmpty": "No messages yet. Say something to Cyrene",
