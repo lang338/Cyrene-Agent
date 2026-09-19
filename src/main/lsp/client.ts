@@ -31,6 +31,13 @@ interface OpenDocument {
   content: string;
   /** 内容来源：editor = 工作台编辑器同步的（可能含未保存改动）；disk = AI 工具按磁盘读的 */
   source: "editor" | "disk";
+  /**
+   * 编辑器侧的"内容修订号"（Monaco 的 model 版本号）。
+   * 用来丢弃**迟到的旧同步**：编辑器和防抖同步两条路都会送内容，
+   * 一次落后的同步若被照单全收，会把较新的内容覆盖成旧的——表现就是
+   * "补全用的内容比你眼前看到的旧"（悬停正常、刚敲那行补全不对）。
+   */
+  revision?: number;
 }
 
 function defaultSpawn(
@@ -142,6 +149,53 @@ function abortError(): Error {
   return error;
 }
 
+/**
+ * 服务端声明的文档同步方式：`textDocumentSync` 可能是数字，也可能是 `{ change }` 对象。
+ *
+ * 三种必须分开对待：**None(0) / Full(1) / Incremental(2)**。按 LSP 规范，
+ * 字段**缺失等价于 None**，而不是"默认增量"——对声明 None 的服务端发 didChange，
+ * 它可能直接拒绝或忽略，编辑器里的改动就永远同步不过去（补全/跳转一直停在旧内容上）。
+ */
+type DocumentSyncMode = "none" | "full" | "incremental";
+
+function resolveDocumentSyncMode(initializeResult: unknown): DocumentSyncMode {
+  const raw = (initializeResult as { capabilities?: { textDocumentSync?: unknown } } | null)?.capabilities
+    ?.textDocumentSync;
+  const value = typeof raw === "number" ? raw : (raw as { change?: unknown } | undefined)?.change;
+  if (value === 2) return "incremental";
+  if (value === 1) return "full";
+  return "none";
+}
+
+/** 文档末尾位置（LSP 的行、列都从 0 起算） */
+function documentEnd(content: string): { line: number; character: number } {
+  const lines = content.split(/\r?\n/);
+  const lastLine = lines.length - 1;
+  return { line: lastLine, character: lines[lastLine].length };
+}
+
+/**
+ * 组装 didChange 的变更项。
+ *
+ * 为什么不能无脑发全文：服务端声明**增量**同步时，LSP 规范要求 change 必须带 `range`。
+ * 少了 range 它既不报错也不拒绝，但会把这次变更处理错——现象很隐蔽：**打开那一刻的内容
+ * 它一直看得到（悬停、跳转、引用都正常），之后敲进去的字它完全看不到**，于是补全退化成
+ * "作用域 + 全局"那一大坨（表现为"在刚敲的那行上没有任何成员补全"）。
+ * 我们每次都发全量文本，所以 range 直接取"旧文档的整个范围"。反过来，服务端声明 Full/None 时
+ * 必须只发全文、不带 range。
+ */
+function buildDocumentChange(
+  incremental: boolean,
+  previousContent: string,
+  nextContent: string,
+): { range?: { start: { line: number; character: number }; end: { line: number; character: number } }; text: string } {
+  if (!incremental) return { text: nextContent };
+  return {
+    range: { start: { line: 0, character: 0 }, end: documentEnd(previousContent) },
+    text: nextContent,
+  };
+}
+
 /** 一个工作区内单个外部 LSP 服务进程的 JSON-RPC 客户端。 */
 export class LspClient {
   private readonly spawnImpl: NonNullable<LspClientOptions["spawnImpl"]>;
@@ -154,6 +208,8 @@ export class LspClient {
   private disposed = false;
   /** 进行中的初始化：把并发调用收敛成一次 spawn，见 initialize */
   private initPromise: Promise<void> | null = null;
+  /** 服务端声明的同步方式；决定 didChange 发不发、要不要带 range（见 buildDocumentChange） */
+  private syncMode: DocumentSyncMode = "none";
 
   constructor(private readonly options: LspClientOptions) {
     this.spawnImpl = options.spawnImpl ?? defaultSpawn;
@@ -229,7 +285,7 @@ export class LspClient {
     this.child = child;
     this.connection = connection;
     const rootUri = pathToFileURL(this.options.workspaceRoot).toString();
-    await withTimeout(
+    const initializeResult = await withTimeout(
       connection.sendRequest("initialize", {
         processId: process.pid,
         rootUri,
@@ -250,6 +306,8 @@ export class LspClient {
       INITIALIZE_TIMEOUT_MS,
       "LSP_INITIALIZE_TIMEOUT",
     );
+    // 记下服务端要的同步方式：增量就得给带 range 的变更，否则后续改动它一律看不到
+    this.syncMode = resolveDocumentSyncMode(initializeResult);
     connection.sendNotification("initialized", {});
     this.initialized = true;
   }
@@ -271,37 +329,58 @@ export class LspClient {
       return;
     }
     if (existing.content === content) return;
+    const previous = existing.content;
     const version = existing.version + 1;
     this.documents.set(uri, { uri, version, content, source: "disk" });
-    connection.sendNotification("textDocument/didChange", {
-      textDocument: { uri, version },
-      contentChanges: [{ text: content }],
-    });
+    // 服务端声明 None（或没声明）时不该发 didChange——发了它可能拒绝或忽略
+    if (this.syncMode !== "none") {
+      connection.sendNotification("textDocument/didChange", {
+        textDocument: { uri, version },
+        contentChanges: [buildDocumentChange(this.syncMode === "incremental", previous, content)],
+      });
+    }
   }
 
   /**
    * 工作台编辑器同步文档内容。与 touchFile 的差别是内容由调用方给出、不读磁盘：
    * 编辑器里的内容可能还没保存，语言服务必须看到眼前这一份，否则诊断和用户看到的对不上。
+   *
+   * `revision` 是编辑器侧的修订号（Monaco 的 model 版本号）。编辑器和"防抖同步"两条路都会
+   * 送内容，**迟到的旧同步必须丢弃**：否则它会把新内容覆盖成旧的，语言服务据此算出来的补全
+   * 就比你眼前看到的落后一步（现象：悬停正常，刚敲那行的补全不给成员）。
    */
-  async syncFromEditor(filePath: string, languageId: string, content: string): Promise<void> {
+  async syncFromEditor(filePath: string, languageId: string, content: string, revision?: number): Promise<void> {
     await this.initialize();
     const connection = this.requireConnection();
     const uri = pathToFileURL(path.resolve(filePath)).toString();
     const existing = this.documents.get(uri);
+    if (existing && revision !== undefined && existing.revision !== undefined && revision < existing.revision) {
+      // 迟到的旧同步：丢掉。它会把语言服务手里的新内容覆盖成旧的，
+      // 于是补全按旧内容算——现象是"刚敲的那行拿不到成员补全，而悬停却是对的"
+      return;
+    }
     if (!existing) {
-      this.documents.set(uri, { uri, version: 1, content, source: "editor" });
+      this.documents.set(uri, { uri, version: 1, content, source: "editor", revision });
       connection.sendNotification("textDocument/didOpen", {
         textDocument: { uri, languageId, version: 1, text: content },
       });
       return;
     }
-    if (existing.source === "editor" && existing.content === content) return;
+    if (existing.source === "editor" && existing.content === content) {
+      // 内容没变也要把修订号推进，否则下一次真改动会被误判成"迟到的旧同步"
+      if (revision !== undefined) existing.revision = revision;
+      return;
+    }
+    const previous = existing.content;
     const version = existing.version + 1;
-    this.documents.set(uri, { uri, version, content, source: "editor" });
+    this.documents.set(uri, { uri, version, content, source: "editor", revision });
+    // 服务端声明 None（或没声明）时不该发 didChange
+    if (this.syncMode === "none") return;
     connection.sendNotification("textDocument/didChange", {
       textDocument: { uri, version },
-      // 全量同步：编辑器一次改动可能牵连多处，算增量既不划算也不稳
-      contentChanges: [{ text: content }],
+      // 每次发全量文本，但变更形状要跟服务端协商的同步方式一致（见 buildDocumentChange）：
+      // 增量服务端必须收到带 range 的变更，否则这次改动它看不到
+      contentChanges: [buildDocumentChange(this.syncMode === "incremental", previous, content)],
     });
   }
 
@@ -362,6 +441,10 @@ export class LspClient {
     } catch {
       // 进程已退出时仍应继续释放本地资源。
     } finally {
+      // exit 通知是异步写出的：紧接着 dispose 连接会把还没落地的帧打断，
+      // jsonrpc 会在已销毁的流上继续写，抛出**未处理**的 ERR_STREAM_DESTROYED
+      // （测试里表现为 vitest 报 unhandled error 而失败）。给一个极短窗口让它写完。
+      await new Promise((resolve) => setTimeout(resolve, 50));
       this.connection?.dispose();
       this.child?.kill();
       this.connection = null;

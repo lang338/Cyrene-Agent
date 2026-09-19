@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { LspClient } from "./client";
 import { BUILTIN_LSP_SERVERS } from "./server-catalog";
@@ -76,4 +77,120 @@ describe.skipIf(!available)("LspClient + 真实 typescript-language-server", () 
       await client.dispose();
     }
   }, 60_000);
+
+  it("同步编辑器内容后能拿到补全项，且包含跨文件的类型成员", async () => {
+    const workspaceRoot = createTsProject();
+    // 造一个必须跨文件才能答对的场景：接口在 types.ts，使用点在 main.ts
+    fs.writeFileSync(
+      path.join(workspaceRoot, "types.ts"),
+      "export interface Probe { alpha: number; beta: string }\n",
+      "utf8",
+    );
+    const mainFile = path.join(workspaceRoot, "main.ts");
+    const content = [
+      'import type { Probe } from "./types";',
+      'const probe: Probe = { alpha: 1, beta: "x" };',
+      "probe.",
+      "",
+    ].join("\n");
+    fs.writeFileSync(mainFile, content, "utf8");
+
+    const client = new LspClient({ server: available!, workspaceRoot });
+    try {
+      // 必须先把内容同步过去（didOpen），否则语言服务手里没有这份文档，补全必然为空
+      await client.syncFromEditor(mainFile, "typescript", content);
+      // 语言服务刚起来时项目还没索引完，补全会先返回空——就像诊断那条用例一样，
+      // 要等的是"非空且包含跨文件成员"的那一刻，而不是第一次的返回值
+      const deadline = Date.now() + 40_000;
+      let labels: string[] = [];
+      while (Date.now() < deadline) {
+        // 单次请求的超时受"轮询截止时间"约束：写死 30 秒时，可能在截止前一瞬又发起一次长请求，
+        // 把总耗时顶过用例超时（真机上就是偶发红）。超时当作"还没就绪"，继续轮询。
+        let raw: unknown;
+        try {
+          raw = await client.request<unknown>(
+            "textDocument/completion",
+            {
+              textDocument: { uri: pathToFileURL(mainFile).toString() },
+              position: { line: 2, character: "probe.".length },
+            },
+            Math.max(1_000, deadline - Date.now()),
+          );
+        } catch {
+          break;
+        }
+        const container = raw as { items?: Array<{ label: string }> } | Array<{ label: string }> | null;
+        const items = Array.isArray(container) ? container : (container?.items ?? []);
+        labels = items.map((item) => item.label);
+        if (labels.includes("alpha") && labels.includes("beta")) break;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      expect(labels, "语言服务没有返回任何补全项").not.toHaveLength(0);
+      // 关键：跨文件的类型成员必须出现——这正是内置 TS 服务做不到、所以要换外部服务的原因
+      expect(labels).toContain("alpha");
+      expect(labels).toContain("beta");
+    } finally {
+      await client.dispose();
+    }
+    // 预算 = 建项目/起服务 + 40 秒轮询 + 收尾；留够余量，避免把偶发慢启动算成失败
+  }, 75_000);
+
+  /**
+   * 真机踩过的坑：工作台有两条同步路径（提问前一次、防抖一次），落后那条曾把新内容覆盖成旧的，
+   * 于是补全按旧内容算——表现是"刚敲的那行拿不到成员补全，而悬停却是对的"。
+   * 这条用例盯住的就是"迟到的旧同步不能污染补全结果"。
+   */
+  it("迟到的旧同步不能把内容拉回旧版（否则补全按旧内容算）", async () => {
+    const workspaceRoot = createTsProject();
+    fs.writeFileSync(
+      path.join(workspaceRoot, "types.ts"),
+      "export interface Probe { alpha: number; beta: string }\n",
+      "utf8",
+    );
+    const mainFile = path.join(workspaceRoot, "main.ts");
+    const withDot = ['import type { Probe } from "./types";', 'const probe: Probe = { alpha: 1, beta: "x" };', "probe.", ""].join("\n");
+    const withoutDot = ['import type { Probe } from "./types";', 'const probe: Probe = { alpha: 1, beta: "x" };', "probe", ""].join("\n");
+    fs.writeFileSync(mainFile, withDot, "utf8");
+
+    const client = new LspClient({ server: available!, workspaceRoot });
+    const ask = async (timeoutMs: number): Promise<string[]> => {
+      const raw = await client.request<unknown>(
+        "textDocument/completion",
+        { textDocument: { uri: pathToFileURL(mainFile).toString() }, position: { line: 2, character: "probe.".length } },
+        timeoutMs,
+      );
+      const container = raw as { items?: Array<{ label: string }> } | Array<{ label: string }> | null;
+      const items = Array.isArray(container) ? container : (container?.items ?? []);
+      return items.map((item) => item.label);
+    };
+    try {
+      // 外层预算（用例超时 90 秒）：留给建项目与 dispose 各一段余量，
+      // 这样"轮询 + 最后那次确认请求"两次长等待加起来也不会顶过用例超时
+      const overallDeadline = Date.now() + 75_000;
+      // 修订号 2 = 最新内容；先等索引建好（首次补全可能为空）
+      await client.syncFromEditor(mainFile, "typescript", withDot, 2);
+      const deadline = Date.now() + 40_000;
+      let ready = false;
+      while (Date.now() < deadline) {
+        // 单次请求的超时受"外层截止时间"约束，别用固定的 30 秒把测试预算吃光
+        try {
+          if ((await ask(Math.max(1_000, deadline - Date.now()))).includes("alpha")) {
+            ready = true;
+            break;
+          }
+        } catch {
+          // 超时当作"还没就绪"，继续轮询
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      expect(ready, "语言服务始终没有给出跨文件成员").toBe(true);
+
+      // 迟到的旧同步（修订号更小）：必须被丢弃，补全结果不受影响
+      await client.syncFromEditor(mainFile, "typescript", withoutDot, 1);
+      // 这次确认请求同样受外层预算约束（至少留 5 秒，别因为轮询吃满预算就变成"必然超时"）
+      expect(await ask(Math.max(5_000, overallDeadline - Date.now()))).toContain("alpha");
+    } finally {
+      await client.dispose();
+    }
+  }, 90_000);
 });
