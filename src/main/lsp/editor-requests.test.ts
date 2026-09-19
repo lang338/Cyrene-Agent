@@ -204,6 +204,45 @@ describe("normalizeSignatureHelp", () => {
     });
     expect(help?.signatures[0].parameters).toEqual([{ label: "a" }, { label: "b" }]);
   });
+
+  it("偏移标签必须落在签名文本内：反向区间、越界、非整数都丢掉", () => {
+    const help = normalizeSignatureHelp({
+      signatures: [
+        {
+          // 签名文本 "fn(a)" 长度 5：[0,4] 合法；反向、越界、小数都不该留
+          label: "fn(a)",
+          parameters: [{ label: [3, 1] }, { label: [0, 99] }, { label: [0.5, 1] }, { label: [0, 4] }],
+        },
+      ],
+    });
+    expect(help?.signatures[0].parameters).toEqual([{ label: [0, 4] }]);
+  });
+
+  it("被过滤掉的条目会让下标错位：两个下标都按原始位置映射", () => {
+    const help = normalizeSignatureHelp({
+      signatures: [
+        // 原始第 0 条没有 label，会被丢掉
+        { documentation: "没有 label" },
+        // 原始第 1 条：中间那个参数偏移越界，也会被丢掉
+        { label: "fn(a, b)", parameters: [{ label: "a" }, { label: [99, 200] }, { label: "b" }] },
+      ],
+      activeSignature: 1,
+      activeParameter: 2,
+    });
+    // 语言服务说的"第 1 条签名 / 第 2 个参数"是原始数组里的位置，映射后应是 0 / 1
+    expect(help?.activeSignature).toBe(0);
+    expect(help?.activeParameter).toBe(1);
+    expect(help?.signatures[0].parameters).toEqual([{ label: "a" }, { label: "b" }]);
+  });
+
+  it("下标指向的条目正好被过滤掉时退回 0，而不是指到隔壁那条", () => {
+    const help = normalizeSignatureHelp({
+      signatures: [{ label: "fn(a)", parameters: [{ label: [5, 1] }, { label: "a" }] }],
+      activeParameter: 0,
+    });
+    expect(help?.activeParameter).toBe(0);
+    expect(help?.signatures[0].parameters).toEqual([{ label: "a" }]);
+  });
 });
 
 describe("normalizeLspResult", () => {

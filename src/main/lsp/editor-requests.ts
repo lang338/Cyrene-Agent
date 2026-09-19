@@ -157,32 +157,50 @@ export function normalizeLocations(raw: unknown, workspaceRoot: string): Workben
   return locations;
 }
 
-/** 参数标签：字符串，或者相对签名文本的 [起, 止] 偏移；别的形状一律丢掉 */
-function toSignatureParameters(raw: unknown): WorkbenchLspSignatureParameter[] | undefined {
-  if (!Array.isArray(raw)) return undefined;
-  const parameters: WorkbenchLspSignatureParameter[] = [];
-  for (const entry of raw) {
-    if (typeof entry === "string") {
-      parameters.push({ label: entry });
-      continue;
-    }
-    if (!entry || typeof entry !== "object") continue;
-    const label = (entry as { label?: unknown }).label;
-    if (typeof label === "string") {
-      parameters.push({ label });
-      continue;
-    }
-    // 偏移必须是"非负整数 + 恰好两个"，否则 Monaco 会把参数高亮画到签名外面去
-    if (Array.isArray(label) && label.length === 2 && label.every((offset) => Number.isSafeInteger(offset) && offset >= 0)) {
-      parameters.push({ label: [label[0] as number, label[1] as number] });
-    }
-  }
-  return parameters.length ? parameters : undefined;
+/**
+ * 一个参数的归一化；形状不对就返回 null（调用方只丢掉这一个参数，不牵连整条签名）。
+ *
+ * 偏移标签的语义是"相对**签名文本**的起含止不含区间"（Monaco 与 LSP 都是这个意思），
+ * 所以除了"非负整数 + 恰好两个"，还得要求 start <= end 且 end 不超出签名文本长度——
+ * 否则不管语言服务给的是坏数据还是我们认错了，Monaco 都会把高亮画到签名外面去。
+ */
+function toSignatureParameter(entry: unknown, signatureLabel: string): WorkbenchLspSignatureParameter | null {
+  if (typeof entry === "string") return { label: entry };
+  if (!entry || typeof entry !== "object") return null;
+  const label = (entry as { label?: unknown }).label;
+  if (typeof label === "string") return { label };
+  if (!Array.isArray(label) || label.length !== 2) return null;
+  const [start, end] = label;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return null;
+  if ((start as number) < 0 || (end as number) < (start as number) || (end as number) > signatureLabel.length) return null;
+  return { label: [start as number, end as number] };
 }
 
-/** 下标必须落在这个范围内：越界的 activeSignature 会让 Monaco 拿到一个空签名去渲染 */
-function isIndexWithin(value: unknown, length: number): boolean {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value < length;
+/**
+ * 参数列表归一化。除了参数本身，还要把"第 i 个保留项对应原始数组里的下标"带出来：
+ * activeParameter 是语言服务按**原始数组**给的，滤掉非法项之后不能直接当新下标用。
+ */
+function toSignatureParameters(
+  raw: unknown,
+  signatureLabel: string,
+): { parameters: WorkbenchLspSignatureParameter[]; sourceIndexes: number[] } {
+  const parameters: WorkbenchLspSignatureParameter[] = [];
+  const sourceIndexes: number[] = [];
+  const entries = Array.isArray(raw) ? raw : [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const parameter = toSignatureParameter(entries[index], signatureLabel);
+    if (!parameter) continue;
+    parameters.push(parameter);
+    sourceIndexes.push(index);
+  }
+  return { parameters, sourceIndexes };
+}
+
+/** 原始下标 → 过滤后的下标；这个条目被滤掉了（或本来就是非法值）就退回 0 */
+function indexAfterFiltering(value: unknown, sourceIndexes: readonly number[]): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return 0;
+  const mapped = sourceIndexes.indexOf(value);
+  return mapped < 0 ? 0 : mapped;
 }
 
 /**
@@ -191,26 +209,36 @@ function isIndexWithin(value: unknown, length: number): boolean {
  * 语言服务这两项都是可选的（不给就按 0 算），而 Monaco 少了下标会当成"没得高亮"，
  * 所以这里统一补成**一定有效的下标**，渲染端不必再夹取。整个结构为空就返回 null，
  * 编辑器就不弹提示框（语法没写完、位置不在调用里，都会是这种情况）。
+ *
+ * 两个下标都要**过一遍映射**：语言服务给的是原始数组里的位置，而上面会滤掉没 label、
+ * 参数形状不对的条目；不映射的话，被丢掉的那条前面只要有内容，就会指着隔壁那条
+ * （比如"第 2 条签名"变成"第 1 条"）。映射不到就退回 0。
  */
 export function normalizeSignatureHelp(raw: unknown): WorkbenchLspSignatureHelp | null {
   if (!raw || typeof raw !== "object") return null;
   const record = raw as { signatures?: unknown; activeSignature?: unknown; activeParameter?: unknown };
+  const sources = Array.isArray(record.signatures) ? record.signatures : [];
   const signatures: WorkbenchLspSignature[] = [];
-  for (const entry of Array.isArray(record.signatures) ? record.signatures : []) {
+  const signatureSourceIndexes: number[] = [];
+  const parameterSourceIndexes: number[][] = [];
+  for (let index = 0; index < sources.length; index += 1) {
+    const entry = sources[index];
     if (!entry || typeof entry !== "object") continue;
     const item = entry as Record<string, unknown>;
     const label = typeof item.label === "string" ? item.label : undefined;
     if (!label) continue;
+    const parameters = toSignatureParameters(item.parameters, label);
     signatures.push({
       label,
       documentation: documentationToText(item.documentation),
-      parameters: toSignatureParameters(item.parameters),
+      parameters: parameters.parameters.length ? parameters.parameters : undefined,
     });
+    signatureSourceIndexes.push(index);
+    parameterSourceIndexes.push(parameters.sourceIndexes);
   }
   if (!signatures.length) return null;
-  const activeSignature = isIndexWithin(record.activeSignature, signatures.length) ? (record.activeSignature as number) : 0;
-  const parameterCount = signatures[activeSignature].parameters?.length ?? 0;
-  const activeParameter = isIndexWithin(record.activeParameter, parameterCount) ? (record.activeParameter as number) : 0;
+  const activeSignature = indexAfterFiltering(record.activeSignature, signatureSourceIndexes);
+  const activeParameter = indexAfterFiltering(record.activeParameter, parameterSourceIndexes[activeSignature]);
   return { signatures, activeSignature, activeParameter };
 }
 
