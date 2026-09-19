@@ -151,13 +151,20 @@ function abortError(): Error {
 
 /**
  * 服务端声明的文档同步方式：`textDocumentSync` 可能是数字，也可能是 `{ change }` 对象。
- * 只有明确是 Full(1) / None(0) 才当非增量，其余（含字段缺失）都按增量处理——增量是多数服务端的默认。
+ *
+ * 三种必须分开对待：**None(0) / Full(1) / Incremental(2)**。按 LSP 规范，
+ * 字段**缺失等价于 None**，而不是"默认增量"——对声明 None 的服务端发 didChange，
+ * 它可能直接拒绝或忽略，编辑器里的改动就永远同步不过去（补全/跳转一直停在旧内容上）。
  */
-function isIncrementalSync(initializeResult: unknown): boolean {
+type DocumentSyncMode = "none" | "full" | "incremental";
+
+function resolveDocumentSyncMode(initializeResult: unknown): DocumentSyncMode {
   const raw = (initializeResult as { capabilities?: { textDocumentSync?: unknown } } | null)?.capabilities
     ?.textDocumentSync;
   const value = typeof raw === "number" ? raw : (raw as { change?: unknown } | undefined)?.change;
-  return value !== 1 && value !== 0;
+  if (value === 2) return "incremental";
+  if (value === 1) return "full";
+  return "none";
 }
 
 /** 文档末尾位置（LSP 的行、列都从 0 起算） */
@@ -201,8 +208,8 @@ export class LspClient {
   private disposed = false;
   /** 进行中的初始化：把并发调用收敛成一次 spawn，见 initialize */
   private initPromise: Promise<void> | null = null;
-  /** 服务端声明的同步方式是否为增量；决定 didChange 要不要带 range，见 buildDocumentChange */
-  private incrementalSync = true;
+  /** 服务端声明的同步方式；决定 didChange 发不发、要不要带 range（见 buildDocumentChange） */
+  private syncMode: DocumentSyncMode = "none";
 
   constructor(private readonly options: LspClientOptions) {
     this.spawnImpl = options.spawnImpl ?? defaultSpawn;
@@ -300,7 +307,7 @@ export class LspClient {
       "LSP_INITIALIZE_TIMEOUT",
     );
     // 记下服务端要的同步方式：增量就得给带 range 的变更，否则后续改动它一律看不到
-    this.incrementalSync = isIncrementalSync(initializeResult);
+    this.syncMode = resolveDocumentSyncMode(initializeResult);
     connection.sendNotification("initialized", {});
     this.initialized = true;
   }
@@ -325,10 +332,13 @@ export class LspClient {
     const previous = existing.content;
     const version = existing.version + 1;
     this.documents.set(uri, { uri, version, content, source: "disk" });
-    connection.sendNotification("textDocument/didChange", {
-      textDocument: { uri, version },
-      contentChanges: [buildDocumentChange(this.incrementalSync, previous, content)],
-    });
+    // 服务端声明 None（或没声明）时不该发 didChange——发了它可能拒绝或忽略
+    if (this.syncMode !== "none") {
+      connection.sendNotification("textDocument/didChange", {
+        textDocument: { uri, version },
+        contentChanges: [buildDocumentChange(this.syncMode === "incremental", previous, content)],
+      });
+    }
   }
 
   /**
@@ -364,11 +374,13 @@ export class LspClient {
     const previous = existing.content;
     const version = existing.version + 1;
     this.documents.set(uri, { uri, version, content, source: "editor", revision });
+    // 服务端声明 None（或没声明）时不该发 didChange
+    if (this.syncMode === "none") return;
     connection.sendNotification("textDocument/didChange", {
       textDocument: { uri, version },
       // 每次发全量文本，但变更形状要跟服务端协商的同步方式一致（见 buildDocumentChange）：
       // 增量服务端必须收到带 range 的变更，否则这次改动它看不到
-      contentChanges: [buildDocumentChange(this.incrementalSync, previous, content)],
+      contentChanges: [buildDocumentChange(this.syncMode === "incremental", previous, content)],
     });
   }
 

@@ -145,11 +145,11 @@ describe.skipIf(!available)("LspClient + 真实 typescript-language-server", () 
     fs.writeFileSync(mainFile, withDot, "utf8");
 
     const client = new LspClient({ server: available!, workspaceRoot });
-    const ask = async (): Promise<string[]> => {
+    const ask = async (timeoutMs: number): Promise<string[]> => {
       const raw = await client.request<unknown>(
         "textDocument/completion",
         { textDocument: { uri: pathToFileURL(mainFile).toString() }, position: { line: 2, character: "probe.".length } },
-        30_000,
+        timeoutMs,
       );
       const container = raw as { items?: Array<{ label: string }> } | Array<{ label: string }> | null;
       const items = Array.isArray(container) ? container : (container?.items ?? []);
@@ -161,9 +161,14 @@ describe.skipIf(!available)("LspClient + 真实 typescript-language-server", () 
       const deadline = Date.now() + 40_000;
       let ready = false;
       while (Date.now() < deadline) {
-        if ((await ask()).includes("alpha")) {
-          ready = true;
-          break;
+        // 单次请求的超时受"外层截止时间"约束，别用固定的 30 秒把测试预算吃光
+        try {
+          if ((await ask(Math.max(1_000, deadline - Date.now()))).includes("alpha")) {
+            ready = true;
+            break;
+          }
+        } catch {
+          // 超时当作"还没就绪"，继续轮询
         }
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
@@ -171,7 +176,7 @@ describe.skipIf(!available)("LspClient + 真实 typescript-language-server", () 
 
       // 迟到的旧同步（修订号更小）：必须被丢弃，补全结果不受影响
       await client.syncFromEditor(mainFile, "typescript", withoutDot, 1);
-      expect(await ask()).toContain("alpha");
+      expect(await ask(30_000)).toContain("alpha");
     } finally {
       await client.dispose();
     }

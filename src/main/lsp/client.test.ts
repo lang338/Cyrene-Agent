@@ -29,7 +29,8 @@ class FakeLspProcess extends EventEmitter implements LspChildProcess {
     this.server = server;
     server.onRequest("initialize", (params: { capabilities?: { textDocument?: Record<string, unknown> } }) => {
       this.initializeParams = params;
-      return { capabilities: { hoverProvider: true } };
+      // 与真实服务端一致：声明增量同步（缺失等价于 None，那样就不该发 didChange 了）
+      return { capabilities: { hoverProvider: true, textDocumentSync: { change: 2 } } };
     });
     server.onNotification("initialized", (params: unknown) => this.initialized.push(params));
     server.onNotification("textDocument/didOpen", (params: unknown) => this.opened.push(params));

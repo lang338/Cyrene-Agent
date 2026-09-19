@@ -85,7 +85,7 @@ async function askLsp(
     }
   }
   try {
-    return await api.requestLsp({
+    const result = await api.requestLsp({
       sessionId,
       path,
       method,
@@ -93,7 +93,12 @@ async function askLsp(
       position: { line: position.lineNumber - 1, character: position.column - 1 },
       includeDeclaration: method === "references" ? true : undefined,
     });
+    // 拿不到答案（服务退出 / 超时 / 拒绝请求）说明语言服务实际已经不可用：
+    // 把内建语言智能放回去，否则两套都不给结果，比接语言服务之前还空
+    if (!result) setBuiltinTsIntelligence(true);
+    return result;
   } catch {
+    setBuiltinTsIntelligence(true);
     return null;
   }
 }

@@ -557,20 +557,14 @@ export function WorkbenchPage({
     const api = workbenchApi();
     if (!api?.syncLspDocument) return;
     const sync = () => {
-      // 优先用编辑器模型的**实时内容**，而不是 buffers 里的镜像：后者是 React state，
-      // 可能比模型旧一帧。一次落后的同步落到语言服务上，补全就会按旧内容算
-      // （表现为"刚敲的那行拿不到成员补全，但悬停却是对的"）。模型对不上当前文件时才退回镜像。
+      // 只同步编辑器模型的**实时内容**：它带模型修订号，主进程据此丢弃迟到的旧同步。
+      // 模型与当前文件对不上时（正在切文件等瞬时状态）**跳过这一拍**，不要拿 buffers 镜像顶替——
+      // 那样送出去的内容没有修订号，落后了也拦不住，反而会把服务端的新内容覆盖成旧的。
       const model = editorRef.current?.getModel();
       const modelPath = (model?.uri.path ?? "").replace(/^\/+/, "");
-      const live = model && modelPath === activePath ? model : null;
+      if (!model || modelPath !== activePath) return;
       void api
-        .syncLspDocument(
-          sessionId,
-          activePath,
-          live ? live.getValue() : entry.content,
-          monacoLanguageFor(activePath),
-          live ? live.getVersionId() : undefined,
-        )
+        .syncLspDocument(sessionId, activePath, model.getValue(), monacoLanguageFor(activePath), model.getVersionId())
         .catch(() => undefined);
     };
     const timer = window.setTimeout(sync, 400);

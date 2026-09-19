@@ -105,6 +105,10 @@ export function registerWorkbenchLspBridge(deps: WorkbenchLspBridgeDeps): { disp
     return task;
   };
 
+  /** IPC 传来的数字必须是"非负安全整数"：负数、小数、NaN、超范围一律不接受 */
+  const isNonNegativeInt = (value: unknown): value is number =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
   ipc.handle(IPC.WORKBENCH_LSP_SYNC, async (_event, payload: unknown) => {
     const input = payload as
       | { sessionId?: unknown; path?: unknown; content?: unknown; languageId?: unknown; revision?: unknown }
@@ -118,8 +122,9 @@ export function registerWorkbenchLspBridge(deps: WorkbenchLspBridgeDeps): { disp
     const binding = await bindingFor(sessionId, absolutePath);
     if (!binding) return false;
     const languageId = typeof input?.languageId === "string" && input.languageId.trim() ? input.languageId : "plaintext";
-    // 编辑器模型的版本号（可选）：client 用它丢弃迟到的旧同步，避免旧内容覆盖新内容
-    const revision = typeof input?.revision === "number" ? input.revision : undefined;
+    // 编辑器模型的版本号（可选，单调递增）：client 用它丢弃迟到的旧同步，避免旧内容覆盖新内容。
+    // IPC 是外部输入，只收非负安全整数——负值/小数/超范围会让"谁更新"的判断失真
+    const revision = isNonNegativeInt(input?.revision) ? input.revision : undefined;
     await binding.client.syncFromEditor(absolutePath, languageId, input.content, revision);
     return true;
   });
@@ -147,7 +152,8 @@ export function registerWorkbenchLspBridge(deps: WorkbenchLspBridgeDeps): { disp
       throw new Error("不支持的语言服务请求");
     }
     const position = input?.position as { line?: unknown; character?: unknown } | undefined;
-    if (typeof position?.line !== "number" || typeof position?.character !== "number") {
+    // 位置必须是**非负安全整数**：负值 / 小数 / 超范围都是非法输入，别原样转给语言服务
+    if (!isNonNegativeInt(position?.line) || !isNonNegativeInt(position?.character)) {
       throw new Error("缺少位置信息");
     }
     const sessionId = requireSessionId(input?.sessionId);
