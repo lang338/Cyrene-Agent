@@ -13,7 +13,7 @@ function server(
 }
 
 export const BUILTIN_LSP_SERVERS: readonly LspServerDefinition[] = [
-  server("typescript-language-server", [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".jsonc"], "typescript-language-server", ["--stdio"], ["tsconfig.json", "jsconfig.json", "package.json", ".git"], "安装 typescript-language-server 与 typescript，并确保 typescript-language-server 位于 PATH。"),
+  server("typescript-language-server", [".ts", ".mts", ".cts", ".tsx", ".js", ".mjs", ".cjs", ".jsx", ".json", ".jsonc"], "typescript-language-server", ["--stdio"], ["tsconfig.json", "jsconfig.json", "package.json", ".git"], "安装 typescript-language-server 与 typescript，并确保 typescript-language-server 位于 PATH。"),
   server("python-pyright", [".py", ".pyi"], "pyright-langserver", ["--stdio"], ["pyproject.toml", "requirements.txt", "setup.py", ".git"], "安装 pyright，并确保 pyright-langserver 位于 PATH。"),
   server("gopls", [".go"], "gopls", [], ["go.mod", ".git"], "安装 gopls，并确保 gopls 位于 PATH。"),
   server("rust-analyzer", [".rs"], "rust-analyzer", [], ["Cargo.toml", ".git"], "安装 rust-analyzer，并确保 rust-analyzer 位于 PATH。"),

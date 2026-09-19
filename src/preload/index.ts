@@ -4,8 +4,11 @@ import type { StartTtsRequest, TtsSessionEvent, TtsStartResult } from "../shared
 import type { ScreenshotInsertPayload } from "../shared/ipc-channels";
 import type {
   WorkbenchLspDiagnostic,
+  WorkbenchLspInstallProgress,
+  WorkbenchLspInstallResult,
   WorkbenchLspRequestInput,
   WorkbenchLspRequestResult,
+  WorkbenchLspEnv,
 } from "../shared/code-workbench-types";
 import type {
   SpeechInputCommitRequest,
@@ -843,6 +846,10 @@ const workbenchApi = {
   // revision = 编辑器模型的版本号：主进程用它丢弃"迟到的旧同步"，防止旧内容覆盖新内容。
   syncLspDocument: (sessionId: string, path: string, content: string, languageId: string, revision?: number) =>
     ipcRenderer.invoke(IPC.WORKBENCH_LSP_SYNC, { sessionId, path, content, languageId, revision }) as Promise<boolean>,
+  // 查语言服务环境：有没有可用服务 / 往上有没有项目配置（tsconfig、jsconfig）/ 配置该写在哪。
+  // 编辑器用它把"为什么补全很弱"说明白，并给一键生成配置一个落点；没绑定工作区时返回 null。
+  lspEnv: (sessionId: string, path: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_LSP_ENV, { sessionId, path }) as Promise<WorkbenchLspEnv | null>,
   closeLspDocument: (sessionId: string, path: string) =>
     ipcRenderer.invoke(IPC.WORKBENCH_LSP_CLOSE, { sessionId, path }) as Promise<boolean>,
   // 编辑器主动提问：补全 / 悬停 / 跳转 / 查引用。
@@ -859,6 +866,17 @@ const workbenchApi = {
     ) => callback(payload);
     ipcRenderer.on(IPC.WORKBENCH_LSP_DIAGNOSTICS, listener);
     return () => ipcRenderer.removeListener(IPC.WORKBENCH_LSP_DIAGNOSTICS, listener);
+  },
+  // 在工作台里下载并安装语言服务（只认主进程清单里钉死版本的包）。
+  // 返回"成功 / 用户取消 / 失败原因"三态：取消是用户自己的选择，界面不该当报错处理。
+  installLspServer: (serverId: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_LSP_INSTALL, { serverId }) as Promise<WorkbenchLspInstallResult>,
+  cancelLspInstall: (serverId: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_LSP_INSTALL_CANCEL, { serverId }) as Promise<boolean>,
+  onLspInstallProgress: (callback: (payload: WorkbenchLspInstallProgress) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: WorkbenchLspInstallProgress) => callback(payload);
+    ipcRenderer.on(IPC.WORKBENCH_LSP_INSTALL_PROGRESS, listener);
+    return () => ipcRenderer.removeListener(IPC.WORKBENCH_LSP_INSTALL_PROGRESS, listener);
   },
 };
 contextBridge.exposeInMainWorld("workbench", workbenchApi);

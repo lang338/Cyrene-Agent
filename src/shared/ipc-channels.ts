@@ -132,6 +132,18 @@ export const IPC = {
   WORKBENCH_LSP_DIAGNOSTICS: "workbench:lsp-diagnostics",
   /** 编辑器主动提问：补全 / 悬停 / 跳转 / 查引用 */
   WORKBENCH_LSP_REQUEST: "workbench:lsp-request",
+  /**
+   * 查这个文件的语言服务环境：有没有可用服务、往上有没有项目配置（tsconfig/jsconfig）、
+   * 没有的话该把配置写在哪、能不能在工作台里一键下载。用来"把降级原因说明白"，
+   * 并提供一键生成配置 / 一键安装语言服务的落点。
+   */
+  WORKBENCH_LSP_ENV: "workbench:lsp-env",
+  /** 在工作台里下载并安装语言服务（应用内托管，见 main/lsp/server-installer.ts） */
+  WORKBENCH_LSP_INSTALL: "workbench:lsp-install",
+  /** 取消正在进行的下载 */
+  WORKBENCH_LSP_INSTALL_CANCEL: "workbench:lsp-install-cancel",
+  /** 安装进度广播（主进程 → 渲染端） */
+  WORKBENCH_LSP_INSTALL_PROGRESS: "workbench:lsp-install-progress",
 
   // sidebar window (status / schedule / settings entry)
   SIDEBAR_MINIMIZE: "sidebar:minimize",

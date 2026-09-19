@@ -277,4 +277,19 @@ describe("resolveLaunchTarget", () => {
       env: { ELECTRON_RUN_AS_NODE: "1" },
     });
   });
+
+  it("应用内安装下来的托管副本是裸 JS 文件：所有平台都用 execPath + 纯 Node 模式跑", () => {
+    const entry = "C:\\Users\\me\\AppData\\Roaming\\cyrene\\lsp-servers\\python-pyright\\1.1.414\\langserver.index.js";
+    // Windows 上直接 spawn 一个 .js 会走文件关联，不能这么干
+    expect(resolveLaunchTarget(entry, ["--stdio"], "win32", "C:\\app\\electron.exe", true)).toEqual({
+      command: "C:\\app\\electron.exe",
+      args: [entry, "--stdio"],
+      env: { ELECTRON_RUN_AS_NODE: "1" },
+    });
+    // 非 Windows 同理（不能靠 shebang）
+    expect(resolveLaunchTarget("/home/me/.config/cyrene/lsp-servers/python-pyright/langserver.index.js", ["--stdio"], "linux", "/usr/bin/node", false)).toEqual({
+      command: "/usr/bin/node",
+      args: ["/home/me/.config/cyrene/lsp-servers/python-pyright/langserver.index.js", "--stdio"],
+    });
+  });
 });

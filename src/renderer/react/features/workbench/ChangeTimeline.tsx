@@ -14,7 +14,7 @@ import type {
   LedgerRound,
   LedgerUsage,
 } from "../../../../shared/code-workbench-types";
-import { monacoLanguageFor } from "./monaco-setup";
+import { languageIdForPath } from "../../../../shared/workbench-languages";
 import { workbenchApi } from "./WorkspaceTree";
 
 interface ChangeTimelineProps {
@@ -260,7 +260,7 @@ export function ChangeTimeline({ sessionId, refreshToken, busy, onBusyChange, on
           <DiffEditor
             height="100%"
             theme="vs-dark"
-            language={monacoLanguageFor(diffTarget?.file.path ?? "")}
+            language={languageIdForPath(diffTarget?.file.path ?? "")}
             original={versions.before ?? ""}
             modified={versions.after ?? ""}
             options={{ readOnly: true, renderSideBySide: true, minimap: { enabled: false }, fontSize: 13 }}

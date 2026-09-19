@@ -14,8 +14,10 @@ import { ChatMessageList, type ChatMessageItem } from "../chat/components/ChatMe
 import { MessageFileLinkContext, type MessageFileOpenTarget } from "../chat/components/message-file-link";
 import { ComposerInteractionPanel, type ComposerInteractionCallbacks } from "../chat/components/ComposerSlot";
 import type { ComposerInteraction } from "../chat/components/run-presentation";
-import { monacoLanguageFor, setupMonaco } from "./monaco-setup";
+import { setupMonaco } from "./monaco-setup";
+import { languageIdForPath } from "../../../../shared/workbench-languages";
 import { registerLspProviders, setLspProviderSession } from "./lsp-providers";
+import { WorkbenchLspStatus } from "./lsp-status";
 import { buildActiveFileContext, type ActiveFileSelection } from "./active-file-context";
 import { resizerKeyDelta, useResizableColumns, type ColumnSide } from "./use-resizable-columns";
 import { workbenchApi, WorkspaceTree } from "./WorkspaceTree";
@@ -261,7 +263,8 @@ export function WorkbenchPage({
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
   // 从消息里的路径点进来且带行号时，先把"待跳转"记下：切换文件会重建编辑器实例，
-  // 得等目标文件真的载入后再落到编辑器上（见下面那个 effect）
+  // 得等目标文件真的载入后再落到编辑器上（见下面那个 effect）。
+  // 语言智能的"跳到定义/引用"也复用这里——那时给的是一段范围（起止行列），不只是行号。
   const [pendingReveal, setPendingReveal] = useState<PendingReveal | null>(null);
   const [buffers, setBuffers] = useState<Record<string, BufferEntry>>({});
   const [treeRefresh, setTreeRefresh] = useState(0);
@@ -652,7 +655,7 @@ export function WorkbenchPage({
       const modelPath = (model?.uri.path ?? "").replace(/^\/+/, "");
       if (!model || modelPath !== activePath) return;
       void api
-        .syncLspDocument(sessionId, activePath, model.getValue(), monacoLanguageFor(activePath), model.getVersionId())
+        .syncLspDocument(sessionId, activePath, model.getValue(), languageIdForPath(activePath), model.getVersionId())
         .catch(() => undefined);
     };
     const timer = window.setTimeout(sync, 400);
@@ -1120,6 +1123,23 @@ export function WorkbenchPage({
                 </div>
               )}
 
+              {/* 语言智能状态：只在"语义能力变弱"时出现（缺语言服务 / 缺项目配置），
+                  说明原因并给一键生成配置的动作；一切正常时不占位 */}
+              <WorkbenchLspStatus
+                sessionId={sessionId}
+                activePath={activePath}
+                external={Boolean(activePath && isExternalPath(activePath))}
+                fileReady={Boolean(
+                  activePath &&
+                    buffers[activePath] &&
+                    !buffers[activePath].loading &&
+                    !buffers[activePath].error &&
+                    !buffers[activePath].binary &&
+                    !buffers[activePath].truncated,
+                )}
+                language={activePath ? languageIdForPath(activePath) : null}
+              />
+
               {/* 昔涟刚改了这个文件，但缓冲里有未保存改动：内容以你的版本为准，只告知 */}
               {followBlockedPath && followBlockedPath === activePath && activeEntry?.dirty && (
                 <div className="cy-workbench__editor-notice is-blocked">
@@ -1166,7 +1186,7 @@ export function WorkbenchPage({
                       // 缺了它 URI 会是 inmemory://model/N（无扩展名）→ 语义补全一律返回空，
                       // 只剩主线程算的"同文件词汇"建议（表现为输 doc 弹 description 而不是 document）。
                       path={`file:///${activePath}`}
-                      language={monacoLanguageFor(activePath)}
+                      language={languageIdForPath(activePath)}
                       theme="vs-dark"
                       value={activeEntry.content}
                       options={{ ...EDITOR_OPTIONS, readOnly: activeEntry.binary || activeEntry.truncated }}
