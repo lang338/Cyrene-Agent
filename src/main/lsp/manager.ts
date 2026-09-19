@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { languageIdForPath } from "../../shared/workbench-languages";
 import { LspClient } from "./client";
 import { BUILTIN_LSP_SERVERS, findServerCandidates } from "./server-catalog";
 import { resolveLspServer, type ResolvedLspServer } from "./server-discovery";
@@ -50,17 +51,6 @@ export interface LspExecutionContext {
   signal?: AbortSignal;
 }
 
-function languageIdFor(filePath: string): string {
-  const extension = path.extname(filePath).toLowerCase();
-  if ([".ts", ".tsx"].includes(extension)) return "typescript";
-  if ([".js", ".jsx", ".mjs", ".cjs"].includes(extension)) return "javascript";
-  if (extension === ".py") return "python";
-  if (extension === ".go") return "go";
-  if (extension === ".rs") return "rust";
-  if ([".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"].includes(extension)) return "cpp";
-  return extension.slice(1) || "plaintext";
-}
-
 function isInside(root: string, target: string): boolean {
   const relative = path.relative(root, target);
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
@@ -96,7 +86,7 @@ export class LspManager {
     const { client, serverId } = await this.clientFor(workspaceRoot, filePath);
 
     if (filePath && query.operation !== "workspaceSymbol") {
-      await client.touchFile(filePath, languageIdFor(filePath));
+      await client.touchFile(filePath, languageIdForPath(filePath));
     }
 
     let value: unknown;
@@ -138,6 +128,17 @@ export class LspManager {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * 这个文件"理论上"有没有对应的语言服务——不看本机装没装。
+   * 编辑器据此判断该不该出提示条、以及提示用户装什么：有定义但拿不到服务 = 提示安装；
+   * 没定义（.md、.css 这类）就什么都不说，因为那本来就不在语义补全的覆盖范围内。
+   * 走的是和真正启动服务同一份候选列表，所以不会出现"提示装了某服务但服务其实用不上"。
+   */
+  describeServerFor(filePath: string): { serverId: string; installHint: string } | null {
+    const definition = findServerCandidates(filePath, this.getServerOverrides())[0];
+    return definition ? { serverId: definition.id, installHint: definition.installHint } : null;
   }
 
   async releaseWorkspace(workspaceRoot: string): Promise<void> {

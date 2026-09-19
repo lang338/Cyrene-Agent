@@ -88,51 +88,8 @@ export function setBuiltinTsIntelligence(enabled: boolean): void {
   monaco.typescript.javascriptDefaults.setModeConfiguration(mode);
 }
 
-/** 按文件扩展名猜 monaco 语言（猜不出就是 plaintext） */
-export function monacoLanguageFor(path: string): string {
-  const extension = path.split(".").pop()?.toLowerCase() ?? "";
-  const table: Record<string, string> = {
-    ts: "typescript",
-    mts: "typescript",
-    cts: "typescript",
-    tsx: "typescript",
-    js: "javascript",
-    mjs: "javascript",
-    cjs: "javascript",
-    jsx: "javascript",
-    json: "json",
-    jsonc: "json",
-    css: "css",
-    scss: "scss",
-    less: "less",
-    html: "html",
-    htm: "html",
-    md: "markdown",
-    markdown: "markdown",
-    py: "python",
-    rs: "rust",
-    go: "go",
-    java: "java",
-    c: "c",
-    h: "c",
-    cpp: "cpp",
-    hpp: "cpp",
-    cs: "csharp",
-    rb: "ruby",
-    php: "php",
-    sh: "shell",
-    bash: "shell",
-    yml: "yaml",
-    yaml: "yaml",
-    sql: "sql",
-    xml: "xml",
-    toml: "ini",
-    ini: "ini",
-    bat: "bat",
-    ps1: "powershell",
-  };
-  return table[extension] ?? "plaintext";
-}
+// 语言识别（扩展名 → Monaco languageId）不在这里，见 shared/workbench-languages.ts：
+// 主进程（AI 工具链 touchFile 时的 languageId）也要用同一张表，各写一份迟早对不上。
 
 // 模块加载即完成装配。
 // 为什么不能只在组件里调用：子组件（<Editor>）的 effect 先于父组件执行，首次挂载时

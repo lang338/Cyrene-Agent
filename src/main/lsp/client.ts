@@ -98,6 +98,10 @@ function toRealDiskPath(target: string): string {
  *    拿它跑脚本会被当成"启动一个新应用"，脚本根本不执行（实测无输出）。
  * 所以这里把壳里的 JS 入口解析出来直接用 execPath 跑，并按需补上纯 Node 模式的环境变量。
  * 非 Windows、或 `.exe` 这类本就可直接执行的目标，一律原样返回。
+ *
+ * 另外：应用内安装下来的托管副本本来就是**一个 JS 文件**（没有 .cmd 壳，见 server-installer），
+ * 这类目标在所有平台上都要用"execPath + 纯 Node 模式"来跑——直接 exec 一个 .js 在 Windows 上
+ * 会走文件关联、在 Linux 上要靠 shebang，都不可靠。
  */
 export function resolveLaunchTarget(
   executablePath: string,
@@ -106,6 +110,13 @@ export function resolveLaunchTarget(
   execPath: string = process.execPath,
   isElectron = Boolean(process.versions?.electron),
 ): LspLaunchTarget {
+  if (/\.(mjs|cjs|js)$/i.test(executablePath)) {
+    return {
+      command: execPath,
+      args: [toRealDiskPath(executablePath), ...args],
+      ...(isElectron ? { env: { ELECTRON_RUN_AS_NODE: "1" } } : {}),
+    };
+  }
   if (platform !== "win32" || !/\.(cmd|bat)$/i.test(executablePath)) {
     return { command: executablePath, args: [...args] };
   }

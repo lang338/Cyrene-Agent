@@ -4,6 +4,8 @@ import type { StartTtsRequest, TtsSessionEvent, TtsStartResult } from "../shared
 import type { ScreenshotInsertPayload } from "../shared/ipc-channels";
 import type {
   WorkbenchLspDiagnostic,
+  WorkbenchLspInstallProgress,
+  WorkbenchLspInstallResult,
   WorkbenchLspRequestInput,
   WorkbenchLspRequestResult,
   WorkbenchLspEnv,
@@ -864,6 +866,17 @@ const workbenchApi = {
     ) => callback(payload);
     ipcRenderer.on(IPC.WORKBENCH_LSP_DIAGNOSTICS, listener);
     return () => ipcRenderer.removeListener(IPC.WORKBENCH_LSP_DIAGNOSTICS, listener);
+  },
+  // 在工作台里下载并安装语言服务（只认主进程清单里钉死版本的包）。
+  // 返回"成功 / 用户取消 / 失败原因"三态：取消是用户自己的选择，界面不该当报错处理。
+  installLspServer: (serverId: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_LSP_INSTALL, { serverId }) as Promise<WorkbenchLspInstallResult>,
+  cancelLspInstall: (serverId: string) =>
+    ipcRenderer.invoke(IPC.WORKBENCH_LSP_INSTALL_CANCEL, { serverId }) as Promise<boolean>,
+  onLspInstallProgress: (callback: (payload: WorkbenchLspInstallProgress) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: WorkbenchLspInstallProgress) => callback(payload);
+    ipcRenderer.on(IPC.WORKBENCH_LSP_INSTALL_PROGRESS, listener);
+    return () => ipcRenderer.removeListener(IPC.WORKBENCH_LSP_INSTALL_PROGRESS, listener);
   },
 };
 contextBridge.exposeInMainWorld("workbench", workbenchApi);
