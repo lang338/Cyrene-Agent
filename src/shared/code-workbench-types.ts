@@ -142,14 +142,40 @@ export interface WorkbenchLspDiagnostic {
 }
 
 /**
+ * "这个语言服务能不能在工作台里一键装"。
+ *
+ * 只有零前置运行时的语言服务才支持（清单见 main/lsp/managed-servers.ts）：
+ * 装了要能在本机跑起来，所以拖 JDK/.NET/Ruby 的那些一律不给这个入口，只提示去 PATH 里装。
+ */
+export interface WorkbenchLspInstallState {
+  /** 正在下载/解包：界面显示进度与取消，而不是再给一个按钮 */
+  installing: boolean;
+  /** 要装的版本（展示用） */
+  version: string;
+  /** 安装后占用空间（字节），按钮上换算成"约 xx MB" */
+  sizeBytes: number;
+}
+
+/**
  * 编辑器问"这个文件的语言服务环境"。
  *
  * 用来把"为什么补全很弱"说明白（而不是让用户以为功能做得很烂），
- * 并给"一键生成配置"一个落点。三种结果：没有可用服务 / 有服务但缺项目配置（精度受限）/ 一切正常。
+ * 并给"一键生成配置 / 一键安装语言服务"一个落点。四种结果：这类文件本来就不在覆盖范围内
+ * （不提示）/ 有对应语言服务但本机没装（能托管就报下载按钮，否则给安装指引）/
+ * 有服务但缺项目配置（精度受限）/ 一切正常。
  */
 export interface WorkbenchLspEnv {
   /** 这个工作区能不能拿到语言服务；拿不到就只能退化成文本级建议 */
   hasService: boolean;
+  /**
+   * 这个文件类型对应的语言服务 id（catalog 里的 id，如 python-pyright）；
+   * null = 这类文件本来就没有语言服务（.md/.css 等），界面上不提示任何东西。
+   */
+  serverId: string | null;
+  /** 该服务在 catalog 里的安装指引（中文，作为本地化文案缺失时的兜底） */
+  installHint: string | null;
+  /** 能应用内一键装时给界面的参数；null = 只能用户自己装到 PATH */
+  install: WorkbenchLspInstallState | null;
   /** 往上找到的项目配置（tsconfig.json / jsconfig.json）；没有则为 null */
   configFile: string | null;
   /** 建议把配置写在哪（绝对路径，始终落在工作区内） */
@@ -159,6 +185,24 @@ export interface WorkbenchLspEnv {
   /** 推荐配置的内容（主进程生成，渲染端只负责显示与确认后写入） */
   recommendedConfig: string;
 }
+
+/** 安装进度推送（主进程 → 渲染端）：下载按字节算百分比，解包只报阶段 */
+export interface WorkbenchLspInstallProgress {
+  serverId: string;
+  phase: "download" | "extract";
+  receivedBytes: number;
+  /** 0 = 服务端没给 Content-Length，界面按"不确定进度"展示 */
+  totalBytes: number;
+}
+
+/**
+ * 一次安装请求的结果。
+ * 取消不算失败（用户自己的选择，界面不该弹错），所以单列一支而不是复用 error。
+ */
+export type WorkbenchLspInstallResult =
+  | { ok: true; serverId: string; version: string }
+  | { ok: false; cancelled: true }
+  | { ok: false; cancelled: false; error: string };
 
 // ── 语言服务（LSP）请求：编辑器主动提问 ────────────────────
 //

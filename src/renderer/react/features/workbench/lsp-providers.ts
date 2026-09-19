@@ -14,6 +14,7 @@ import type {
   WorkbenchLspRequestMethod,
   WorkbenchLspRequestResult,
 } from "../../../../shared/code-workbench-types";
+import { LSP_LANGUAGES } from "../../../../shared/workbench-languages";
 import { workbenchApi } from "./WorkspaceTree";
 import { setBuiltinTsIntelligence } from "./monaco-setup";
 
@@ -62,6 +63,9 @@ async function askLsp(
   if (!sessionId) return null;
   if (!path) return null;
   if (!api?.requestLsp) return null;
+  // 内建兜底开关只跟 Monaco 自带的 TS/JS 语言服务有关：改别的语言的模型不能连累它。
+  // （否则打开一个 .py 文件、pyright 又没装，就会把 TS 文件的内建补全一起关掉）
+  const builtinFallbackRelevant = model.getLanguageId() === "typescript" || model.getLanguageId() === "javascript";
   // 问之前必须先同步：工作台那侧的文档同步带 400ms 防抖（避免每敲一个字往返一趟），
   // 但补全是打字时触发的——请求会先到，语言服务手里还是旧文本、位置也偏，
   // 结果要么补出错误内容、要么返回空（表现为只剩"同文件词汇"建议）。
@@ -78,10 +82,10 @@ async function askLsp(
         model.getLanguageId(),
         model.getVersionId(),
       );
-      setBuiltinTsIntelligence(!synced);
+      if (builtinFallbackRelevant) setBuiltinTsIntelligence(!synced);
     } catch {
       // 同步失败就照常问：语言服务可能只是暂时不可用，让它自己降级；兜底先放回去
-      setBuiltinTsIntelligence(true);
+      if (builtinFallbackRelevant) setBuiltinTsIntelligence(true);
     }
   }
   try {
@@ -95,10 +99,10 @@ async function askLsp(
     });
     // 拿不到答案（服务退出 / 超时 / 拒绝请求）说明语言服务实际已经不可用：
     // 把内建语言智能放回去，否则两套都不给结果，比接语言服务之前还空
-    if (!result) setBuiltinTsIntelligence(true);
+    if (!result && builtinFallbackRelevant) setBuiltinTsIntelligence(true);
     return result;
   } catch {
-    setBuiltinTsIntelligence(true);
+    if (builtinFallbackRelevant) setBuiltinTsIntelligence(true);
     return null;
   }
 }
@@ -201,11 +205,20 @@ function provideHover(
   });
 }
 
-/** 位置列表 → Monaco 可跳转的位置；工作区外的定义（在依赖里）跳不过去，直接滤掉 */
+/**
+ * 位置列表 → Monaco 可跳转的位置。
+ *
+ * 工作区内的定义用相对路径（工作台的模型键就是这个）；**工作区外的（依赖、标准库存根）也要给**——
+ * 工作台是能打开全盘文件的（路径栏支持绝对路径），所以跳进依赖里看类型声明是合理诉求。
+ * 两边的 URI 形式不同：相对路径沿用工作台约定的 `file:///<相对路径>`，绝对路径交给
+ * `monaco.Uri.file`（它会正确地百分号编码，中文路径、空格都不会坏）。
+ */
 function toMonacoLocations(result: WorkbenchLspRequestResult | null): monaco.languages.Location[] {
   return (result?.locations ?? []).flatMap((location) => {
-    if (!location.path) return [];
-    return [{ uri: monaco.Uri.parse(`file:///${location.path}`), range: toMonacoRange(location.range) }];
+    const range = toMonacoRange(location.range);
+    if (location.path) return [{ uri: monaco.Uri.parse(`file:///${location.path}`), range }];
+    if (location.externalPath) return [{ uri: monaco.Uri.file(location.externalPath), range }];
+    return [];
   });
 }
 
@@ -223,20 +236,23 @@ function provideReferences(
   return askLsp(model, position, "references").then(toMonacoLocations);
 }
 
-/** 只在 TS/JS 上注册：其余语言的补全留给 Monaco 自己或对应语言服务 */
-const PROVIDER_LANGUAGES = ["typescript", "javascript"];
-
+/**
+ * 注册范围由 shared/workbench-languages 里的 LSP_LANGUAGES 决定：
+ * 那张表声明了"哪些语言在本机装了语言服务时能真正拿到语义能力"，和主进程 catalog 有测试对齐。
+ * 表里没有的语言（markdown、sql、css 等）不注册——注册了也只会白跑一趟 IPC。
+ */
 export function registerLspProviders(): void {
   if (registered) return;
   registered = true;
-  for (const language of PROVIDER_LANGUAGES) {
-    monaco.languages.registerCompletionItemProvider(language, {
-      // 打这些字符时主动问一次，其余靠 quickSuggestions 的自动触发
+  for (const { languageId } of LSP_LANGUAGES) {
+    monaco.languages.registerCompletionItemProvider(languageId, {
+      // 打这些字符时主动问一次，其余靠 quickSuggestions 的自动触发；
+      // 这份字符表对各语言通用：`.`/`:` 取成员，引号与 `/` 触发路径补全，`@`/`<` 覆盖注解与标签
       triggerCharacters: [".", '"', "'", "`", "/", "@", "<"],
       provideCompletionItems,
     });
-    monaco.languages.registerHoverProvider(language, { provideHover });
-    monaco.languages.registerDefinitionProvider(language, { provideDefinition });
-    monaco.languages.registerReferenceProvider(language, { provideReferences });
+    monaco.languages.registerHoverProvider(languageId, { provideHover });
+    monaco.languages.registerDefinitionProvider(languageId, { provideDefinition });
+    monaco.languages.registerReferenceProvider(languageId, { provideReferences });
   }
 }

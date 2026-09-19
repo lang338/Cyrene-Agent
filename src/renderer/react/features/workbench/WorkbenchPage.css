@@ -615,6 +615,18 @@
   color: #ffffff;
 }
 
+/* 安装指引 / 下载进度：单独一行（多半是一条命令或一段进度），常驻可见，不走"点开才看得到" */
+.cy-workbench__lsp-detail {
+  margin-top: 6px;
+  color: #c4a878;
+  line-height: 1.5;
+}
+
+/* 失败原因用暖红：跟"待处理"的琥珀色区分开，用户一眼知道这次没成 */
+.cy-workbench__lsp-detail.is-error {
+  color: #e08f7a;
+}
+
 /* 推荐配置预览：深色代码卡片 + 右对齐操作按钮 */
 .cy-workbench__lsp-preview {
   margin-top: 8px;

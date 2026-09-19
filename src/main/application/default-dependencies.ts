@@ -59,6 +59,7 @@ import type { PluginManager } from "../../plugins/manager";
 import { setLive2dWindowSender } from "../orchestrator/tools/built-in-tools";
 import { registerAllTools } from "../orchestrator/tools/registry/tool-registration";
 import { LspManager } from "../lsp/manager";
+import { createLspServerInstaller } from "../lsp/server-installer";
 import { resolveLspServer } from "../lsp/server-discovery";
 import { initSandbox } from "../orchestrator/sandbox/sandbox-exec";
 import {
@@ -358,10 +359,29 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         // 查找目录里额外加一档"应用自带"（app 根下的 node_modules/.bin）：
         // 用户不必自己安装语言服务，开箱就有诊断可用；项目里自己装了的话仍优先用项目那份。
         const bundledLspBinDir = path.join(app.getAppPath(), "node_modules", ".bin");
+        // 应用内安装的语言服务：下载物放 userData（不能进安装目录——那里通常只读，
+        // 而且升级应用时不该把用户下载的东西一起清掉）。进度广播给所有窗口，工作台据此画进度条。
+        const lspInstaller = createLspServerInstaller({
+          rootDir: path.join(app.getPath("userData"), "lsp-servers"),
+          onProgress: (progress) => {
+            for (const win of BrowserWindow.getAllWindows()) {
+              if (!win.isDestroyed()) win.webContents.send(IPC.WORKBENCH_LSP_INSTALL_PROGRESS, progress);
+            }
+          },
+        });
         const lsp = new LspManager({
           getServerOverrides: () => loadGeneralSettings().lspServerOverrides,
-          resolveServer: (definition, workspaceRoot) =>
-            resolveLspServer(definition, workspaceRoot, { extraBinDirs: [bundledLspBinDir] }),
+          resolveServer: (definition, workspaceRoot) => {
+            // 托管副本优先：用户是在工作台里点了"下载并启用"才装上的，
+            // 那就该用它——否则会出现"我明明装了，它却跑去用别的"这种说不清的困惑。
+            const managedEntry = lspInstaller.installedEntry(definition.id);
+            if (managedEntry) {
+              const pkg = lspInstaller.getPackage(definition.id);
+              const args = pkg?.args ?? definition.commands[0]?.args ?? [];
+              return { definition, executablePath: managedEntry, args: [...args] };
+            }
+            return resolveLspServer(definition, workspaceRoot, { extraBinDirs: [bundledLspBinDir] });
+          },
         });
 
         // 截图：原生 helper IPC、全局热键。预热在 background 阶段执行。
@@ -397,6 +417,7 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           changeLedger,
           workspaceFiles,
           lsp,
+          lspInstaller,
           screenshot,
           music,
           update,
@@ -547,6 +568,7 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         registerWorkbenchLspBridge({
           ipc,
           lsp: services.lsp,
+          installer: services.lspInstaller,
           getWorkspaceRoot: (sessionId) => chatsStore.getSession(sessionId)?.workspaceBinding?.workspaceRoot,
           publishDiagnostics: (payload) => {
             for (const win of BrowserWindow.getAllWindows()) {

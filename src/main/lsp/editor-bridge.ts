@@ -11,6 +11,7 @@ import { IPC } from "../../shared/ipc-channels";
 import { createIpcScope, type IpcScope, type IpcScopeMainLike } from "../application/ipc-scope";
 import { buildLspRequestParams, lspMethodFor, normalizeLspResult } from "./editor-requests";
 import { buildRecommendedTsconfig, findProjectConfig } from "./project-config";
+import { LspInstallCancelledError, type LspServerInstaller } from "./server-installer";
 import type { LspEditorSupport, LspManager } from "./manager";
 
 /** 补全首次触发要等语言服务把项目索引建起来，比诊断宽松得多 */
@@ -21,7 +22,9 @@ interface IpcMainLike {
 }
 
 export interface WorkbenchLspBridgeDeps {
-  lsp: Pick<LspManager, "acquireEditorClient">;
+  lsp: Pick<LspManager, "acquireEditorClient" | "describeServerFor">;
+  /** 应用内安装语言服务的能力；不传就不注册安装相关的 IPC（测试/无托管场景） */
+  installer?: Pick<LspServerInstaller, "getPackage" | "isInstalling" | "install" | "cancel">;
   ipc?: IpcScope;
   ipcMain?: IpcMainLike;
   /** 取会话绑定的工作区根；与文件读写同源，保证语言服务看到的目录和用户选的一致 */
@@ -140,8 +143,9 @@ export function registerWorkbenchLspBridge(deps: WorkbenchLspBridgeDeps): { disp
     return true;
   });
 
-  // 查"这个文件的语言服务环境"：有没有可用服务 / 往上有没有项目配置 / 没有的话该往哪写。
-  // 编辑器拿它把"为什么补全很弱"说明白，并给一键生成配置一个落点。
+  // 查"这个文件的语言服务环境"：这类文件有没有对应语言服务 / 有没有可用服务 /
+  // 往上有没有项目配置 / 没有的话该往哪写。编辑器拿它把"为什么补全很弱"说明白，
+  // 并给"一键生成配置 / 安装哪个服务"一个落点。
   ipc.handle(IPC.WORKBENCH_LSP_ENV, async (_event, payload: unknown) => {
     const input = payload as { sessionId?: unknown; path?: unknown } | null;
     if (typeof input?.path !== "string" || !input.path.trim()) throw new Error("缺少文件路径");
@@ -149,12 +153,26 @@ export function registerWorkbenchLspBridge(deps: WorkbenchLspBridgeDeps): { disp
     const root = deps.getWorkspaceRoot(sessionId);
     if (!root) return null;
     const absolutePath = resolveInsideWorkspace(root, input.path);
-    const binding = await bindingFor(sessionId, absolutePath);
+    // 先看"理论上该用哪个服务"：返回 null 表示这类文件不在语义补全覆盖范围内
+    // （.md/.css 等），编辑器据此完全不提示——不然会变成到处都在报"缺语言服务"
+    const support = deps.lsp.describeServerFor(absolutePath);
+    const binding = support ? await bindingFor(sessionId, absolutePath) : null;
     const lookup = findProjectConfig(path.dirname(absolutePath), root);
     // 写配置复用既有的 workbench:file-write（只收工作区内相对路径），这里先把相对路径算好
     const relativeRoot = path.relative(root, lookup.projectRoot).split(path.sep).join("/");
+    // 没装时优先给"一键下载"；清单里没有这个服务（拖外部运行时的那几种）才退回文字指引
+    const managed = support && deps.installer ? deps.installer.getPackage(support.serverId) : null;
     return {
       hasService: Boolean(binding),
+      serverId: support?.serverId ?? null,
+      installHint: support?.installHint ?? null,
+      install: managed && deps.installer
+        ? {
+            installing: deps.installer.isInstalling(managed.serverId),
+            version: managed.version,
+            sizeBytes: managed.installBytes,
+          }
+        : null,
       configFile: lookup.configFile,
       projectRoot: lookup.projectRoot,
       configRelativePath: relativeRoot ? `${relativeRoot}/tsconfig.json` : "tsconfig.json",
@@ -162,6 +180,33 @@ export function registerWorkbenchLspBridge(deps: WorkbenchLspBridgeDeps): { disp
       recommendedConfig: buildRecommendedTsconfig(),
     };
   });
+
+  // 在工作台里下载并安装语言服务（只认清单里钉死版本的包，见 server-installer）。
+  // 进度走 WORKBENCH_LSP_INSTALL_PROGRESS 广播；这里等到装完才返回。
+  // 失败与"用户取消"都做成返回值而不是抛异常：渲染端要区别对待（取消不该报错），
+  // 靠解析异常字符串来判断太脆。
+  if (deps.installer) {
+    const installer = deps.installer;
+    ipc.handle(IPC.WORKBENCH_LSP_INSTALL, async (_event, payload: unknown) => {
+      const input = payload as { serverId?: unknown } | null;
+      const serverId = typeof input?.serverId === "string" ? input.serverId : "";
+      if (!installer.getPackage(serverId)) return { ok: false, cancelled: false, error: "这个语言服务不支持应用内安装" };
+      try {
+        const info = await installer.install(serverId);
+        // 只回渲染端需要的字段：入口绝对路径不该跨进程暴露
+        return { ok: true, serverId: info.serverId, version: info.version };
+      } catch (error) {
+        if (error instanceof LspInstallCancelledError) return { ok: false, cancelled: true };
+        return { ok: false, cancelled: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    });
+
+    ipc.handle(IPC.WORKBENCH_LSP_INSTALL_CANCEL, async (_event, payload: unknown) => {
+      const input = payload as { serverId?: unknown } | null;
+      const serverId = typeof input?.serverId === "string" ? input.serverId : "";
+      return installer.cancel(serverId);
+    });
+  }
 
   // 编辑器主动提问：补全 / 悬停 / 跳转 / 查引用。
   // 与 SYNC 共用同一个绑定，所以问的是"编辑器里现在这份内容"，而不是磁盘上的旧版本；
