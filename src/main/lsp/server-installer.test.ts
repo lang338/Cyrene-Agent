@@ -4,7 +4,9 @@
  * 覆盖的都是会**伤到用户**的路径，而不是覆盖率：
  * - 哈希对不上必须整包丢弃（这是"执行陌生人代码"的唯一防线）；
  * - 中途取消不能留下半成品目录（否则下次启动会拿一个缺文件的副本去跑）；
- * - 连点两下不能下两份；镜像挂了要能换下一个地址。
+ * - 连点两下不能下两份；镜像挂了要能换下一个地址；
+ * - 体积上限要边下边卡：等整包落盘再由哈希拦，用户的盘已经被写满了；
+ * - 重装是"先落新目录 → 换元数据指针 → 最后删旧目录"，任何一步失败，已装好的那份都必须还在。
  *
  * 下载用替身（不打真网络），但**解包是真跑**：fixture 是现打的 tgz，走真实的 node-tar 解包路径。
  * rootDir 用系统临时目录（不是仓库内），因为仓库目录在本机开发环境里禁止删除，
@@ -16,7 +18,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import * as tar from "tar";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BUILTIN_LSP_SERVERS } from "./server-catalog";
 import { MANAGED_SERVER_PACKAGES, type ManagedServerPackage } from "./managed-servers";
 import {
@@ -36,6 +38,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
@@ -65,6 +68,7 @@ function packageFor(tarball: Buffer, overrides: Partial<ManagedServerPackage> = 
     entry: "langserver.index.js",
     args: ["--stdio"],
     installBytes: tarball.length,
+    distBytes: tarball.length,
     ...overrides,
   };
 }
@@ -96,6 +100,31 @@ function stagingLeftovers(serverId: string): string[] {
   return fs.readdirSync(serverDir).filter((name) => name.startsWith(".staging"));
 }
 
+/** 版本目录（名字带唯一后缀）：用来断言"装了哪几份" */
+function versionDirs(serverId: string): string[] {
+  const serverDir = path.join(workspace, serverId);
+  if (!fs.existsSync(serverDir)) return [];
+  return fs
+    .readdirSync(serverDir)
+    .filter((name) => !name.startsWith(".staging") && !name.startsWith("installed.json"));
+}
+
+/** 造一个"响应"：只带 defaultDownload 会用到的那几个字段，不真的走网络 */
+function fakeResponse(bytes: Buffer, declaredLength?: number): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array(bytes));
+      controller.close();
+    },
+  });
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers(declaredLength === undefined ? {} : { "content-length": String(declaredLength) }),
+    body,
+  } as unknown as Response;
+}
+
 describe("语言服务应用内安装", () => {
   it("装完能拿到入口，进度报出下载与解包两个阶段", async () => {
     const tarball = await makeFixturePackage();
@@ -120,18 +149,77 @@ describe("语言服务应用内安装", () => {
     expect(stagingLeftovers("python-pyright")).toEqual([]);
   });
 
-  it("重装时旧版本目录被换掉，不会新旧文件混在一起", async () => {
+  it("重装成功后旧版本目录才被清掉，不会新旧文件混在一起", async () => {
     const tarball = await makeFixturePackage();
     const { download } = fakeDownload(tarball);
     const installer = createLspServerInstaller({ rootDir: workspace, packages: [packageFor(tarball)], download });
 
     const first = await installer.install("python-pyright");
-    // 塞一个"上一版残留"的文件进去，重装后应该消失
+    // 塞一个"上一版残留"的文件进去，重装后应该整目录消失
     fs.writeFileSync(path.join(path.dirname(first.entryPath), "stale.js"), "old\n", "utf8");
     const second = await installer.install("python-pyright");
 
-    expect(second.entryPath).toBe(first.entryPath);
+    // 版本目录名带唯一后缀：新旧两份能先共存，指针换好之后旧的才被删
+    expect(second.entryPath).not.toBe(first.entryPath);
+    expect(fs.existsSync(path.dirname(first.entryPath))).toBe(false);
     expect(fs.existsSync(path.join(path.dirname(second.entryPath), "stale.js"))).toBe(false);
+    expect(versionDirs("python-pyright")).toHaveLength(1);
+    expect(installer.installedEntry("python-pyright")).toBe(second.entryPath);
+  });
+
+  it("重装失败时不碰已装好的那一份：旧目录与元数据原样保留", async () => {
+    const tarball = await makeFixturePackage();
+    const { download } = fakeDownload(tarball);
+    let extractCalls = 0;
+    const installer = createLspServerInstaller({
+      rootDir: workspace,
+      packages: [packageFor(tarball)],
+      download,
+      extract: async ({ file, cwd, stripComponents }) => {
+        extractCalls += 1;
+        // 第二次故意解出个空目录 → 入口检查会在"换指针"之前就失败
+        if (extractCalls > 1) return;
+        await tar.x({ file, cwd, strip: stripComponents, strict: true, preservePaths: false });
+      },
+    });
+
+    const first = await installer.install("python-pyright");
+    await expect(installer.install("python-pyright")).rejects.toThrow(/找不到入口/);
+
+    expect(fs.existsSync(first.entryPath)).toBe(true);
+    expect(installer.installedEntry("python-pyright")).toBe(first.entryPath);
+    expect(versionDirs("python-pyright")).toHaveLength(1);
+    expect(stagingLeftovers("python-pyright")).toEqual([]);
+  });
+
+  it("服务端声明的体积超过清单上限：连响应体都不读", async () => {
+    const tarball = await makeFixturePackage();
+    const progress: LspInstallProgress[] = [];
+    vi.stubGlobal("fetch", async () => fakeResponse(tarball, tarball.length));
+    const installer = createLspServerInstaller({
+      rootDir: workspace,
+      packages: [packageFor(tarball, { distBytes: 16 })],
+      onProgress: (event) => progress.push(event),
+    });
+
+    await expect(installer.install("python-pyright")).rejects.toThrow(/体积超过上限/);
+    // 一个字节都没往下写（上限是从清单的 distBytes 来的：16）
+    expect(progress).toEqual([]);
+    expect(installer.installedEntry("python-pyright")).toBeNull();
+    expect(stagingLeftovers("python-pyright")).toEqual([]);
+  });
+
+  it("Content-Length 缺席时边下边卡：收到超过上限就断开", async () => {
+    const tarball = await makeFixturePackage();
+    vi.stubGlobal("fetch", async () => fakeResponse(tarball));
+    const installer = createLspServerInstaller({
+      rootDir: workspace,
+      packages: [packageFor(tarball, { distBytes: 8 })],
+    });
+
+    await expect(installer.install("python-pyright")).rejects.toThrow(/体积超过上限/);
+    expect(installer.installedEntry("python-pyright")).toBeNull();
+    expect(versionDirs("python-pyright")).toEqual([]);
   });
 
   it("哈希对不上时整包丢弃：不落版本目录、入口仍不可用", async () => {

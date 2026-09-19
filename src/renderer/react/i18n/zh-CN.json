@@ -721,7 +721,7 @@
     "lspNoConfigNotice": "当前项目没有 tsconfig.json，补全与跳转会退化成文本级。补一份配置即可恢复跨文件补全。",
     "lspNoServiceNotice": "本机没装这个文件类型需要的语言服务，补全与跳转暂时退回文本级。",
     "lspGenerateConfig": "生成推荐配置",
-    "lspConfigPreviewHint": "将写入 {{path}}（只给编辑器智能用，不影响构建）：",
+    "lspConfigPreviewHint": "将写入 {{path}}。项目工具可能会读取此配置，请确认后继续：",
     "lspWriteConfig": "写入",
     "lspCancel": "取消",
     "lspConfigWritten": "已写入 {{path}}，重新打开该文件即可生效",

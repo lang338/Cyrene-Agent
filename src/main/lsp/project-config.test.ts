@@ -58,6 +58,21 @@ describe("findProjectConfig", () => {
     expect(found.configFile).toBeNull();
     expect(found.projectRoot).toBe(workspace);
   });
+
+  it("工作区里的符号链接指向外面时不去扫（词法看着还在工作区里）", () => {
+    const outside = makeTree("tsconfig.json", "src/a.ts");
+    const workspace = makeTree("src/a.ts");
+    const link = path.join(workspace, "link");
+    try {
+      // junction 在 Windows 上不需要管理员权限；其它平台就是普通目录符号链接
+      fs.symlinkSync(outside, link, "junction");
+    } catch {
+      return; // 建不出链接的环境（权限受限）跳过这条
+    }
+    const found = findProjectConfig(path.join(link, "src"), workspace);
+    expect(found.configFile).toBeNull();
+    expect(found.projectRoot).toBe(workspace);
+  });
 });
 
 describe("buildRecommendedTsconfig", () => {

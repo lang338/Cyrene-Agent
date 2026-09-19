@@ -77,14 +77,29 @@ export function WorkbenchLspStatus({ sessionId, activePath, fileReady, language,
     };
   }, [sessionId, activePath, external, fileReady, refreshToken]);
 
-  // 订阅安装进度。只认自己发起的那一次：别的窗口正在装别的服务，不该改这条提示。
+  // "当前这个文件的服务正在装"统一从 env 推导，避免跨文件串状态：
+  // installingServerId 是我们自己发起的那次（本地），env.install.installing 是主进程的快照
+  // （别的窗口发起的也算）。只看前者的话，用户装了 pyright 再切到 .ts 文件，横幅会拿 pyright
+  // 的进度来显示 TS，还把"取消"发给了 tsserver；只看后者又会慢一拍（要等下次问环境）。
+  const activeInstallingServerId =
+    env?.serverId && (installingServerId === env.serverId || env.install?.installing) ? env.serverId : null;
+
+  // 订阅安装进度。只认当前这个服务的进度：别的窗口正在装别的服务，不该改这条提示。
   useEffect(() => {
     const api = workbenchApi();
-    if (!api?.onLspInstallProgress || !installingServerId) return;
+    if (!api?.onLspInstallProgress || !activeInstallingServerId) return;
     return api.onLspInstallProgress((payload) => {
-      if (payload.serverId === installingServerId) setProgress(payload);
+      if (payload.serverId === activeInstallingServerId) setProgress(payload);
     });
-  }, [installingServerId]);
+  }, [activeInstallingServerId]);
+
+  // env.install.installing 只是问环境那一刻的快照：安装不是我们发起的时候没有"开始"事件可听，
+  // 所以装的过程中定期重问，装完之后这条提示（和按钮）才会跟着变。
+  useEffect(() => {
+    if (!env?.install?.installing || installingServerId) return;
+    const timer = setInterval(() => setRefreshToken((token) => token + 1), 2000);
+    return () => clearInterval(timer);
+  }, [env?.install?.installing, installingServerId]);
 
   const writeConfig = useCallback(async () => {
     const api = workbenchApi();
@@ -129,8 +144,8 @@ export function WorkbenchLspStatus({ sessionId, activePath, fileReady, language,
 
   const cancelInstall = useCallback(() => {
     const api = workbenchApi();
-    if (api?.cancelLspInstall && env?.serverId) void api.cancelLspInstall(env.serverId);
-  }, [env?.serverId]);
+    if (api?.cancelLspInstall && activeInstallingServerId) void api.cancelLspInstall(activeInstallingServerId);
+  }, [activeInstallingServerId]);
 
   // 两道闸门都要过：
   // - isLspLanguage(language)：这个语言上真的注册了 provider，装了服务就能用（否则提示等于骗人，
@@ -160,7 +175,7 @@ export function WorkbenchLspStatus({ sessionId, activePath, fileReady, language,
   }
 
   const install = env?.install ?? null;
-  const installing = installingServerId !== null;
+  const installing = activeInstallingServerId !== null;
   const progressText = progress?.phase === "extract"
     ? t("workbench.lspInstallExtracting")
     : progress && progress.totalBytes > 0

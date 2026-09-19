@@ -37,6 +37,12 @@ export interface ManagedServerPackage {
   args: readonly string[];
   /** 安装后占用空间（字节，取自 npm 的 unpackedSize）；用于按钮上"约 xx MB" */
   installBytes: number;
+  /**
+   * 要下载的 tarball 的**压缩后**字节数（取自 registry 的 Content-Length）。
+   * 下载时按它硬卡上限：镜像被换掉/挂掉时可能吐一个无底洞般的响应，
+   * 光等哈希校验来不及——那要等整个响应体落盘。注意别拿 installBytes 当上限，那是解包后的大小。
+   */
+  distBytes: number;
 }
 
 export const MANAGED_SERVER_PACKAGES: readonly ManagedServerPackage[] = [
@@ -54,6 +60,8 @@ export const MANAGED_SERVER_PACKAGES: readonly ManagedServerPackage[] = [
     args: ["--stdio"],
     // npm 报的 unpackedSize（19.45 MB），解包后 5400+ 个文件
     installBytes: 19_457_120,
+    // tarball 本体（npmmirror 与 npmjs 是同一份字节，故两边同一个上限）
+    distBytes: 4_226_827,
   },
 ];
 

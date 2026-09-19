@@ -96,7 +96,7 @@
     "lspNoConfigNotice": "This project has no tsconfig.json, so completion and navigation fall back to text level. Adding one restores cross-file completion.",
     "lspNoServiceNotice": "This file type needs a language server, and none is installed, so completion and navigation stay at text level.",
     "lspGenerateConfig": "Generate config",
-    "lspConfigPreviewHint": "Will write to {{path}} (editor intelligence only, the build is unaffected):",
+    "lspConfigPreviewHint": "Will write to {{path}}. Project tools may read this config — please review before continuing:",
     "lspWriteConfig": "Write",
     "lspCancel": "Cancel",
     "lspConfigWritten": "Wrote {{path}}. Reopen the file to take effect.",

@@ -4,20 +4,23 @@
 // 同时不给"执行陌生人代码"开后门：下载物必须逐字节对上代码里钉死的 sha512。
 //
 // 落盘布局（`rootDir` = userData/lsp-servers）：
-//   <serverId>/installed.json          装了什么版本、入口在哪、什么时候装的
-//   <serverId>/<version>/…             解包后的包内容（入口 = installed.json.entryPath）
+//   <serverId>/installed.json          装了什么版本、入口在哪、什么时候装的（"指针"）
+//   <serverId>/<version>-<rand>/…      解包后的包内容（入口 = installed.json.entryPath）
 //   <serverId>/.staging-<rand>/        下载与解包的临时区，成功或失败都会被清掉
 //
-// 原子性：全程只往 .staging 里写，最后 `rename` 成版本目录——用户在下载到一半时
-// 关掉应用，也不会留下一个"看着装好了、实际缺文件"的目录。
+// 原子性（顺序不能反）：只往 .staging 里写 → 解包结果 rename 成**唯一名字**的版本目录 →
+// 元数据先写 .tmp 再 rename 覆盖（这一步才算"提交"）→ 最后才删旧的版本目录。
+// 于是任何一步失败甚至中途断电，installed.json 指向的那份副本都还在、并且是完整的；
+// 换指针之前绝不先删旧目录——那样一旦后面失败，用户就一份能用的都没有了。
 //
 // 安全边界（每条都有测试）：
 // 1. 地址白名单：只下清单里写死的 URL，不接受渲染端传地址；
 // 2. 哈希钉死：对不上就整包丢弃，且**不**换镜像重试（那意味着拿到的字节不对）；
 // 3. 解包拒绝符号链接/硬链接：我们只要普通文件，链接是给"越出目录"留的口子；
-// 4. 版本、入口都来自清单，路径全程用 path.join 拼、不接受任何外部路径片段。
+// 4. 版本、入口都来自清单，路径全程用 path.join 拼、不接受任何外部路径片段；
+// 5. 体积上限（distBytes）：哈希校验要等整包落盘，镜像吐无底洞时那道闸来得太晚，所以边下边卡。
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -60,6 +63,8 @@ export interface DownloadInput {
   destPath: string;
   signal: AbortSignal;
   onBytes: (receivedBytes: number, totalBytes: number) => void;
+  /** 压缩包体积上限（清单里钉死的 distBytes）：超过就立刻中止，别等哈希校验才拦 */
+  maxBytes: number;
 }
 
 export interface ExtractInput {
@@ -84,15 +89,26 @@ export interface LspServerInstallerOptions {
 /**
  * 默认下载实现：走全局 fetch（与 music 的缓存下载同一套写法），边下边报进度。
  * 不用 Electron 的 net 模块是为了能注入替换、单测里跑得动。
+ *
+ * 体积上限是**硬闸**：哈希校验要等整个包落盘，镜像变成无底洞时那道闸来得太晚
+ * （用户的盘先被写满）。所以 Content-Length 超标就直接不接，流式过程中一超标就断。
  */
-const defaultDownload: DownloadFn = async ({ url, destPath, signal, onBytes }) => {
+const defaultDownload: DownloadFn = async ({ url, destPath, signal, onBytes, maxBytes }) => {
   const response = await fetch(url, { signal, redirect: "follow" });
   if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
   const totalBytes = Number(response.headers.get("content-length") ?? "") || 0;
+  if (totalBytes > maxBytes) {
+    await response.body.cancel().catch(() => undefined);
+    throw new Error(`安装包体积超过上限（服务端称 ${totalBytes} 字节 > ${maxBytes} 字节），已中止下载`);
+  }
   let receivedBytes = 0;
   const counter = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
       receivedBytes += chunk.length;
+      if (receivedBytes > maxBytes) {
+        callback(new Error(`安装包体积超过上限（已收 ${receivedBytes} 字节 > ${maxBytes} 字节），已中止下载`));
+        return;
+      }
       onBytes(receivedBytes, totalBytes);
       callback(null, chunk);
     },
@@ -188,8 +204,12 @@ export class LspServerInstaller {
     return true;
   }
 
-  private versionDir(serverId: string, version: string): string {
-    return path.join(this.rootDir, serverId, version);
+  /**
+   * 版本目录名。后缀是刻意的：同一版本重装两次也要拿到两个不同的名字，
+   * 否则"新的先落位、再换指针、最后删旧的"这套顺序根本排不出来（固定名字只能先删后摆）。
+   */
+  private versionDir(serverId: string, version: string, suffix: string): string {
+    return path.join(this.rootDir, serverId, `${version}-${suffix}`);
   }
 
   private readInstalled(serverId: string): InstalledServerInfo | null {
@@ -229,9 +249,10 @@ export class LspServerInstaller {
       }
       // 压缩包不再需要：留着等于把同一份内容在盘上存两遍
       await fsp.rm(tarball, { force: true });
-      const versionDir = this.versionDir(pkg.serverId, pkg.version);
-      // 重装：先把旧目录挪走再落位，避免新旧文件混在一起
-      await fsp.rm(versionDir, { recursive: true, force: true });
+      // 新副本先落到**唯一名字**的目录里：不重名才能让新旧两份同时存在，
+      // 也才谈得上"指针没换成功之前旧的那份一直可用"（见 commitMetadata 的注释）
+      const suffix = randomSuffix();
+      const versionDir = this.versionDir(pkg.serverId, pkg.version, suffix);
       await fsp.rename(unpacked, versionDir);
 
       const info: InstalledServerInfo = {
@@ -241,7 +262,15 @@ export class LspServerInstaller {
         args: [...pkg.args],
         installedAt: new Date().toISOString(),
       };
-      await fsp.writeFile(path.join(serverDir, METADATA_FILE), JSON.stringify(info, null, 2), "utf8");
+      try {
+        await this.commitMetadata(serverDir, suffix, info);
+      } catch (error) {
+        // 指针没换过去：这份新副本没人指向它，留着只是垃圾（旧副本和旧元数据都原样还在）
+        await fsp.rm(versionDir, { recursive: true, force: true }).catch(() => undefined);
+        throw error;
+      }
+      // 指针换好之后，旧版本目录才可以删——在那之前它一直是"万一失败还能用"的那份
+      await this.pruneOtherVersions(serverDir, path.basename(versionDir));
       // 装完立刻让解析层看得见（否则要等下次冷启动才用得上）
       this.entryCache.set(pkg.serverId, info.entryPath);
       return info;
@@ -250,6 +279,34 @@ export class LspServerInstaller {
       // 顺手让入口缓存失效：重装可能已经把旧的版本目录删掉了，缓存里那条路径未必还有效。
       this.entryCache.delete(pkg.serverId);
       await fsp.rm(staging, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  /**
+   * 元数据先写临时文件、再原子替换成正式文件。
+   *
+   * 这就是"提交换指针"那一步：installed.json 要么整份是旧的、要么整份是新的，
+   * 不会出现半截 JSON。它落定之前，磁盘上的旧版本目录一直没动过，所以任何一步失败
+   * 用户都还有一份能用的副本——不能反过来（先删旧的再写新的），那样中途断掉就什么都用不了了。
+   */
+  private async commitMetadata(serverDir: string, suffix: string, info: InstalledServerInfo): Promise<void> {
+    const target = path.join(serverDir, METADATA_FILE);
+    const temp = path.join(serverDir, `${METADATA_FILE}.${suffix}.tmp`);
+    try {
+      await fsp.writeFile(temp, JSON.stringify(info, null, 2), "utf8");
+      await fsp.rename(temp, target);
+    } catch (error) {
+      await fsp.rm(temp, { force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /** 删掉这次安装之外的版本目录。删不掉也不影响可用性，只是多占点空间，所以失败就忽略 */
+  private async pruneOtherVersions(serverDir: string, keepName: string): Promise<void> {
+    const names = await fsp.readdir(serverDir).catch(() => [] as string[]);
+    for (const name of names) {
+      if (name === keepName || name.startsWith(".staging") || name.startsWith(METADATA_FILE)) continue;
+      await fsp.rm(path.join(serverDir, name), { recursive: true, force: true }).catch(() => undefined);
     }
   }
 
@@ -262,6 +319,7 @@ export class LspServerInstaller {
           url,
           destPath,
           signal,
+          maxBytes: pkg.distBytes,
           onBytes: (receivedBytes, totalBytes) =>
             this.onProgress({ serverId: pkg.serverId, phase: "download", receivedBytes, totalBytes }),
         });
@@ -282,6 +340,11 @@ export function createLspServerInstaller(options: LspServerInstallerOptions): Ls
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** 版本目录/临时文件名的后缀：同一版本重装两次也不能撞名 */
+function randomSuffix(): string {
+  return randomBytes(4).toString("hex");
 }
 
 function throwIfAborted(signal: AbortSignal): void {

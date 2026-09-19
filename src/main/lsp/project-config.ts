@@ -13,6 +13,7 @@ import path from "node:path";
  * 2. **一键配置**：找不到时给一个"生成推荐配置"的动作，写到项目根。
  *
  * ⚠️ 只在**工作区内**往上找：越过工作区根去读用户别的目录，既没道理也没授权。
+ * 而且按**真实路径**判（工作区里的符号链接完全可能指着外面，词法路径看不出来）。
  */
 
 const PROJECT_CONFIG_FILENAMES = ["tsconfig.json", "jsconfig.json"];
@@ -25,8 +26,15 @@ export interface ProjectConfigLookup {
 }
 
 export function findProjectConfig(startDir: string, workspaceRoot: string): ProjectConfigLookup {
-  const stop = path.resolve(workspaceRoot);
-  let current = path.resolve(startDir);
+  const stop = canonicalize(path.resolve(workspaceRoot));
+  const start = canonicalize(path.resolve(startDir));
+  // 词法检查看不出"工作区里的符号链接指到外面"：/ws/link -> /elsewhere 时
+  // 路径看着还在 /ws 里，实际每次 statSync 都在戳外面的目录。所以按**真实路径**
+  // 再判一次——扫描本身是只读的，但也没理由越过用户交给我们的那棵树。
+  if (!isInsideWorkspace(start, stop)) {
+    return { configFile: null, projectRoot: stop };
+  }
+  let current = start;
   let packageRoot: string | null = null;
 
   for (;;) {
@@ -55,6 +63,15 @@ function isInsideWorkspace(dir: string, workspaceRoot: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+/** 取真实路径（解掉符号链接）；路径不存在时退回词法解析结果（工作区还没建好之类） */
+function canonicalize(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return target;
+  }
+}
+
 function isFile(target: string): boolean {
   try {
     return fs.statSync(target).isFile();
@@ -64,11 +81,13 @@ function isFile(target: string): boolean {
 }
 
 /**
- * 生成一份"只给编辑器智能用"的推荐配置。
+ * 生成一份推荐的项目配置（tsconfig.json）。
  *
  * 刻意选**宽松**设置：目的是让语言服务正确解析项目（依赖、JSX），而不是给用户的项目
  * 引入一堆类型报错——渲染端本来也不做类型检查，拿 strict 去卡他毫无意义。
- * 写入前必须让用户看到内容并确认。
+ *
+ * 但它落在项目根上，用户的构建/打包工具**也可能读到**（tsc、vite、vitest 都会去找 tsconfig），
+ * 所以不能承诺"不影响构建"：渲染端要如实说明，写入前必须让用户看到内容并确认。
  */
 export function buildRecommendedTsconfig(): string {
   return `${JSON.stringify(
