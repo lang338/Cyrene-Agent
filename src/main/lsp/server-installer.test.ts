@@ -67,7 +67,6 @@ function packageFor(tarball: Buffer, overrides: Partial<ManagedServerPackage> = 
     stripComponents: 1,
     entry: "langserver.index.js",
     args: ["--stdio"],
-    installBytes: tarball.length,
     distBytes: tarball.length,
     ...overrides,
   };
@@ -329,9 +328,8 @@ describe("语言服务应用内安装", () => {
         !/^sha(256|512)-[A-Za-z0-9+/=]+$/.test(pkg.integrity) ||
         !pkg.entry ||
         pkg.urls.length === 0 ||
-        !(pkg.distBytes > 0) ||
-        !(pkg.installBytes > 0),
-    ).map((pkg) => `${pkg.serverId}(${pkg.integrity.slice(0, 12)}…, entry=${pkg.entry}, urls=${pkg.urls.length}, dist=${pkg.distBytes}, install=${pkg.installBytes})`);
+        !(pkg.distBytes > 0),
+    ).map((pkg) => `${pkg.serverId}(${pkg.integrity.slice(0, 12)}…, entry=${pkg.entry}, urls=${pkg.urls.length}, dist=${pkg.distBytes})`);
     expect(incomplete).toEqual([]);
   });
 });
