@@ -342,6 +342,44 @@ describe("resolveLaunchTarget", () => {
     // 拿 node 去跑一个 shell 脚本只会报一堆看不懂的语法错误，不如在这里说清楚
     expect(() => resolveLaunchTarget(shim, ["--stdio"], "win32", "C:\\node\\node.exe")).toThrow(/无法解析语言服务的启动壳/);
   });
+
+  it("shebang 里只是提到 node 不算 node 脚本（#!/bin/sh # node 仍是 shell）", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-shim-mention-"));
+    roots.push(root);
+    const entry = path.join(root, "node_modules", "shell-lsp", "bin", "shell-lsp");
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    // 只在注释里出现 node 的 shell 脚本：按"整行里有 node"判就会误判成 node 脚本
+    fs.writeFileSync(entry, "#!/bin/sh # node\nexec something --stdio\n", "utf8");
+    const shim = path.join(root, "node_modules", ".bin", "shell-lsp.cmd");
+    fs.mkdirSync(path.dirname(shim), { recursive: true });
+    fs.writeFileSync(shim, "@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\..\\shell-lsp\\bin\\shell-lsp\" %*\r\n", "utf8");
+
+    expect(() => resolveLaunchTarget(shim, ["--stdio"], "win32", "C:\\node\\node.exe")).toThrow(/无法解析语言服务的启动壳/);
+  });
+
+  it("node 的三种常见 shebang 都要认：绝对路径 / env / env -S", () => {
+    const forms = [
+      "#!/usr/bin/node\n",
+      "#!/usr/bin/env node\n",
+      "#!/usr/bin/env -S node --experimental-strip-types\n",
+    ];
+    for (const [index, form] of forms.entries()) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `cyrene-lsp-shim-node${index}-`));
+      roots.push(root);
+      const entry = path.join(root, "node_modules", "fake-lsp", "bin", "fake-lsp");
+      fs.mkdirSync(path.dirname(entry), { recursive: true });
+      fs.writeFileSync(entry, form, "utf8");
+      const shim = path.join(root, "node_modules", ".bin", "fake-lsp.cmd");
+      fs.mkdirSync(path.dirname(shim), { recursive: true });
+      fs.writeFileSync(shim, "@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\..\\fake-lsp\\bin\\fake-lsp\" %*\r\n", "utf8");
+
+      expect(resolveLaunchTarget(shim, ["--stdio"], "win32", "C:\\app\\electron.exe", true), form.trim()).toEqual({
+        command: "C:\\app\\electron.exe",
+        args: [entry, "--stdio"],
+        env: { ELECTRON_RUN_AS_NODE: "1" },
+      });
+    }
+  });
 });
 
 describe("withBundledL10nDir", () => {

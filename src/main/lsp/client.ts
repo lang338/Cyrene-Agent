@@ -97,7 +97,10 @@ function isNodeScript(target: string): boolean {
   if (/\.(?:mjs|cjs|js)$/i.test(target)) return true;
   try {
     const [shebang = ""] = fs.readFileSync(target, "utf8").split(/\r?\n/, 1);
-    return /^#!.*\bnode(?:\.exe)?\b/i.test(shebang);
+    // ⚠️ 不能写成"整行里出现过 node"（`\bnode\b`）：`#!/bin/sh # node` 这种只是把 node 写在
+    // 注释里的 shell 脚本会被误判，然后被交给 node 去跑。只认**解释器位置**上的 node：
+    // 直接给路径（`#!/usr/bin/node`），或经 env 转一手（`#!/usr/bin/env node`、`env -S node`）。
+    return /^#!\s*(?:(?:\S*\/)?env(?:\s+-S)?\s+)?(?:\S*\/)?node(?:\.exe)?(?:\s|$)/i.test(shebang);
   } catch {
     return false;
   }
