@@ -16,6 +16,9 @@ import type {
   WorkbenchLspLocation,
   WorkbenchLspRequestMethod,
   WorkbenchLspRequestResult,
+  WorkbenchLspSignature,
+  WorkbenchLspSignatureHelp,
+  WorkbenchLspSignatureParameter,
 } from "../../shared/code-workbench-types";
 
 /** 渲染端只说用途，协议方法名在这里翻译，免得 LSP 方法名散落到渲染端 */
@@ -23,7 +26,9 @@ const LSP_METHODS: Record<WorkbenchLspRequestMethod, string> = {
   completion: "textDocument/completion",
   hover: "textDocument/hover",
   definition: "textDocument/definition",
+  implementation: "textDocument/implementation",
   references: "textDocument/references",
+  signatureHelp: "textDocument/signatureHelp",
 };
 
 /** 一次返回几百项之后就没有意义了，还会把 IPC 撑大，按语言服务通行做法截断 */
@@ -152,6 +157,63 @@ export function normalizeLocations(raw: unknown, workspaceRoot: string): Workben
   return locations;
 }
 
+/** 参数标签：字符串，或者相对签名文本的 [起, 止] 偏移；别的形状一律丢掉 */
+function toSignatureParameters(raw: unknown): WorkbenchLspSignatureParameter[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const parameters: WorkbenchLspSignatureParameter[] = [];
+  for (const entry of raw) {
+    if (typeof entry === "string") {
+      parameters.push({ label: entry });
+      continue;
+    }
+    if (!entry || typeof entry !== "object") continue;
+    const label = (entry as { label?: unknown }).label;
+    if (typeof label === "string") {
+      parameters.push({ label });
+      continue;
+    }
+    // 偏移必须是"非负整数 + 恰好两个"，否则 Monaco 会把参数高亮画到签名外面去
+    if (Array.isArray(label) && label.length === 2 && label.every((offset) => Number.isSafeInteger(offset) && offset >= 0)) {
+      parameters.push({ label: [label[0] as number, label[1] as number] });
+    }
+  }
+  return parameters.length ? parameters : undefined;
+}
+
+/** 下标必须落在这个范围内：越界的 activeSignature 会让 Monaco 拿到一个空签名去渲染 */
+function isIndexWithin(value: unknown, length: number): boolean {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value < length;
+}
+
+/**
+ * 参数提示：signatures[] + 当前第几个签名、第几个参数。
+ *
+ * 语言服务这两项都是可选的（不给就按 0 算），而 Monaco 少了下标会当成"没得高亮"，
+ * 所以这里统一补成**一定有效的下标**，渲染端不必再夹取。整个结构为空就返回 null，
+ * 编辑器就不弹提示框（语法没写完、位置不在调用里，都会是这种情况）。
+ */
+export function normalizeSignatureHelp(raw: unknown): WorkbenchLspSignatureHelp | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as { signatures?: unknown; activeSignature?: unknown; activeParameter?: unknown };
+  const signatures: WorkbenchLspSignature[] = [];
+  for (const entry of Array.isArray(record.signatures) ? record.signatures : []) {
+    if (!entry || typeof entry !== "object") continue;
+    const item = entry as Record<string, unknown>;
+    const label = typeof item.label === "string" ? item.label : undefined;
+    if (!label) continue;
+    signatures.push({
+      label,
+      documentation: documentationToText(item.documentation),
+      parameters: toSignatureParameters(item.parameters),
+    });
+  }
+  if (!signatures.length) return null;
+  const activeSignature = isIndexWithin(record.activeSignature, signatures.length) ? (record.activeSignature as number) : 0;
+  const parameterCount = signatures[activeSignature].parameters?.length ?? 0;
+  const activeParameter = isIndexWithin(record.activeParameter, parameterCount) ? (record.activeParameter as number) : 0;
+  return { signatures, activeSignature, activeParameter };
+}
+
 /** 统一入口：按方法拍平，渲染端拿到的永远是同一种形状 */
 export function normalizeLspResult(
   method: WorkbenchLspRequestMethod,
@@ -160,5 +222,7 @@ export function normalizeLspResult(
 ): WorkbenchLspRequestResult {
   if (method === "completion") return { method, completions: normalizeCompletions(raw) };
   if (method === "hover") return { method, hover: normalizeHover(raw) };
+  if (method === "signatureHelp") return { method, signatureHelp: normalizeSignatureHelp(raw) };
+  // 定义 / 跳到实现 / 查引用：返回值形状一致（Location 或 LocationLink），走同一条拍平
   return { method, locations: normalizeLocations(raw, workspaceRoot) };
 }

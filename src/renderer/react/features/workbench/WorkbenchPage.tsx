@@ -127,6 +127,11 @@ const EDITOR_OPTIONS = {
   quickSuggestions: true,
   suggestOnTriggerCharacters: true,
   parameterHints: { enabled: true },
+  // 跳到实现一律"直接跳"，不弹 peek 列表：peek 的预览要求 Monaco 自己能解析出目标文件的
+  // model，而工作台只为打开过的文件建 model（peek 会显示"内容不可用"）。走 goto 才会经过
+  // 我们注册的 editor opener，把目标文件开成页签并选中符号——和 F12 同一条路。
+  // 命中多处时跳到第一处；要看全部用 Shift+F12（查引用）。定义（F12）保持既有行为不动。
+  gotoLocation: { multipleImplementations: "goto" as const },
   renderValidationDecorations: "on" as const,
   occurrencesHighlight: "off" as const,
   selectionHighlight: false,

@@ -210,7 +210,7 @@ export type WorkbenchLspInstallResult =
 // 服务端返回的是各种花样的 LSP 原始结构，主进程负责拍平成下面这几个简单形状，
 // 渲染端因此不必依赖整个 LSP 类型包。
 
-export type WorkbenchLspRequestMethod = "completion" | "hover" | "definition" | "references";
+export type WorkbenchLspRequestMethod = "completion" | "hover" | "definition" | "implementation" | "references" | "signatureHelp";
 
 export interface WorkbenchLspRequestInput {
   sessionId: string;
@@ -257,4 +257,31 @@ export interface WorkbenchLspRequestResult {
   completions?: WorkbenchLspCompletionItem[];
   hover?: WorkbenchLspHover | null;
   locations?: WorkbenchLspLocation[];
+  signatureHelp?: WorkbenchLspSignatureHelp | null;
+}
+
+/**
+ * 一个参数：标签可以是字符串，也可以是相对签名文本的 [起, 止] 偏移。
+ * 两种写法 LSP 都允许（偏移省得把签名拆开），Monaco 也认，所以原样透传不再拆解。
+ */
+export interface WorkbenchLspSignatureParameter {
+  label: string | [number, number];
+}
+
+export interface WorkbenchLspSignature {
+  /** 完整签名文本，如 `writeFile(sessionId: string, path: string): Promise<void>` */
+  label: string;
+  /** 已拍平成纯文本的文档说明 */
+  documentation?: string;
+  parameters?: WorkbenchLspSignatureParameter[];
+}
+
+/**
+ * 参数提示：光标停在括号里时告诉用户"这个函数要什么参数、现在填的是第几个"。
+ * 两个下标都保证是**有效下标**（不是可选值）：渲染端不用再判空/夹取。
+ */
+export interface WorkbenchLspSignatureHelp {
+  signatures: WorkbenchLspSignature[];
+  activeSignature: number;
+  activeParameter: number;
 }

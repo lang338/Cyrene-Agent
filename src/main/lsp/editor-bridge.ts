@@ -246,7 +246,7 @@ export function registerWorkbenchLspBridge(deps: WorkbenchLspBridgeDeps): { disp
     });
   }
 
-  // 编辑器主动提问：补全 / 悬停 / 跳转 / 查引用。
+  // 编辑器主动提问：补全 / 参数提示 / 悬停 / 跳转 / 跳到实现 / 查引用。
   // 与 SYNC 共用同一个绑定，所以问的是"编辑器里现在这份内容"，而不是磁盘上的旧版本；
   // 拿不到语言服务（返回 null）时编辑器静默降级，只是弹不出补全。
   ipc.handle(IPC.WORKBENCH_LSP_REQUEST, async (_event, payload: unknown) => {
@@ -255,7 +255,14 @@ export function registerWorkbenchLspBridge(deps: WorkbenchLspBridgeDeps): { disp
       | null;
     if (typeof input?.path !== "string" || !input.path.trim()) throw new Error("缺少文件路径");
     const method = input?.method;
-    if (method !== "completion" && method !== "hover" && method !== "definition" && method !== "references") {
+    if (
+      method !== "completion" &&
+      method !== "hover" &&
+      method !== "definition" &&
+      method !== "implementation" &&
+      method !== "references" &&
+      method !== "signatureHelp"
+    ) {
       throw new Error("不支持的语言服务请求");
     }
     const position = input?.position as { line?: unknown; character?: unknown } | undefined;

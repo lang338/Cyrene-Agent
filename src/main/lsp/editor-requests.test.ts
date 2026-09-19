@@ -11,6 +11,7 @@ import {
   normalizeHover,
   normalizeLocations,
   normalizeLspResult,
+  normalizeSignatureHelp,
 } from "./editor-requests";
 
 const ROOT = process.platform === "win32" ? "C:\\ws" : "/ws";
@@ -23,6 +24,8 @@ describe("lspMethodFor", () => {
     expect(lspMethodFor("hover")).toBe("textDocument/hover");
     expect(lspMethodFor("definition")).toBe("textDocument/definition");
     expect(lspMethodFor("references")).toBe("textDocument/references");
+    expect(lspMethodFor("implementation")).toBe("textDocument/implementation");
+    expect(lspMethodFor("signatureHelp")).toBe("textDocument/signatureHelp");
   });
 });
 
@@ -153,10 +156,71 @@ describe("normalizeLocations", () => {
   });
 });
 
+describe("normalizeSignatureHelp", () => {
+  it("签名与参数标签两种写法都认，文档拍成纯文本", () => {
+    const help = normalizeSignatureHelp({
+      signatures: [
+        {
+          label: "writeFile(sessionId, path)",
+          documentation: { kind: "markdown", value: "写文件" },
+          parameters: [{ label: "sessionId" }, { label: [16, 20] }],
+        },
+      ],
+      activeSignature: 0,
+      activeParameter: 1,
+    });
+    expect(help).toEqual({
+      signatures: [
+        {
+          label: "writeFile(sessionId, path)",
+          documentation: "写文件",
+          parameters: [{ label: "sessionId" }, { label: [16, 20] }],
+        },
+      ],
+      activeSignature: 0,
+      activeParameter: 1,
+    });
+  });
+
+  it("下标越界/缺失时夹回 0：渲染端拿到的必须永远有效", () => {
+    const help = normalizeSignatureHelp({
+      signatures: [{ label: "fn(a)", parameters: [{ label: "a" }] }],
+      activeSignature: 7,
+      activeParameter: -1,
+    });
+    expect(help?.activeSignature).toBe(0);
+    expect(help?.activeParameter).toBe(0);
+  });
+
+  it("没有签名就返回 null（编辑器不弹参数框）", () => {
+    expect(normalizeSignatureHelp({ signatures: [] })).toBeNull();
+    expect(normalizeSignatureHelp({ signatures: [{ label: "" }] })).toBeNull();
+    expect(normalizeSignatureHelp(null)).toBeNull();
+  });
+
+  it("参数标签是乱七八糟的形状时只丢掉那一个参数，不牵连整条签名", () => {
+    const help = normalizeSignatureHelp({
+      signatures: [{ label: "fn(a, b)", parameters: [{ label: "a" }, { label: [1] }, 42, { label: "b" }] }],
+    });
+    expect(help?.signatures[0].parameters).toEqual([{ label: "a" }, { label: "b" }]);
+  });
+});
+
 describe("normalizeLspResult", () => {
   it("按方法挑对应字段，渲染端永远拿到同一种形状", () => {
     expect(normalizeLspResult("completion", [{ label: "x" }], ROOT).completions).toHaveLength(1);
     expect(normalizeLspResult("hover", { contents: "t" }, ROOT).hover?.contents).toBe("t");
     expect(normalizeLspResult("definition", [], ROOT).locations).toEqual([]);
+  });
+
+  it("跳到实现与查引用的返回形状一致，共用同一条拍平", () => {
+    const raw = [{ uri: uriFor(path.join(ROOT, "impl.ts")), range: range() }];
+    expect(normalizeLspResult("implementation", raw, ROOT).locations).toEqual([{ path: "impl.ts", range: range() }]);
+  });
+
+  it("参数提示走自己的拍平，不落到位置那条路上", () => {
+    const result = normalizeLspResult("signatureHelp", { signatures: [{ label: "fn()" }] }, ROOT);
+    expect(result.signatureHelp?.signatures[0].label).toBe("fn()");
+    expect(result.locations).toBeUndefined();
   });
 });

@@ -1,4 +1,4 @@
-// 把 Monaco 的补全 / 悬停 / 跳转 / 查引用，托管给主进程里的外部语言服务。
+// 把 Monaco 的补全 / 参数提示 / 悬停 / 跳转 / 跳到实现 / 查引用，托管给主进程里的外部语言服务。
 //
 // 为什么用模块级变量而不是 React context：Monaco 的 provider 是按"语言"全局注册的，
 // 回调活在 React 之外，读不到 context。工作台挂载时把会话写进来即可。
@@ -229,11 +229,48 @@ function provideDefinition(
   return askLsp(model, position, "definition").then(toMonacoLocations);
 }
 
+/** 跳到实现：从接口/抽象方法跳到真正的实现（形状与"定义"一致，共用同一条拍平） */
+function provideImplementation(
+  model: monaco.editor.ITextModel,
+  position: monaco.Position,
+): Promise<monaco.languages.Location[]> {
+  return askLsp(model, position, "implementation").then(toMonacoLocations);
+}
+
 function provideReferences(
   model: monaco.editor.ITextModel,
   position: monaco.Position,
 ): Promise<monaco.languages.Location[]> {
   return askLsp(model, position, "references").then(toMonacoLocations);
+}
+
+/**
+ * 参数提示：光标停在调用括号里时，告诉用户这个函数要什么参数、现在填的是第几个。
+ *
+ * 签名文本与参数标签（字符串或相对签名的偏移）原样交给 Monaco——它认 LSP 那套形状；
+ * 文档说明已经在主进程拍平成纯文本了。没有签名就返回 null，编辑器不弹框。
+ */
+function provideSignatureHelp(
+  model: monaco.editor.ITextModel,
+  position: monaco.Position,
+): Promise<monaco.languages.SignatureHelpResult | null> {
+  return askLsp(model, position, "signatureHelp").then((result) => {
+    const help = result?.signatureHelp;
+    if (!help || !help.signatures.length) return null;
+    return {
+      value: {
+        signatures: help.signatures.map((signature) => ({
+          label: signature.label,
+          documentation: signature.documentation ? { value: signature.documentation } : undefined,
+          // Monaco 的类型要求 parameters 必填，语言服务不给就补空数组
+          parameters: signature.parameters ?? [],
+        })),
+        activeSignature: help.activeSignature,
+        activeParameter: help.activeParameter,
+      },
+      dispose: () => undefined,
+    };
+  });
 }
 
 /**
@@ -254,5 +291,13 @@ export function registerLspProviders(): void {
     monaco.languages.registerHoverProvider(languageId, { provideHover });
     monaco.languages.registerDefinitionProvider(languageId, { provideDefinition });
     monaco.languages.registerReferenceProvider(languageId, { provideReferences });
+    // 快捷键与右键菜单项由 Monaco 自带的 editor.action.goToImplementation 提供（Ctrl+F12），
+    // 它只要求"这个语言注册了 implementation provider"，不用我们自己加命令
+    monaco.languages.registerImplementationProvider(languageId, { provideImplementation });
+    monaco.languages.registerSignatureHelpProvider(languageId, {
+      // 与内建 TS 服务、以及各语言服务的习惯触发字符一致：左括号开参数、逗号进下一个
+      signatureHelpTriggerCharacters: ["(", ","],
+      provideSignatureHelp,
+    });
   }
 }
