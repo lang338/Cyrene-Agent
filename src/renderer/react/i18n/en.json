@@ -118,7 +118,7 @@
       "ruby-lsp": "Run gem install ruby-lsp (requires Ruby), then restart the app.",
       "kotlin-language-server": "Download the kotlin-language-server release and put its executable on your PATH, then restart the app.",
       "lua-language-server": "Download the lua-language-server release and put its executable on your PATH, then restart the app.",
-      "yaml-language-server": "Run npm i -g yaml-language-server in a terminal, then restart the app."
+      "yaml-language-server": "The bundled YAML language server could not start. You can install your own copy with npm i -g yaml-language-server, then restart the app."
     },
     "chatHeader": "Chat",
     "chatEmpty": "No messages yet. Say something to Cyrene",

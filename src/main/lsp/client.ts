@@ -64,6 +64,9 @@ export interface LspLaunchTarget {
  * 从 npm 在 Windows 生成的命令壳（`.cmd` / `.bat`）里解析出真正的 JS 入口。
  * 壳的收尾一行很稳定，形如：
  *   ... & "%_prog%"  "%dp0%\..\typescript-language-server\lib\cli.mjs" %*
+ * ⚠️ 末尾那个路径**不一定带扩展名**：npm 的 bin 字段允许指向无扩展名的脚本
+ * （yaml-language-server 就是 `bin/yaml-language-server`），而壳同样是用 node 去跑它，
+ * 所以这里不能只认 .js/.mjs/.cjs，否则用户按提示全局装了也会卡在"解析不出启动壳"。
  */
 function readNpmShimEntry(shimPath: string): string | null {
   let content: string;
@@ -72,11 +75,30 @@ function readNpmShimEntry(shimPath: string): string | null {
   } catch {
     return null;
   }
-  // 捕获组要连 `..\` 一起带上，交给 path.resolve 去归一
-  const match = content.match(/"%dp0%\\([^"]+?\.(?:mjs|cjs|js))"/i);
-  if (!match) return null;
-  const resolved = path.resolve(path.dirname(shimPath), match[1].replace(/\\/g, path.sep));
-  return fs.existsSync(resolved) ? resolved : null;
+  // 捕获组要连 `..\` 一起带上，交给 path.resolve 去归一。
+  // ⚠️ 必须逐个候选看：`%dp0%` 在壳里不止收尾那一处（前面还有 `IF EXIST "%dp0%\node.exe"` 这种探测），
+  // 只取第一个匹配就会拿到 node.exe，永远解析不出真正的入口。
+  for (const match of content.matchAll(/"%dp0%\\([^"]+)"/gi)) {
+    const resolved = path.resolve(path.dirname(shimPath), match[1].replace(/\\/g, path.sep));
+    if (isNodeScript(resolved)) return resolved;
+  }
+  return null;
+}
+
+/**
+ * 这个文件能不能直接交给 node 跑。
+ * 带 .js/.mjs/.cjs 的直接认；无扩展名的必须是**带 shebang 的脚本**——
+ * 那是 npm 允许的 bin 形态，壳里的 `_prog` 也正是 node；但不是脚本的东西（二进制、数据文件）
+ * 塞给 node 只会得到更难懂的报错。
+ */
+function isNodeScript(target: string): boolean {
+  if (!fs.existsSync(target)) return false;
+  if (/\.(?:mjs|cjs|js)$/i.test(target)) return true;
+  try {
+    return fs.readFileSync(target, "utf8").startsWith("#!");
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -88,6 +110,24 @@ function readNpmShimEntry(shimPath: string): string | null {
 function toRealDiskPath(target: string): string {
   const marker = `${path.sep}app.asar${path.sep}`;
   return target.includes(marker) ? target.replace(marker, `${path.sep}app.asar.unpacked${path.sep}`) : target;
+}
+
+/**
+ * 随应用打包的语言服务是 esbuild 打出来的**单文件包**，上游却按 `__dirname` 相对路径
+ * 去找自己的翻译文件（yaml-language-server 是 `../../../l10n`）——打完包这个相对位置
+ * 就废了，它会在 `initialize` 里直接抛 ENOENT，整台服务一次都起不来（现象是静默降级）。
+ *
+ * 上游为此留了正规接口 `initializationOptions.l10nPath`，所以这里在入口旁边发现
+ * `l10n/bundle.l10n.json` 就把绝对路径补给它；没有这个目录就原样返回，外部服务不受影响。
+ */
+export function withBundledL10nDir(existing: unknown, executablePath: string): unknown {
+  const l10nDir = path.join(path.dirname(executablePath), "l10n");
+  if (!fs.existsSync(path.join(l10nDir, "bundle.l10n.json"))) return existing;
+  const base = existing && typeof existing === "object" && !Array.isArray(existing)
+    ? (existing as Record<string, unknown>)
+    : {};
+  // 服务是 node 子进程，读不了 asar 虚拟路径，这里同样要换回真实磁盘路径
+  return { ...base, l10nPath: toRealDiskPath(l10nDir) };
 }
 
 /**
@@ -312,7 +352,10 @@ export class LspClient {
             hover: { contentFormat: ["markdown", "plaintext"] },
           },
         },
-        initializationOptions: this.options.server.definition.initializationOptions,
+        initializationOptions: withBundledL10nDir(
+          this.options.server.definition.initializationOptions,
+          this.options.server.executablePath,
+        ),
       }),
       INITIALIZE_TIMEOUT_MS,
       "LSP_INITIALIZE_TIMEOUT",

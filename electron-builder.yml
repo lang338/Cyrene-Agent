@@ -19,6 +19,9 @@ asarUnpack:
   # asar 虚拟路径 spawn 不了，必须解到真实磁盘；typescript 是它的 peer 依赖，一并解包
   - "**/node_modules/typescript-language-server/**"
   - "**/node_modules/typescript/**"
+  # 随应用打包的单文件语言服务（esbuild 产物，见 scripts/build/lsp-servers.mjs）。
+  # 它们要读旁边的 l10n 目录、也要被 spawn，同样得是真磁盘文件
+  - "**/vendor/lsp-servers/**"
 electronDist: node_modules/electron/dist
 files:
   - dist/**/*

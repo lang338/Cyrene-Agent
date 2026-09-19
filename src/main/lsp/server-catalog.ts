@@ -1,6 +1,17 @@
 import path from "node:path";
-import type { LspServerDefinition, LspServerOverride } from "./types";
+import type { LspServerCommand, LspServerDefinition, LspServerOverride } from "./types";
 
+/**
+ * 随应用打包的语言服务入口名（放在 `vendor/lsp-servers/<id>/` 下，见
+ * `scripts/build/lsp-servers.mjs`；目录由 default-dependencies 加进搜索目录）。
+ * 命名约定就是 `<服务 id>.cjs`，打的是裸 .cjs，交给 client.ts 的 resolveLaunchTarget 用 node 跑。
+ */
+const BUNDLED_YAML_SERVER_ENTRY = "yaml-language-server.cjs";
+
+/**
+ * `commands` 按顺序尝试：先试用户自己装的那份（工作区/全局），都没有才回落到应用自带的副本。
+ * 用户装的服务版本跟项目更贴，也更可能是他要的；自带那份只是"没有也能用"的兜底。
+ */
 function server(
   id: string,
   extensions: string[],
@@ -8,8 +19,9 @@ function server(
   args: string[],
   rootMarkers: string[],
   installHint: string,
+  bundledCommand?: LspServerCommand,
 ): LspServerDefinition {
-  return { id, extensions, commands: [{ command, args }], rootMarkers, installHint };
+  return { id, extensions, commands: [{ command, args }, ...(bundledCommand ? [bundledCommand] : [])], rootMarkers, installHint };
 }
 
 export const BUILTIN_LSP_SERVERS: readonly LspServerDefinition[] = [
@@ -25,7 +37,7 @@ export const BUILTIN_LSP_SERVERS: readonly LspServerDefinition[] = [
   server("kotlin-language-server", [".kt", ".kts"], "kotlin-language-server", [], ["build.gradle", "settings.gradle", ".git"], "安装 kotlin-language-server，并确保它位于 PATH。"),
   server("lua-language-server", [".lua"], "lua-language-server", [], [".luarc.json", ".git"], "安装 lua-language-server，并确保它位于 PATH。"),
   server("vue-language-server", [".vue"], "vue-language-server", ["--stdio"], ["package.json", "vite.config.ts", ".git"], "安装 @vue/language-server，并确保 vue-language-server 位于 PATH。"),
-  server("yaml-language-server", [".yaml", ".yml"], "yaml-language-server", ["--stdio"], [".git"], "安装 yaml-language-server，并确保它位于 PATH。"),
+  server("yaml-language-server", [".yaml", ".yml"], "yaml-language-server", ["--stdio"], [".git"], "应用自带的 YAML 语言服务没能启动，可自己装一份：npm i -g yaml-language-server。", { command: BUNDLED_YAML_SERVER_ENTRY, args: ["--stdio"] }),
 ];
 
 function isNonBlankString(value: unknown): value is string {
