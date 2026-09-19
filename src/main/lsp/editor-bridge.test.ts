@@ -23,6 +23,7 @@ interface CapturedHandlers {
   sync?: (event: unknown, payload: unknown) => unknown;
   close?: (event: unknown, payload: unknown) => unknown;
   env?: (event: unknown, payload: unknown) => Promise<unknown>;
+  request?: (event: unknown, payload: unknown) => unknown;
 }
 
 function fakeIpc(captured: CapturedHandlers) {
@@ -31,6 +32,7 @@ function fakeIpc(captured: CapturedHandlers) {
       if (channel === IPC.WORKBENCH_LSP_SYNC) captured.sync = listener;
       if (channel === IPC.WORKBENCH_LSP_CLOSE) captured.close = listener;
       if (channel === IPC.WORKBENCH_LSP_ENV) captured.env = listener as CapturedHandlers["env"];
+      if (channel === IPC.WORKBENCH_LSP_REQUEST) captured.request = listener;
     },
     removeHandler() {},
     on() {},
@@ -47,6 +49,7 @@ function fakeEditorClient() {
       listeners.add(listener);
       return () => listeners.delete(listener);
     }),
+    request: vi.fn(async () => undefined),
   };
   return { client, listeners };
 }
@@ -193,6 +196,31 @@ describe("工作台 LSP 桥", () => {
     };
     // 修 bug 前这里会返回 hasService=true（复用了 TS 的绑定），界面因此连"该装 pyright"都不提示
     expect(env).toMatchObject({ hasService: false, serverId: "python-pyright" });
+  });
+
+  it("参数提示与跳到实现能过请求白名单（漏加就会被当成非法请求）", async () => {
+    const captured: CapturedHandlers = {};
+    const { client } = fakeEditorClient();
+    const acquire = vi.fn(async () => client);
+
+    registerWorkbenchLspBridge({
+      lsp: { acquireEditorClient: acquire, describeServerFor: () => TS_SERVER },
+      getWorkspaceRoot: () => "D:\\ws",
+      publishDiagnostics: vi.fn(),
+      ipc: fakeIpc(captured) as never,
+    });
+
+    await captured.sync!(null, { sessionId: "s1", path: "a.ts", content: "fn();\n", languageId: "typescript" });
+    const query = (method: string) =>
+      captured.request!(null, { sessionId: "s1", path: "a.ts", method, position: { line: 0, character: 4 } });
+
+    await query("signatureHelp");
+    await query("implementation");
+
+    expect(client.request).toHaveBeenCalledWith("textDocument/signatureHelp", expect.anything(), expect.anything());
+    expect(client.request).toHaveBeenCalledWith("textDocument/implementation", expect.anything(), expect.anything());
+    // 白名单之外的方法照旧拒绝，别为了加能力把闸门开成"什么都收"
+    await expect(query("rename")).rejects.toThrow(/不支持的语言服务请求/);
   });
 
   it("关闭文档只走已建立的绑定，不为它新建服务", async () => {

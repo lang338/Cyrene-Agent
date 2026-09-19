@@ -65,7 +65,7 @@ export function setupMonaco(): void {
 }
 
 /**
- * 开关 Monaco 内建的 TS/JS 语言智能（补全/悬停/跳转/引用四项）。
+ * 开关 Monaco 内建的 TS/JS 语言智能（补全/悬停/跳转/引用/参数提示）。
  *
  * 为什么必须能来回切：主进程里的外部语言服务读得到 tsconfig 和 node_modules，
  * 它**可用**时要关掉内建——两套同开会让补全菜单出现重复项，而内建那套没有项目上下文；
@@ -83,6 +83,8 @@ export function setBuiltinTsIntelligence(enabled: boolean): void {
     hovers: enabled,
     definitions: enabled,
     references: enabled,
+    // 参数提示也一起切：语言服务给的签名是按项目解析出来的，内建那份只认单文件
+    signatureHelp: enabled,
   };
   monaco.typescript.typescriptDefaults.setModeConfiguration(mode);
   monaco.typescript.javascriptDefaults.setModeConfiguration(mode);
