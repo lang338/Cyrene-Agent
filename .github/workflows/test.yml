@@ -76,17 +76,16 @@ jobs:
           if (-not $files) { Write-Host "No root test files found"; exit 0 }
           npx vitest run --reporter=verbose --maxWorkers=1 $files
 
-      # 工作台 / 语言智能 / 设置 / 启动链路这几块原先落在所有分段之外：本地能跑、CI 从来没执行过。
+      # 工作台 / 语言智能 / git / 设置 / 启动链路这几块原先落在所有分段之外：本地能跑、CI 从来没执行过。
       # 原因是按目录白名单切段，而 "src/main root files" 那条的 Get-ChildItem 是非递归的，
       # 子目录里的用例不会被带到。补上这一段，避免"CI 绿"掩盖住整块无人跑过的测试。
       #
-      # ⚠️ src/main/code-git 暂未纳入：它的 real git 集成用例（checkpoint-service.test.ts 的
-      # "非 git 目录首次快照自动 init…"）在 windows runner 上会 `Test timed out in 5000ms`，
-      # 清理临时目录时还报 EPERM（git 进程仍持有句柄）。这是**先于本改动就存在**的问题——
-      # 只是以前没有任何一段跑到它。先不塞进来让 CI 长期红，另开一处专门修（加超时 + 等句柄释放）。
-      - name: Test src/main/lsp + settings + application
+      # code-git 的 real git 集成用例首次进 CI 时红过（windows runner 上 5 秒默认超时不够 +
+      # 清理临时目录 EPERM，git 进程还持有句柄）。已在该用例侧修好：探针与用例显式给足超时，
+      # 清理用 rmSync 的 maxRetries/retryDelay 等句柄释放。
+      - name: Test src/main/lsp + code-git + settings + application
         if: success() || failure()
-        run: npx vitest run --reporter=verbose --maxWorkers=1 src/main/lsp src/main/settings src/main/application
+        run: npx vitest run --reporter=verbose --maxWorkers=1 src/main/lsp src/main/code-git src/main/settings src/main/application
 
       - name: Test orchestrator harness/review/sandbox + packages
         if: success() || failure()
