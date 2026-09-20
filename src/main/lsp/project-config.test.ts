@@ -73,6 +73,22 @@ describe("findProjectConfig", () => {
     expect(found.configFile).toBeNull();
     expect(found.projectRoot).toBe(workspace);
   });
+
+  it("符号链接下面还接着不存在的子目录时也不放行（realpath 失败不能退回词法路径）", () => {
+    const outside = makeTree("tsconfig.json", "src/a.ts");
+    const workspace = makeTree("src/a.ts");
+    const link = path.join(workspace, "link");
+    try {
+      fs.symlinkSync(outside, link, "junction");
+    } catch {
+      return; // 建不出链接的环境（权限受限）跳过这条
+    }
+    // 关键在 missing：整条路径 realpath 不出来，一退回词法路径就会被当成"在工作区里"，
+    // 紧接着的 statSync 却会顺着 link 读到工作区外的 tsconfig.json
+    const found = findProjectConfig(path.join(link, "missing"), workspace);
+    expect(found.configFile).toBeNull();
+    expect(found.projectRoot).toBe(workspace);
+  });
 });
 
 describe("buildRecommendedTsconfig", () => {

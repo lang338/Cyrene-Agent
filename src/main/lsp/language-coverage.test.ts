@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { LANGUAGE_BY_EXTENSION, LSP_LANGUAGES } from "../../shared/workbench-languages";
+import { LANGUAGE_BY_EXTENSION, LSP_LANGUAGES, languageIdForPath } from "../../shared/workbench-languages";
 import { BUILTIN_LSP_SERVERS, findServerCandidates } from "./server-catalog";
 
 /**
@@ -60,5 +60,22 @@ describe("语言覆盖一致性", () => {
       }
     }
     expect(duplicated).toEqual([]);
+  });
+
+  it("靠文件名识别的语言：编辑器与 catalog 必须认同一批文件名", () => {
+    const declared = LSP_LANGUAGES.flatMap((language) => language.filenames ?? []);
+    // 至少要有 Dockerfile 这一条，否则下面几行是空转（等于没测）
+    expect(declared).toContain("Dockerfile");
+
+    for (const language of LSP_LANGUAGES) {
+      for (const name of language.filenames ?? []) {
+        // 编辑器侧：文件名 → languageId（否则拿不到高亮、也不会注册 provider）
+        expect(languageIdForPath(name), name).toBe(language.languageId);
+        // 主进程侧：文件名 → 找得到服务（否则连"缺服务"的提示都不会出）
+        expect(findServerCandidates(name).length, name).toBeGreaterThan(0);
+        // 放进子目录里也一样（路径归一不能只看 basename 以外的东西）
+        expect(languageIdForPath(`sub/dir/${name}`), name).toBe(language.languageId);
+      }
+    }
   });
 });
