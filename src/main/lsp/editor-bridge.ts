@@ -208,7 +208,8 @@ export function registerWorkbenchLspBridge(deps: WorkbenchLspBridgeDeps): { disp
         ? {
             installing: deps.installer.isInstalling(managed.serverId),
             version: managed.version,
-            sizeBytes: managed.installBytes,
+            // 按钮上标的是**要下载多少**（"下载并启用（约 5.1 MB）"），不是解包后占多少磁盘
+            sizeBytes: managed.distBytes,
           }
         : null,
       configFile: lookup.configFile,
