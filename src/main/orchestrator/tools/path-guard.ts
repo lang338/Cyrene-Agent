@@ -21,23 +21,30 @@ export class WorkspaceBoundaryError extends Error {
 /**
  * 解析真实路径。目标文件可能还不存在（新建），这时对"最近的已存在祖先"取 realpath，
  * 再把剩余段拼回去——这样"工作区内指向外部的符号链接"也能被识别出来。
+ *
+ * ⚠️ 解析不出来时返回 `null`，**绝不退回词法路径**：`link/missing/...`（link 是工作区内
+ * 指向外面的符号链接）在词法上看着还在工作区里，一退回词法路径就会被判成"界内"，
+ * 而随后落盘时操作系统会顺着 link 写到工作区外面去。宁可拒绝。
+ *
+ * ⚠️ 这里**不设层数上限**：一旦"到了某层就放弃"，就等于给了"再深一层就绕过"的口子
+ * （旧实现是 64 层，超过就退回词法路径）。
  */
-export function resolveRealPath(target: string): string {
+export function resolveRealPath(target: string): string | null {
   const absolute = path.resolve(target);
   let current = absolute;
   const trailing: string[] = [];
-  for (let depth = 0; depth < 64; depth += 1) {
+  for (;;) {
     try {
       const real = fs.realpathSync(current);
       return trailing.length === 0 ? real : path.join(real, ...trailing.reverse());
     } catch {
       const parent = path.dirname(current);
-      if (parent === current) return absolute; // 一路到根都解析不出来，原样返回交给上层
+      // 一路退到根（或盘符）仍解析不出来：交给调用方按"界外"处理
+      if (parent === current) return null;
       trailing.push(path.basename(current));
       current = parent;
     }
   }
-  return absolute;
 }
 
 /** target 是否落在 root 之内（两侧都已归一化） */
@@ -59,9 +66,10 @@ export function assertWritableInsideWorkspace(target: string, workspaceRoot: str
   }
   const root = resolveRealPath(workspaceRoot);
   const resolved = resolveRealPath(target);
-  if (!isInsideWorkspace(root, resolved)) {
+  // 解析不出来（root 或 target 任一）同样按"界外"处理：证不出它在工作区内，就不能放行
+  if (!root || !resolved || !isInsideWorkspace(root, resolved)) {
     throw new WorkspaceBoundaryError(
-      `拒绝写入工作区之外的文件：${target}（工作区：${root}）。` +
+      `拒绝写入工作区之外的文件：${target}（工作区：${workspaceRoot}）。` +
         `如需改动工作区外的文件，请在工作台里手动编辑，或把该目录设为工作区。`,
     );
   }

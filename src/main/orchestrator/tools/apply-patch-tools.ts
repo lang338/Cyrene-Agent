@@ -64,7 +64,11 @@ function isWithinWorkspace(filePath: string, workspaceRoot: string): boolean {
   const normalizedRoot = path.normalize(workspaceRoot);
   const lexicalInside = resolved === normalizedRoot || resolved.startsWith(normalizedRoot + path.sep);
   if (!lexicalInside) return false;
-  return isInsideWorkspace(resolveRealPath(workspaceRoot), resolveRealPath(resolved));
+  const realRoot = resolveRealPath(workspaceRoot);
+  const realTarget = resolveRealPath(resolved);
+  // 解析不出来 = 证不出它在工作区内 → 按"界外"处理（fail-closed）
+  if (!realRoot || !realTarget) return false;
+  return isInsideWorkspace(realRoot, realTarget);
 }
 
 // ── EOL 检测 ──────────────────────────────────────────────

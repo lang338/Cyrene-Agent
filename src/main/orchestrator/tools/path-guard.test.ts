@@ -60,4 +60,23 @@ describe("写入路径的工作区边界", () => {
 
     expect(() => assertWritableInsideWorkspace(path.join(link, "escaped.ts"), root)).toThrow(WorkspaceBoundaryError);
   });
+
+  it("符号链接下面挂一长串不存在的子目录也要拒绝（解析层数不设上限、也绝不退回词法路径）", () => {
+    const root = makeRoot();
+    const victim = makeRoot();
+    const link = path.join(root, "link");
+    try {
+      fs.symlinkSync(victim, link, process.platform === "win32" ? "junction" : "dir");
+    } catch {
+      return; // 环境不支持符号链接时跳过，不伪装成通过
+    }
+
+    // 80 层：旧实现的上限是 64 层，一到上限就退回词法路径 → 这条会被误判成"界内"而放行
+    const deep = path.join(link, ...Array.from({ length: 80 }, (_, index) => `d${index}`), "escaped.ts");
+    expect(() => assertWritableInsideWorkspace(deep, root)).toThrow(WorkspaceBoundaryError);
+
+    // 同样深度但落在工作区内（不经过符号链接）仍然要放行，别把上限一去掉就误伤
+    const deepInside = path.join(root, ...Array.from({ length: 80 }, (_, index) => `d${index}`), "ok.ts");
+    expect(() => assertWritableInsideWorkspace(deepInside, root)).not.toThrow();
+  });
 });
