@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { LspClient } from "./client";
 import { BUILTIN_LSP_SERVERS } from "./server-catalog";
@@ -45,6 +46,33 @@ const available = definition
   : null;
 fs.rmSync(probeRoot, { recursive: true, force: true });
 
+// 随应用打包的单文件语言服务（`vendor/lsp-servers/<id>/`，由 npm run build:lsp-servers 生成）：
+// 这些用例专门盯"开发模式看不出来"的那类问题——单文件包旁边少了 l10n 目录时，服务会在 initialize
+// 里抛 ENOENT，现象只是静默降级、没有补全，不写这些用例根本查不出来。没构建过就整组跳过。
+function resolveBundledSingleFileServer(serverId: string) {
+  const definition = BUILTIN_LSP_SERVERS.find((item) => item.id === serverId);
+  if (!definition) return null;
+  const root = path.join(process.cwd(), "vendor", "lsp-servers");
+  let dirs: string[];
+  try {
+    dirs = fs.readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(root, entry.name));
+  } catch {
+    return null;
+  }
+  if (dirs.length === 0) return null;
+  const probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-bundled-probe-"));
+  // PATH 清空：npm 跑脚本时会把 node_modules/.bin 塞进 PATH，不清掉就会命中开发环境装的那份
+  // （devDependency），而这些用例要证的恰恰是"只有自带副本时也能跑"
+  const resolved = resolveLspServer(definition, probeRoot, { extraBinDirs: dirs, PATH: "" });
+  fs.rmSync(probeRoot, { recursive: true, force: true });
+  return resolved;
+}
+
+const bundledYaml = resolveBundledSingleFileServer("yaml-language-server");
+const bundledDockerfile = resolveBundledSingleFileServer("dockerfile-language-server");
+
 describe.skipIf(!available)("LspClient + 真实 typescript-language-server", () => {
   it("把编辑器内容同步过去后能收到诊断", async () => {
     const workspaceRoot = createTsProject();
@@ -61,14 +89,225 @@ describe.skipIf(!available)("LspClient + 真实 typescript-language-server", () 
       await client.syncFromEditor(file, "typescript", 'export const ok = 1;\nconst bad: number = "nope";\n');
 
       const deadline = Date.now() + 40_000;
-      while (seen.length === 0 && Date.now() < deadline) {
+      // 服务端在 didOpen 阶段可能先推一条**空**诊断，别据此就断定"没有诊断"——
+      // 要等的是真正带内容的那条
+      while (Date.now() < deadline && !seen.some((item) => item.messages.length > 0)) {
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
 
-      expect(seen.length, "语言服务没有推回任何诊断").toBeGreaterThan(0);
+      const withMessages = seen.find((item) => item.messages.length > 0);
+      expect(withMessages, "语言服务没有推回任何诊断").toBeDefined();
       // Windows 上 fileURLToPath 会把盘符转成小写，比较时忽略大小写
-      expect(seen[0].filePath.toLowerCase()).toBe(path.normalize(file).toLowerCase());
-      expect(seen[0].messages.join("\n")).toContain("not assignable");
+      expect(withMessages!.filePath.toLowerCase()).toBe(path.normalize(file).toLowerCase());
+      expect(withMessages!.messages.join("\n")).toContain("not assignable");
+    } finally {
+      await client.dispose();
+    }
+  }, 60_000);
+
+  it("同步编辑器内容后能拿到补全项，且包含跨文件的类型成员", async () => {
+    const workspaceRoot = createTsProject();
+    // 造一个必须跨文件才能答对的场景：接口在 types.ts，使用点在 main.ts
+    fs.writeFileSync(
+      path.join(workspaceRoot, "types.ts"),
+      "export interface Probe { alpha: number; beta: string }\n",
+      "utf8",
+    );
+    const mainFile = path.join(workspaceRoot, "main.ts");
+    const content = [
+      'import type { Probe } from "./types";',
+      'const probe: Probe = { alpha: 1, beta: "x" };',
+      "probe.",
+      "",
+    ].join("\n");
+    fs.writeFileSync(mainFile, content, "utf8");
+
+    const client = new LspClient({ server: available!, workspaceRoot });
+    try {
+      // 必须先把内容同步过去（didOpen），否则语言服务手里没有这份文档，补全必然为空
+      await client.syncFromEditor(mainFile, "typescript", content);
+      // 语言服务刚起来时项目还没索引完，补全会先返回空——就像诊断那条用例一样，
+      // 要等的是"非空且包含跨文件成员"的那一刻，而不是第一次的返回值
+      const deadline = Date.now() + 40_000;
+      let labels: string[] = [];
+      while (Date.now() < deadline) {
+        // 单次请求的超时受"轮询截止时间"约束：写死 30 秒时，可能在截止前一瞬又发起一次长请求，
+        // 把总耗时顶过用例超时（真机上就是偶发红）。超时当作"还没就绪"，继续轮询。
+        let raw: unknown;
+        try {
+          raw = await client.request<unknown>(
+            "textDocument/completion",
+            {
+              textDocument: { uri: pathToFileURL(mainFile).toString() },
+              position: { line: 2, character: "probe.".length },
+            },
+            Math.max(1_000, deadline - Date.now()),
+          );
+        } catch {
+          break;
+        }
+        const container = raw as { items?: Array<{ label: string }> } | Array<{ label: string }> | null;
+        const items = Array.isArray(container) ? container : (container?.items ?? []);
+        labels = items.map((item) => item.label);
+        if (labels.includes("alpha") && labels.includes("beta")) break;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      expect(labels, "语言服务没有返回任何补全项").not.toHaveLength(0);
+      // 关键：跨文件的类型成员必须出现——这正是内置 TS 服务做不到、所以要换外部服务的原因
+      expect(labels).toContain("alpha");
+      expect(labels).toContain("beta");
+    } finally {
+      await client.dispose();
+    }
+    // 预算 = 建项目/起服务 + 40 秒轮询 + 收尾；留够余量，避免把偶发慢启动算成失败
+  }, 75_000);
+
+  /**
+   * 真机踩过的坑：工作台有两条同步路径（提问前一次、防抖一次），落后那条曾把新内容覆盖成旧的，
+   * 于是补全按旧内容算——表现是"刚敲的那行拿不到成员补全，而悬停却是对的"。
+   * 这条用例盯住的就是"迟到的旧同步不能污染补全结果"。
+   */
+  it("迟到的旧同步不能把内容拉回旧版（否则补全按旧内容算）", async () => {
+    const workspaceRoot = createTsProject();
+    fs.writeFileSync(
+      path.join(workspaceRoot, "types.ts"),
+      "export interface Probe { alpha: number; beta: string }\n",
+      "utf8",
+    );
+    const mainFile = path.join(workspaceRoot, "main.ts");
+    const withDot = ['import type { Probe } from "./types";', 'const probe: Probe = { alpha: 1, beta: "x" };', "probe.", ""].join("\n");
+    const withoutDot = ['import type { Probe } from "./types";', 'const probe: Probe = { alpha: 1, beta: "x" };', "probe", ""].join("\n");
+    fs.writeFileSync(mainFile, withDot, "utf8");
+
+    const client = new LspClient({ server: available!, workspaceRoot });
+    const ask = async (timeoutMs: number): Promise<string[]> => {
+      const raw = await client.request<unknown>(
+        "textDocument/completion",
+        { textDocument: { uri: pathToFileURL(mainFile).toString() }, position: { line: 2, character: "probe.".length } },
+        timeoutMs,
+      );
+      const container = raw as { items?: Array<{ label: string }> } | Array<{ label: string }> | null;
+      const items = Array.isArray(container) ? container : (container?.items ?? []);
+      return items.map((item) => item.label);
+    };
+    try {
+      // 外层预算（用例超时 90 秒）：留给建项目与 dispose 各一段余量，
+      // 这样"轮询 + 最后那次确认请求"两次长等待加起来也不会顶过用例超时
+      const overallDeadline = Date.now() + 75_000;
+      // 修订号 2 = 最新内容；先等索引建好（首次补全可能为空）
+      await client.syncFromEditor(mainFile, "typescript", withDot, 2);
+      const deadline = Date.now() + 40_000;
+      let ready = false;
+      while (Date.now() < deadline) {
+        // 单次请求的超时受"外层截止时间"约束，别用固定的 30 秒把测试预算吃光
+        try {
+          if ((await ask(Math.max(1_000, deadline - Date.now()))).includes("alpha")) {
+            ready = true;
+            break;
+          }
+        } catch {
+          // 超时当作"还没就绪"，继续轮询
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      expect(ready, "语言服务始终没有给出跨文件成员").toBe(true);
+
+      // 迟到的旧同步（修订号更小）：必须被丢弃，补全结果不受影响
+      await client.syncFromEditor(mainFile, "typescript", withoutDot, 1);
+      // 这次确认请求同样受外层预算约束（至少留 5 秒，别因为轮询吃满预算就变成"必然超时"）
+      expect(await ask(Math.max(5_000, overallDeadline - Date.now()))).toContain("alpha");
+    } finally {
+      await client.dispose();
+    }
+  }, 90_000);
+});
+
+describe.skipIf(!bundledYaml)("LspClient + 应用自带的 YAML 单文件包", () => {
+  it("能起来并按 schema 给出补全（单文件包缺 l10n 时 initialize 会直接失败）", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-yaml-"));
+    roots.push(workspaceRoot);
+    // 用 schema 驱动补全：语言服务要先读到这份 schema，才可能报出 properties 里的键
+    fs.writeFileSync(
+      path.join(workspaceRoot, "schema.json"),
+      JSON.stringify({
+        type: "object",
+        properties: { name: { type: "string" }, services: { type: "object" } },
+      }),
+      "utf8",
+    );
+    const file = path.join(workspaceRoot, "sample.yaml");
+    const content = "# yaml-language-server: $schema=./schema.json\nname: cyrene\n";
+    fs.writeFileSync(file, content, "utf8");
+
+    const client = new LspClient({ server: bundledYaml!, workspaceRoot });
+    try {
+      await client.syncFromEditor(file, "yaml", content);
+      const deadline = Date.now() + 30_000;
+      let labels: string[] = [];
+      while (Date.now() < deadline) {
+        let raw: unknown;
+        try {
+          raw = await client.request<unknown>(
+            "textDocument/completion",
+            {
+              textDocument: { uri: pathToFileURL(file).toString() },
+              // 末尾空行（第 3 行）：在根上补键，schema 里已出现的 name 会被服务端过滤掉
+              position: { line: 2, character: 0 },
+            },
+            Math.max(1_000, deadline - Date.now()),
+          );
+        } catch {
+          break;
+        }
+        const container = raw as { items?: Array<{ label: string }> } | Array<{ label: string }> | null;
+        const items = Array.isArray(container) ? container : (container?.items ?? []);
+        labels = items.map((item) => item.label);
+        if (labels.includes("services")) break;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      expect(labels, "自带的 YAML 语言服务没有返回任何补全项").toContain("services");
+    } finally {
+      await client.dispose();
+    }
+  }, 60_000);
+});
+
+describe.skipIf(!bundledDockerfile)("LspClient + 应用自带的 Dockerfile 单文件包", () => {
+  it("能起来并给出 Dockerfile 指令补全", async () => {
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-docker-"));
+    roots.push(workspaceRoot);
+    const file = path.join(workspaceRoot, "Dockerfile");
+    const content = ["FROM node:20-alpine", "RUN npm install", "COPY . .", ""].join("\n");
+    fs.writeFileSync(file, content, "utf8");
+
+    const client = new LspClient({ server: bundledDockerfile!, workspaceRoot });
+    try {
+      await client.syncFromEditor(file, "dockerfile", content);
+      const deadline = Date.now() + 30_000;
+      let labels: string[] = [];
+      while (Date.now() < deadline) {
+        let raw: unknown;
+        try {
+          raw = await client.request<unknown>(
+            "textDocument/completion",
+            {
+              textDocument: { uri: pathToFileURL(file).toString() },
+              // 最后的空行：在这一行上补全应该给出一串 Dockerfile 指令
+              position: { line: 3, character: 0 },
+            },
+            Math.max(1_000, deadline - Date.now()),
+          );
+        } catch {
+          break;
+        }
+        const container = raw as { items?: Array<{ label: string }> } | Array<{ label: string }> | null;
+        const items = Array.isArray(container) ? container : (container?.items ?? []);
+        labels = items.map((item) => item.label);
+        if (labels.some((label) => /^(FROM|RUN|COPY|ADD|ENV|CMD|WORKDIR)\b/.test(label))) break;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      expect(labels, "自带的 Dockerfile 语言服务没有返回任何补全项").not.toHaveLength(0);
+      expect(labels.join("\n")).toMatch(/^(FROM|RUN|COPY|ADD|ENV|CMD|WORKDIR)/m);
     } finally {
       await client.dispose();
     }

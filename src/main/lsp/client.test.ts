@@ -6,7 +6,7 @@ import { PassThrough } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { createMessageConnection, type MessageConnection } from "vscode-jsonrpc/node";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LspClient, resolveLaunchTarget, type LspChildProcess } from "./client";
+import { LspClient, resolveLaunchTarget, withBundledL10nDir, type LspChildProcess } from "./client";
 import type { ResolvedLspServer } from "./server-discovery";
 
 const roots: string[] = [];
@@ -29,7 +29,8 @@ class FakeLspProcess extends EventEmitter implements LspChildProcess {
     this.server = server;
     server.onRequest("initialize", (params: { capabilities?: { textDocument?: Record<string, unknown> } }) => {
       this.initializeParams = params;
-      return { capabilities: { hoverProvider: true } };
+      // 与真实服务端一致：声明增量同步（缺失等价于 None，那样就不该发 didChange 了）
+      return { capabilities: { hoverProvider: true, textDocumentSync: { change: 2 } } };
     });
     server.onNotification("initialized", (params: unknown) => this.initialized.push(params));
     server.onNotification("textDocument/didOpen", (params: unknown) => this.opened.push(params));
@@ -101,6 +102,24 @@ describe("LspClient", () => {
     expect(child.initializeParams?.capabilities?.textDocument?.publishDiagnostics).toBeDefined();
   });
 
+  it("丢弃迟到的旧同步：修订号更小的那次不能覆盖新内容", async () => {
+    const { root, file } = createWorkspace();
+    const child = new FakeLspProcess();
+    const client = new LspClient({ server: resolvedServer(), workspaceRoot: root, spawnImpl: () => child });
+
+    // 编辑器与防抖同步两条路都会送内容，一次落后的同步若被照单全收，
+    // 语言服务就会按旧内容算补全（真机上表现为"刚敲那行拿不到成员补全"）。
+    await client.syncFromEditor(file, "typescript", "export const value = 2;\n", 7);
+    await client.syncFromEditor(file, "typescript", "export const value = 1;\n", 3); // 迟到的旧同步：应被丢弃
+    await client.syncFromEditor(file, "typescript", "export const value = 3;\n", 9); // 更新的：应发出去
+    await client.dispose();
+
+    expect(child.opened).toHaveLength(1);
+    // 两次变更只放行了一次，且放行的是修订号更大的那次
+    expect(child.changed).toHaveLength(1);
+    expect(JSON.stringify(child.changed[0])).toContain("value = 3");
+  });
+
   it("rejects a cancelled request without disposing the shared server", async () => {
     const { root } = createWorkspace();
     const child = new FakeLspProcess();
@@ -142,6 +161,19 @@ describe("LspClient", () => {
     await client.closeFromEditor(file);
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(child.closed).toHaveLength(1);
+  });
+
+  it("并发调用 initialize 只会拉起一个语言服务进程", async () => {
+    const { root } = createWorkspace();
+    const child = new FakeLspProcess();
+    const spawnImpl = vi.fn(() => child);
+    const client = new LspClient({ server: resolvedServer(), workspaceRoot: root, spawnImpl });
+
+    // 昔涟的 lsp 工具与工作台编辑器共用同一个 client，两边可能同时进 initialize
+    await Promise.all([client.initialize(), client.initialize(), client.initialize()]);
+
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    await client.dispose();
   });
 });
 
@@ -187,13 +219,38 @@ describe("resolveLaunchTarget", () => {
     });
   });
 
-  it("keeps the original command when the shim has no node entry", () => {
+  it("throws a readable error when the shim has no node entry", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-shim-bad-"));
     roots.push(root);
     const shim = path.join(root, "broken.cmd");
     fs.writeFileSync(shim, "@ECHO off\r\nrem nothing useful\r\n", "utf8");
 
-    expect(resolveLaunchTarget(shim, [], "win32", "C:\\node\\node.exe")).toEqual({ command: shim, args: [] });
+    // 解析不出入口还硬 spawn，Windows 上只会得到 EINVAL；不如在这里说清楚
+    expect(() => resolveLaunchTarget(shim, [], "win32", "C:\\node\\node.exe")).toThrow(/无法解析语言服务的启动壳/);
+  });
+
+  it("打包后把 asar 内的入口换成 asar.unpacked 的真实路径", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-asar-"));
+    roots.push(root);
+    const relative = path.join("node_modules", "typescript-language-server", "lib", "cli.mjs");
+    const packedEntry = path.join(root, "app.asar", relative);
+    const unpackedEntry = path.join(root, "app.asar.unpacked", relative);
+    // 模拟 Electron 的 asar 感知 fs：两个路径都"读得到"（真实文件在 unpacked）
+    for (const target of [packedEntry, unpackedEntry]) {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, "// entry\n", "utf8");
+    }
+    const shim = path.join(root, "app.asar", "node_modules", ".bin", "typescript-language-server.cmd");
+    fs.mkdirSync(path.dirname(shim), { recursive: true });
+    fs.writeFileSync(
+      shim,
+      "@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\..\\typescript-language-server\\lib\\cli.mjs\" %*\r\n",
+      "utf8",
+    );
+
+    const target = resolveLaunchTarget(shim, ["--stdio"], "win32", "C:\\app\\electron.exe", true);
+    // 子进程（node）不认识 asar 虚拟路径，必须给真实磁盘路径
+    expect(target.args[0]).toBe(unpackedEntry);
   });
 
   it("adds the Node-mode env var only when running under Electron", () => {
@@ -219,5 +276,153 @@ describe("resolveLaunchTarget", () => {
       args: [entry, "--stdio"],
       env: { ELECTRON_RUN_AS_NODE: "1" },
     });
+  });
+
+  it("应用内安装下来的托管副本是裸 JS 文件：所有平台都用 execPath + 纯 Node 模式跑", () => {
+    const entry = "C:\\Users\\me\\AppData\\Roaming\\cyrene\\lsp-servers\\python-pyright\\1.1.414\\langserver.index.js";
+    // Windows 上直接 spawn 一个 .js 会走文件关联，不能这么干
+    expect(resolveLaunchTarget(entry, ["--stdio"], "win32", "C:\\app\\electron.exe", true)).toEqual({
+      command: "C:\\app\\electron.exe",
+      args: [entry, "--stdio"],
+      env: { ELECTRON_RUN_AS_NODE: "1" },
+    });
+    // 非 Windows 同理（不能靠 shebang）
+    expect(resolveLaunchTarget("/home/me/.config/cyrene/lsp-servers/python-pyright/langserver.index.js", ["--stdio"], "linux", "/usr/bin/node", false)).toEqual({
+      command: "/usr/bin/node",
+      args: ["/home/me/.config/cyrene/lsp-servers/python-pyright/langserver.index.js", "--stdio"],
+    });
+  });
+
+  it("壳指向无扩展名的 node 脚本也要认（npm 的 bin 允许这么写）", () => {
+    // yaml-language-server 的 bin 就是 `bin/yaml-language-server`（没有扩展名）。
+    // 只认 .js/.mjs/.cjs 的话，用户按提示全局装了也会卡在"解析不出启动壳"。
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-shim-noext-"));
+    roots.push(root);
+    const entry = path.join(root, "node_modules", "yaml-language-server", "bin", "yaml-language-server");
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    fs.writeFileSync(entry, "#!/usr/bin/env node\nrequire('../out/server/src/server.js');\n", "utf8");
+    const shim = path.join(root, "node_modules", ".bin", "yaml-language-server.cmd");
+    fs.mkdirSync(path.dirname(shim), { recursive: true });
+    fs.writeFileSync(
+      shim,
+      "@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\..\\yaml-language-server\\bin\\yaml-language-server\" %*\r\n",
+      "utf8",
+    );
+
+    expect(resolveLaunchTarget(shim, ["--stdio"], "win32", "C:\\app\\electron.exe", true)).toEqual({
+      command: "C:\\app\\electron.exe",
+      args: [entry, "--stdio"],
+      env: { ELECTRON_RUN_AS_NODE: "1" },
+    });
+  });
+
+  it("壳指向的不是脚本（无 shebang）时仍按解析失败处理，别把二进制塞给 node", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-shim-binary-"));
+    roots.push(root);
+    const entry = path.join(root, "node_modules", "fake-lsp", "bin", "fake-lsp");
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    fs.writeFileSync(entry, "MZ\u0000\u0000binary", "utf8");
+    const shim = path.join(root, "node_modules", ".bin", "fake-lsp.cmd");
+    fs.mkdirSync(path.dirname(shim), { recursive: true });
+    fs.writeFileSync(shim, "@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\..\\fake-lsp\\bin\\fake-lsp\" %*\r\n", "utf8");
+
+    expect(() => resolveLaunchTarget(shim, [], "win32", "C:\\node\\node.exe")).toThrow(/无法解析语言服务的启动壳/);
+  });
+
+  it("壳指向非 node 的 shebang 脚本（如 /bin/sh）也要拒绝：cmd-shim 对任何解释器都生成壳", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-shim-sh-"));
+    roots.push(root);
+    const entry = path.join(root, "node_modules", "shell-lsp", "bin", "shell-lsp");
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    fs.writeFileSync(entry, "#!/bin/sh\nexec something --stdio\n", "utf8");
+    const shim = path.join(root, "node_modules", ".bin", "shell-lsp.cmd");
+    fs.mkdirSync(path.dirname(shim), { recursive: true });
+    fs.writeFileSync(shim, "@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\..\\shell-lsp\\bin\\shell-lsp\" %*\r\n", "utf8");
+
+    // 拿 node 去跑一个 shell 脚本只会报一堆看不懂的语法错误，不如在这里说清楚
+    expect(() => resolveLaunchTarget(shim, ["--stdio"], "win32", "C:\\node\\node.exe")).toThrow(/无法解析语言服务的启动壳/);
+  });
+
+  it("shebang 里只是提到 node 不算 node 脚本（#!/bin/sh # node 仍是 shell）", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-shim-mention-"));
+    roots.push(root);
+    const entry = path.join(root, "node_modules", "shell-lsp", "bin", "shell-lsp");
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    // 只在注释里出现 node 的 shell 脚本：按"整行里有 node"判就会误判成 node 脚本
+    fs.writeFileSync(entry, "#!/bin/sh # node\nexec something --stdio\n", "utf8");
+    const shim = path.join(root, "node_modules", ".bin", "shell-lsp.cmd");
+    fs.mkdirSync(path.dirname(shim), { recursive: true });
+    fs.writeFileSync(shim, "@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\..\\shell-lsp\\bin\\shell-lsp\" %*\r\n", "utf8");
+
+    expect(() => resolveLaunchTarget(shim, ["--stdio"], "win32", "C:\\node\\node.exe")).toThrow(/无法解析语言服务的启动壳/);
+  });
+
+  it("node 的三种常见 shebang 都要认：绝对路径 / env / env -S", () => {
+    const forms = [
+      "#!/usr/bin/node\n",
+      "#!/usr/bin/env node\n",
+      "#!/usr/bin/env -S node --experimental-strip-types\n",
+    ];
+    for (const [index, form] of forms.entries()) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `cyrene-lsp-shim-node${index}-`));
+      roots.push(root);
+      const entry = path.join(root, "node_modules", "fake-lsp", "bin", "fake-lsp");
+      fs.mkdirSync(path.dirname(entry), { recursive: true });
+      fs.writeFileSync(entry, form, "utf8");
+      const shim = path.join(root, "node_modules", ".bin", "fake-lsp.cmd");
+      fs.mkdirSync(path.dirname(shim), { recursive: true });
+      fs.writeFileSync(shim, "@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\..\\fake-lsp\\bin\\fake-lsp\" %*\r\n", "utf8");
+
+      expect(resolveLaunchTarget(shim, ["--stdio"], "win32", "C:\\app\\electron.exe", true), form.trim()).toEqual({
+        command: "C:\\app\\electron.exe",
+        args: [entry, "--stdio"],
+        env: { ELECTRON_RUN_AS_NODE: "1" },
+      });
+    }
+  });
+});
+
+describe("withBundledL10nDir", () => {
+  /** 造一个"单文件包"目录：入口 + 可选的 l10n */
+  function makeEntry(withL10n: boolean, asarPacked = false): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-lsp-l10n-"));
+    roots.push(root);
+    const dir = asarPacked
+      ? path.join(root, "app.asar", "vendor", "lsp-servers", "yaml-language-server")
+      : path.join(root, "vendor", "lsp-servers", "yaml-language-server");
+    fs.mkdirSync(dir, { recursive: true });
+    const entry = path.join(dir, "yaml-language-server.cjs");
+    fs.writeFileSync(entry, "// entry\n", "utf8");
+    if (withL10n) {
+      fs.mkdirSync(path.join(dir, "l10n"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "l10n", "bundle.l10n.json"), "{}\n", "utf8");
+    }
+    return entry;
+  }
+
+  it("入口旁边有 l10n 目录就把绝对路径补进 initializationOptions", () => {
+    const entry = makeEntry(true);
+    // 不传 l10nPath 时服务会在 initialize 里抛 ENOENT，整台服务起不来
+    expect(withBundledL10nDir(undefined, entry)).toEqual({
+      l10nPath: path.join(path.dirname(entry), "l10n"),
+    });
+    // 服务端已有的其它初始化选项不能被冲掉
+    expect(withBundledL10nDir({ yaml: { schemas: {} } }, entry)).toEqual({
+      yaml: { schemas: {} },
+      l10nPath: path.join(path.dirname(entry), "l10n"),
+    });
+  });
+
+  it("没有 l10n 目录（用户自己装的那份）就原样返回，不干涉它的初始化选项", () => {
+    const entry = makeEntry(false);
+    expect(withBundledL10nDir(undefined, entry)).toBeUndefined();
+    const existing = { disableOrganizeImports: true };
+    expect(withBundledL10nDir(existing, entry)).toBe(existing);
+  });
+
+  it("打包后给的是 asar.unpacked 真实路径：node 子进程读不了 asar 虚拟路径", () => {
+    const entry = makeEntry(true, true);
+    const options = withBundledL10nDir(undefined, entry) as { l10nPath: string };
+    expect(options.l10nPath).toContain(`${path.sep}app.asar.unpacked${path.sep}`);
   });
 });

@@ -16,6 +16,12 @@
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+  /* 必须显式 no-drag：本层是 portal 到 body 的全屏覆盖物，盖在主界面 .cy-page
+     （app-region: drag）之上；Windows 下拖拽命中位图不按 z-index 遮挡自动挖洞，
+     不声明的话，左文件树落在下层侧栏拖拽列上的点击会被系统当成拖窗口吞掉。
+     顶栏需要拖窗口，自己再声明 drag。 */
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
   border: var(--cy-wb-line-w) solid var(--cy-wb-line-strong);
   border-radius: var(--cy-window-radius, 24px);
   overflow: hidden;
@@ -509,6 +515,145 @@
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
+}
+
+/* ── LSP 降级可见化状态条（琥珀色 = 语义能力受限；绿色 = 配置已写入） ── */
+
+.cy-workbench__lsp {
+  flex: none;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #d8b26a;
+  background: #322b1e;
+  border-bottom: var(--cy-wb-line-w) solid var(--cy-wb-line);
+}
+
+.cy-workbench__lsp--ok {
+  color: #9ecb8c;
+  background: #24301f;
+}
+
+.cy-workbench__lsp-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+
+/* 状态结论（加粗）+ 原因说明同处一行常驻，窄了允许换行，不需要用户点开 */
+.cy-workbench__lsp-text {
+  min-width: 0;
+  line-height: 1.5;
+}
+
+.cy-workbench__lsp-text strong {
+  margin-right: 8px;
+  font-weight: 600;
+  color: #e6c27c;
+}
+
+.cy-workbench__lsp-actions {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 通用小按钮（次按钮：描边；--primary：VS Code 蓝实底） */
+.cy-workbench__lsp-btn {
+  padding: 3px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e6e8ec;
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cy-workbench__lsp-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.cy-workbench__lsp-btn--primary {
+  border-color: #0e639c;
+  background: #0e639c;
+  color: #ffffff;
+}
+
+.cy-workbench__lsp-btn--primary:hover {
+  border-color: #1177bb;
+  background: #1177bb;
+}
+
+.cy-workbench__lsp-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* × 关闭钮：方形图标钮，hover 才显底，平时不抢视觉 */
+.cy-workbench__lsp-close {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: rgba(216, 178, 106, 0.75);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.cy-workbench__lsp-close:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
+/* 安装指引 / 下载进度：单独一行（多半是一条命令或一段进度），常驻可见，不走"点开才看得到" */
+.cy-workbench__lsp-detail {
+  margin-top: 6px;
+  color: #c4a878;
+  line-height: 1.5;
+}
+
+/* 失败原因用暖红：跟"待处理"的琥珀色区分开，用户一眼知道这次没成 */
+.cy-workbench__lsp-detail.is-error {
+  color: #e08f7a;
+}
+
+/* 推荐配置预览：深色代码卡片 + 右对齐操作按钮 */
+.cy-workbench__lsp-preview {
+  margin-top: 8px;
+}
+
+.cy-workbench__lsp-preview-hint {
+  color: #c4a878;
+  line-height: 1.5;
+}
+
+.cy-workbench__lsp-preview-code {
+  margin: 6px 0 8px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: #1b1d21;
+  color: #c8ccd3;
+  font-family: ui-monospace, "Cascadia Code", Consolas, "Courier New", monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.cy-workbench__lsp-preview-actions {
+  display: flex;
+  gap: 6px;
 }
 
 /* Monaco 容器撑满剩余空间 */

@@ -14,7 +14,10 @@ import { ChatMessageList, type ChatMessageItem } from "../chat/components/ChatMe
 import { MessageFileLinkContext, type MessageFileOpenTarget } from "../chat/components/message-file-link";
 import { ComposerInteractionPanel, type ComposerInteractionCallbacks } from "../chat/components/ComposerSlot";
 import type { ComposerInteraction } from "../chat/components/run-presentation";
-import { monacoLanguageFor, setupMonaco } from "./monaco-setup";
+import { setupMonaco } from "./monaco-setup";
+import { languageIdForPath } from "../../../../shared/workbench-languages";
+import { registerLspProviders, setLspProviderSession } from "./lsp-providers";
+import { WorkbenchLspStatus } from "./lsp-status";
 import { buildActiveFileContext, type ActiveFileSelection } from "./active-file-context";
 import { resizerKeyDelta, useResizableColumns, type ColumnSide } from "./use-resizable-columns";
 import { workbenchApi, WorkspaceTree } from "./WorkspaceTree";
@@ -65,6 +68,50 @@ interface BufferEntry {
 type LoadOutcome = "ok" | "stale" | "failed";
 
 /**
+ * 待跳转目标：切文件会重建编辑器实例，所以要先把"落到哪"记下，等目标文件载入后再应用。
+ * 只给 line 时按"滚到那一行行首"处理（消息里的 `path:42` 链接）；给了 column 时按范围选中
+ * （语言智能的跳到定义/引用给的就是一段范围）。
+ */
+interface PendingReveal {
+  path: string;
+  line: number;
+  column?: number;
+  endLine?: number;
+  endColumn?: number;
+}
+
+/**
+ * Monaco 的 Uri → 工作台文件键。
+ * 两种形式都要认，因为语言智能会给出两类位置：
+ * - `file:///<相对路径>`：工作区内的文件，键就是这条相对路径；
+ * - `file:///d:/…`：工作区外的文件（依赖、标准库存根），键是盘符绝对路径——工作台能打开全盘文件；
+ * 盘符统一成大写，避免同一个文件按 "d:/…" 和 "D:/…" 开成两个页签。
+ *
+ * 返回 null 表示"不归工作台管"（非 file 协议、空路径），调用方应交回 Monaco 自己处理。
+ */
+function workbenchPathFromUri(uri: monacoNs.Uri): string | null {
+  if (uri.scheme !== "file") return null;
+  // Monaco 的 Uri.path 已经解码过（中文、空格都是原样），不需要再 decodeURIComponent
+  const stripped = (uri.path ?? "").replace(/^\/+/, "");
+  if (!stripped) return null;
+  return stripped.replace(/^([a-zA-Z]):\//, (_match, drive: string) => `${drive.toUpperCase()}:/`);
+}
+
+/** Monaco 给的"落在目标文件的哪个位置" → 待跳转目标 */
+function toPendingReveal(path: string, target: monacoNs.IRange | monacoNs.IPosition): PendingReveal {
+  if ("startLineNumber" in target) {
+    return {
+      path,
+      line: target.startLineNumber,
+      column: target.startColumn,
+      endLine: target.endLineNumber,
+      endColumn: target.endColumn,
+    };
+  }
+  return { path, line: target.lineNumber, column: target.column };
+}
+
+/**
  * 编辑器选项。
  * 补全已打开：语言智能属于"方便编码"的一部分，不自我设限。
  * 诊断渲染也开着，但来源不是 Monaco 自带的 TS 服务——那套在 monaco-setup 里已关掉
@@ -80,6 +127,11 @@ const EDITOR_OPTIONS = {
   quickSuggestions: true,
   suggestOnTriggerCharacters: true,
   parameterHints: { enabled: true },
+  // 跳到实现一律"直接跳"，不弹 peek 列表：peek 的预览要求 Monaco 自己能解析出目标文件的
+  // model，而工作台只为打开过的文件建 model（peek 会显示"内容不可用"）。走 goto 才会经过
+  // 我们注册的 editor opener，把目标文件开成页签并选中符号——和 F12 同一条路。
+  // 命中多处时跳到第一处；要看全部用 Shift+F12（查引用）。定义（F12）保持既有行为不动。
+  gotoLocation: { multipleImplementations: "goto" as const },
   renderValidationDecorations: "on" as const,
   occurrencesHighlight: "off" as const,
   selectionHighlight: false,
@@ -216,8 +268,9 @@ export function WorkbenchPage({
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
   // 从消息里的路径点进来且带行号时，先把"待跳转"记下：切换文件会重建编辑器实例，
-  // 得等目标文件真的载入后再落到编辑器上（见下面那个 effect）
-  const [pendingReveal, setPendingReveal] = useState<{ path: string; line: number } | null>(null);
+  // 得等目标文件真的载入后再落到编辑器上（见下面那个 effect）。
+  // 语言智能的"跳到定义/引用"也复用这里——那时给的是一段范围（起止行列），不只是行号。
+  const [pendingReveal, setPendingReveal] = useState<PendingReveal | null>(null);
   const [buffers, setBuffers] = useState<Record<string, BufferEntry>>({});
   const [treeRefresh, setTreeRefresh] = useState(0);
   const [timelineRefresh, setTimelineRefresh] = useState(0);
@@ -250,6 +303,9 @@ export function WorkbenchPage({
 
   useEffect(() => {
     setupMonaco();
+    // 补全/悬停/跳转/引用交给外部语言服务（见 ./lsp-providers.ts）。
+    // 拿不到服务时它会返回空并把 Monaco 内建的那套重新打开兜底，用户不会反而更差
+    registerLspProviders();
   }, []);
 
   // 快照落盘广播（回退保底 / 每 N 轮的保底 / 手动按钮）→ 时间线自动跟上，
@@ -274,6 +330,8 @@ export function WorkbenchPage({
     setBuffers({});
     setFollowBlockedPath(null);
     setError(null);
+    // 诊断是按"工作区相对路径"存的：换了根，新工作区里的同名文件会顶着上一份诊断，必须一起清掉
+    setLspDiagnostics({});
     // 根换了，左栏必须重列，否则还停在上一个工作区的目录快照上
     setTreeRefresh((value) => value + 1);
   }, [workspaceRoot]);
@@ -466,6 +524,37 @@ export function WorkbenchPage({
     if (target.line !== undefined) setPendingReveal({ path: openedPath, line: target.line });
   }, [openByPath, t]);
 
+  /**
+   * 语言智能的"跳到定义 / 跳到引用"要打开**另一个文件**，而 Monaco 在 standalone 模式下
+   * 遇到"目标文件的 model 不存在"就直接放弃（见 node_modules 里 standaloneCodeEditorService
+   * 的 doOpenEditor：findModel 只认当前 model，拿不到就 return null）——表现是 F12 按下毫无反应，
+   * 既不报错也不跳转。所以这里注册一个 opener，把"打开资源"接回工作台自己的开文件通道
+   * （与路径栏、消息链接完全同一条：存在性校验、错误提示都一致）。
+   *
+   * 工作区内的相对路径与工作区外的盘符路径都接管（后者打开后是中栏顶部有"工作区外"提示的那种）；
+   * 非 file 协议返回 false，交回 Monaco 自己处理。
+   */
+  useEffect(() => {
+    const disposable = monacoNs.editor.registerEditorOpener({
+      openCodeEditor(_source, resource, selectionOrPosition) {
+        const targetPath = workbenchPathFromUri(resource);
+        if (!targetPath) return false;
+        setMiddleTab("code");
+        void (async () => {
+          const openedPath = await openByPath(targetPath);
+          if (!openedPath) {
+            // 视线在编辑器里，失败原因得写在顶栏，不然用户不知道刚才那下为什么没反应
+            setError(t("workbench.fileLinkFailed", { path: targetPath }));
+            return;
+          }
+          if (selectionOrPosition) setPendingReveal(toPendingReveal(openedPath, selectionOrPosition));
+        })();
+        return true;
+      },
+    });
+    return () => disposable.dispose();
+  }, [openByPath, t]);
+
   // 带行号的链接（`src/a.ts:42`）：文件载入完成后滚到那一行。
   // 不写在 Editor 的 onMount 里，是因为"这个文件本来就开着"时编辑器不会重新挂载。
   // 时序上这里是安全的：切文件时 Editor 因 key 变化重建，子组件的 effect 先于本组件的 effect 执行，
@@ -477,9 +566,22 @@ export function WorkbenchPage({
     if (!entry || entry.loading) return;
     const editor = editorRef.current;
     if (!editor || !editor.getModel()) return;
-    const line = Math.max(1, pendingReveal.line);
-    editor.revealLineInCenter(line);
-    editor.setPosition({ lineNumber: line, column: 1 });
+    const startLine = Math.max(1, pendingReveal.line);
+    if (pendingReveal.column === undefined) {
+      // 只有行号（消息里的 `path:42`）：滚到行首就行
+      editor.revealLineInCenter(startLine);
+      editor.setPosition({ lineNumber: startLine, column: 1 });
+    } else {
+      // 有范围（跳到定义/引用）：选中符号本身，跟 Monaco 原生的跳转观感一致
+      const startColumn = Math.max(1, pendingReveal.column);
+      const endLine = Math.max(startLine, pendingReveal.endLine ?? startLine);
+      const endColumn = Math.max(endLine === startLine ? startColumn : 1, pendingReveal.endColumn ?? startColumn);
+      editor.setSelection({ startLineNumber: startLine, startColumn, endLineNumber: endLine, endColumn });
+      editor.revealRangeInCenter(
+        { startLineNumber: startLine, startColumn, endLineNumber: endLine, endColumn },
+        monacoNs.editor.ScrollType.Immediate,
+      );
+    }
     setPendingReveal(null);
   }, [pendingReveal, activePath, buffers]);
 
@@ -497,6 +599,13 @@ export function WorkbenchPage({
     });
   }, [sessionId]);
 
+  // Monaco 的 provider 活在 React 之外，靠这个模块级变量知道"替哪个会话发请求"。
+  // 卸载时必须清掉：否则工作台关掉后编辑器还拿着旧会话去问，语言服务白跑一趟。
+  useEffect(() => {
+    setLspProviderSession(sessionId);
+    return () => setLspProviderSession(null);
+  }, [sessionId]);
+
   // marker 挂在 model 上，所以要拿到 model 才画；换文件、诊断更新都要重画一遍
   useEffect(() => {
     const model = editorRef.current?.getModel();
@@ -512,10 +621,23 @@ export function WorkbenchPage({
     if (!entry || entry.loading || entry.error || entry.binary || entry.truncated) return;
     const api = workbenchApi();
     if (!api?.syncLspDocument) return;
-    const timer = window.setTimeout(() => {
-      void api.syncLspDocument(sessionId, activePath, entry.content, monacoLanguageFor(activePath)).catch(() => undefined);
-    }, 400);
-    return () => window.clearTimeout(timer);
+    const sync = () => {
+      // 只同步编辑器模型的**实时内容**：它带模型修订号，主进程据此丢弃迟到的旧同步。
+      // 模型与当前文件对不上时（正在切文件等瞬时状态）**跳过这一拍**，不要拿 buffers 镜像顶替——
+      // 那样送出去的内容没有修订号，落后了也拦不住，反而会把服务端的新内容覆盖成旧的。
+      const model = editorRef.current?.getModel();
+      const modelPath = (model?.uri.path ?? "").replace(/^\/+/, "");
+      if (!model || modelPath !== activePath) return;
+      void api
+        .syncLspDocument(sessionId, activePath, model.getValue(), languageIdForPath(activePath), model.getVersionId())
+        .catch(() => undefined);
+    };
+    const timer = window.setTimeout(sync, 400);
+    return () => {
+      // 别把这次改动一起丢掉：切走文件时语言服务手里还是旧内容，诊断会跟眼前对不上
+      window.clearTimeout(timer);
+      sync();
+    };
   }, [activePath, buffers, sessionId]);
 
   /**
@@ -974,6 +1096,23 @@ export function WorkbenchPage({
                 </div>
               )}
 
+              {/* 语言智能状态：只在"语义能力变弱"时出现（缺语言服务 / 缺项目配置），
+                  说明原因并给一键生成配置的动作；一切正常时不占位 */}
+              <WorkbenchLspStatus
+                sessionId={sessionId}
+                activePath={activePath}
+                external={Boolean(activePath && isExternalPath(activePath))}
+                fileReady={Boolean(
+                  activePath &&
+                    buffers[activePath] &&
+                    !buffers[activePath].loading &&
+                    !buffers[activePath].error &&
+                    !buffers[activePath].binary &&
+                    !buffers[activePath].truncated,
+                )}
+                language={activePath ? languageIdForPath(activePath) : null}
+              />
+
               {/* 昔涟刚改了这个文件，但缓冲里有未保存改动：内容以你的版本为准，只告知 */}
               {followBlockedPath && followBlockedPath === activePath && activeEntry?.dirty && (
                 <div className="cy-workbench__editor-notice is-blocked">
@@ -1020,7 +1159,7 @@ export function WorkbenchPage({
                       // 缺了它 URI 会是 inmemory://model/N（无扩展名）→ 语义补全一律返回空，
                       // 只剩主线程算的"同文件词汇"建议（表现为输 doc 弹 description 而不是 document）。
                       path={`file:///${activePath}`}
-                      language={monacoLanguageFor(activePath)}
+                      language={languageIdForPath(activePath)}
                       theme="vs-dark"
                       value={activeEntry.content}
                       options={{ ...EDITOR_OPTIONS, readOnly: activeEntry.binary || activeEntry.truncated }}

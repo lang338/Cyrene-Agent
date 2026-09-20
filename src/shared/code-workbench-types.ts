@@ -140,3 +140,148 @@ export interface WorkbenchLspDiagnostic {
   source?: string;
   code?: string | number;
 }
+
+/**
+ * "这个语言服务能不能在工作台里一键装"。
+ *
+ * 只有零前置运行时的语言服务才支持（清单见 main/lsp/managed-servers.ts）：
+ * 装了要能在本机跑起来，所以拖 JDK/.NET/Ruby 的那些一律不给这个入口，只提示去 PATH 里装。
+ */
+export interface WorkbenchLspInstallState {
+  /** 正在下载/解包：界面显示进度与取消，而不是再给一个按钮 */
+  installing: boolean;
+  /** 要装的版本（展示用） */
+  version: string;
+  /** 安装后占用空间（字节），按钮上换算成"约 xx MB" */
+  sizeBytes: number;
+}
+
+/**
+ * 编辑器问"这个文件的语言服务环境"。
+ *
+ * 用来把"为什么补全很弱"说明白（而不是让用户以为功能做得很烂），
+ * 并给"一键生成配置 / 一键安装语言服务"一个落点。四种结果：这类文件本来就不在覆盖范围内
+ * （不提示）/ 有对应语言服务但本机没装（能托管就报下载按钮，否则给安装指引）/
+ * 有服务但缺项目配置（精度受限）/ 一切正常。
+ */
+export interface WorkbenchLspEnv {
+  /** 这个工作区能不能拿到语言服务；拿不到就只能退化成文本级建议 */
+  hasService: boolean;
+  /**
+   * 这个文件类型对应的语言服务 id（catalog 里的 id，如 python-pyright）；
+   * null = 这类文件本来就没有语言服务（.md/.css 等），界面上不提示任何东西。
+   */
+  serverId: string | null;
+  /** 该服务在 catalog 里的安装指引（中文，作为本地化文案缺失时的兜底） */
+  installHint: string | null;
+  /** 能应用内一键装时给界面的参数；null = 只能用户自己装到 PATH */
+  install: WorkbenchLspInstallState | null;
+  /** 往上找到的项目配置（tsconfig.json / jsconfig.json）；没有则为 null */
+  configFile: string | null;
+  /** 建议把配置写在哪（绝对路径，始终落在工作区内） */
+  projectRoot: string;
+  /** 写配置用的工作区相对路径（复用 workbench:file-write） */
+  configRelativePath: string;
+  /** 推荐配置的内容（主进程生成，渲染端只负责显示与确认后写入） */
+  recommendedConfig: string;
+}
+
+/** 安装进度推送（主进程 → 渲染端）：下载按字节算百分比，解包只报阶段 */
+export interface WorkbenchLspInstallProgress {
+  serverId: string;
+  phase: "download" | "extract";
+  receivedBytes: number;
+  /** 0 = 服务端没给 Content-Length，界面按"不确定进度"展示 */
+  totalBytes: number;
+}
+
+/**
+ * 一次安装请求的结果。
+ * 取消不算失败（用户自己的选择，界面不该弹错），所以单列一支而不是复用 error。
+ */
+export type WorkbenchLspInstallResult =
+  | { ok: true; serverId: string; version: string }
+  | { ok: false; cancelled: true }
+  | { ok: false; cancelled: false; error: string };
+
+// ── 语言服务（LSP）请求：编辑器主动提问 ────────────────────
+//
+// 诊断是"服务端推"，这里是"编辑器问"，方向相反，所以要带上问谁、问哪里。
+// 服务端返回的是各种花样的 LSP 原始结构，主进程负责拍平成下面这几个简单形状，
+// 渲染端因此不必依赖整个 LSP 类型包。
+
+export type WorkbenchLspRequestMethod = "completion" | "hover" | "definition" | "implementation" | "references" | "signatureHelp";
+
+export interface WorkbenchLspRequestInput {
+  sessionId: string;
+  /** 工作区相对路径；工作区外的文件不属于任何项目，不参与语言服务 */
+  path: string;
+  method: WorkbenchLspRequestMethod;
+  /** LSP 位置（行列都从 0 开始）——渲染端把 Monaco 的 1-based 减 1 后传进来 */
+  position: LspPosition;
+  /** 查引用时是否把声明本身也算进去（默认算） */
+  includeDeclaration?: boolean;
+}
+
+/** 补全项：只保留渲染 Monaco 补全菜单需要的字段 */
+export interface WorkbenchLspCompletionItem {
+  label: string;
+  /** LSP CompletionItemKind（1=Text…25=TypeParameter），渲染端映射成 Monaco 图标 */
+  kind?: number;
+  detail?: string;
+  /** 已拍平成纯文本的文档说明 */
+  documentation?: string;
+  insertText?: string;
+  sortText?: string;
+  filterText?: string;
+  /** 补全要替换的范围（LSP 0 起编码）；缺省表示按当前词的默认范围 */
+  textEditRange?: LspRange;
+}
+
+export interface WorkbenchLspHover {
+  /** 已拍平成多行纯文本：渲染端不需要懂 markdown 结构 */
+  contents: string;
+  range?: LspRange;
+}
+
+export interface WorkbenchLspLocation {
+  /** 工作区相对路径；定义落在工作区外（依赖里）时为 null */
+  path: string | null;
+  /** 工作区外时的绝对路径，用来告诉用户"这个定义在依赖里" */
+  externalPath?: string;
+  range: LspRange;
+}
+
+export interface WorkbenchLspRequestResult {
+  method: WorkbenchLspRequestMethod;
+  completions?: WorkbenchLspCompletionItem[];
+  hover?: WorkbenchLspHover | null;
+  locations?: WorkbenchLspLocation[];
+  signatureHelp?: WorkbenchLspSignatureHelp | null;
+}
+
+/**
+ * 一个参数：标签可以是字符串，也可以是相对签名文本的 [起, 止] 偏移。
+ * 两种写法 LSP 都允许（偏移省得把签名拆开），Monaco 也认，所以原样透传不再拆解。
+ */
+export interface WorkbenchLspSignatureParameter {
+  label: string | [number, number];
+}
+
+export interface WorkbenchLspSignature {
+  /** 完整签名文本，如 `writeFile(sessionId: string, path: string): Promise<void>` */
+  label: string;
+  /** 已拍平成纯文本的文档说明 */
+  documentation?: string;
+  parameters?: WorkbenchLspSignatureParameter[];
+}
+
+/**
+ * 参数提示：光标停在括号里时告诉用户"这个函数要什么参数、现在填的是第几个"。
+ * 两个下标都保证是**有效下标**（不是可选值）：渲染端不用再判空/夹取。
+ */
+export interface WorkbenchLspSignatureHelp {
+  signatures: WorkbenchLspSignature[];
+  activeSignature: number;
+  activeParameter: number;
+}

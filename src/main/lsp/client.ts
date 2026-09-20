@@ -31,6 +31,13 @@ interface OpenDocument {
   content: string;
   /** 内容来源：editor = 工作台编辑器同步的（可能含未保存改动）；disk = AI 工具按磁盘读的 */
   source: "editor" | "disk";
+  /**
+   * 编辑器侧的"内容修订号"（Monaco 的 model 版本号）。
+   * 用来丢弃**迟到的旧同步**：编辑器和防抖同步两条路都会送内容，
+   * 一次落后的同步若被照单全收，会把较新的内容覆盖成旧的——表现就是
+   * "补全用的内容比你眼前看到的旧"（悬停正常、刚敲那行补全不对）。
+   */
+  revision?: number;
 }
 
 function defaultSpawn(
@@ -57,6 +64,9 @@ export interface LspLaunchTarget {
  * 从 npm 在 Windows 生成的命令壳（`.cmd` / `.bat`）里解析出真正的 JS 入口。
  * 壳的收尾一行很稳定，形如：
  *   ... & "%_prog%"  "%dp0%\..\typescript-language-server\lib\cli.mjs" %*
+ * ⚠️ 末尾那个路径**不一定带扩展名**：npm 的 bin 字段允许指向无扩展名的脚本
+ * （yaml-language-server 就是 `bin/yaml-language-server`），而壳同样是用 node 去跑它，
+ * 所以这里不能只认 .js/.mjs/.cjs，否则用户按提示全局装了也会卡在"解析不出启动壳"。
  */
 function readNpmShimEntry(shimPath: string): string | null {
   let content: string;
@@ -65,11 +75,64 @@ function readNpmShimEntry(shimPath: string): string | null {
   } catch {
     return null;
   }
-  // 捕获组要连 `..\` 一起带上，交给 path.resolve 去归一
-  const match = content.match(/"%dp0%\\([^"]+?\.(?:mjs|cjs|js))"/i);
-  if (!match) return null;
-  const resolved = path.resolve(path.dirname(shimPath), match[1].replace(/\\/g, path.sep));
-  return fs.existsSync(resolved) ? resolved : null;
+  // 捕获组要连 `..\` 一起带上，交给 path.resolve 去归一。
+  // ⚠️ 必须逐个候选看：`%dp0%` 在壳里不止收尾那一处（前面还有 `IF EXIST "%dp0%\node.exe"` 这种探测），
+  // 只取第一个匹配就会拿到 node.exe，永远解析不出真正的入口。
+  for (const match of content.matchAll(/"%dp0%\\([^"]+)"/gi)) {
+    const resolved = path.resolve(path.dirname(shimPath), match[1].replace(/\\/g, path.sep));
+    if (isNodeScript(resolved)) return resolved;
+  }
+  return null;
+}
+
+/**
+ * 这个文件能不能直接交给 node 跑。
+ * 带 .js/.mjs/.cjs 的直接认；无扩展名的必须是**以 node 为解释器的 shebang 脚本**——
+ * 那是 npm 允许的 bin 形态，壳里的 `_prog` 也正是 node。
+ * ⚠️ 不能只判"有没有 `#!`"：npm 的 cmd-shim 对**任何**解释器都会生成 `.cmd` 壳，
+ * `#!/bin/sh` 之类同样会出现在 `.bin` 里，塞给 node 只会得到更难懂的报错。
+ */
+function isNodeScript(target: string): boolean {
+  if (!fs.existsSync(target)) return false;
+  if (/\.(?:mjs|cjs|js)$/i.test(target)) return true;
+  try {
+    const [shebang = ""] = fs.readFileSync(target, "utf8").split(/\r?\n/, 1);
+    // ⚠️ 不能写成"整行里出现过 node"（`\bnode\b`）：`#!/bin/sh # node` 这种只是把 node 写在
+    // 注释里的 shell 脚本会被误判，然后被交给 node 去跑。只认**解释器位置**上的 node：
+    // 直接给路径（`#!/usr/bin/node`），或经 env 转一手（`#!/usr/bin/env node`、`env -S node`）。
+    return /^#!\s*(?:(?:\S*\/)?env(?:\s+-S)?\s+)?(?:\S*\/)?node(?:\.exe)?(?:\s|$)/i.test(shebang);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 打包后（asar）的路径要换回真实磁盘路径。
+ * 语言服务是交给 **node 子进程**跑的，而子进程不认识 asar 虚拟路径——
+ * 与 srt-win 踩过的是同一个坑（见 sandbox-exec 的 toUnpackedSrtWinPath）。
+ * 开发模式下路径里没有 app.asar，这里是 no-op。
+ */
+function toRealDiskPath(target: string): string {
+  const marker = `${path.sep}app.asar${path.sep}`;
+  return target.includes(marker) ? target.replace(marker, `${path.sep}app.asar.unpacked${path.sep}`) : target;
+}
+
+/**
+ * 随应用打包的语言服务是 esbuild 打出来的**单文件包**，上游却按 `__dirname` 相对路径
+ * 去找自己的翻译文件（yaml-language-server 是 `../../../l10n`）——打完包这个相对位置
+ * 就废了，它会在 `initialize` 里直接抛 ENOENT，整台服务一次都起不来（现象是静默降级）。
+ *
+ * 上游为此留了正规接口 `initializationOptions.l10nPath`，所以这里在入口旁边发现
+ * `l10n/bundle.l10n.json` 就把绝对路径补给它；没有这个目录就原样返回，外部服务不受影响。
+ */
+export function withBundledL10nDir(existing: unknown, executablePath: string): unknown {
+  const l10nDir = path.join(path.dirname(executablePath), "l10n");
+  if (!fs.existsSync(path.join(l10nDir, "bundle.l10n.json"))) return existing;
+  const base = existing && typeof existing === "object" && !Array.isArray(existing)
+    ? (existing as Record<string, unknown>)
+    : {};
+  // 服务是 node 子进程，读不了 asar 虚拟路径，这里同样要换回真实磁盘路径
+  return { ...base, l10nPath: toRealDiskPath(l10nDir) };
 }
 
 /**
@@ -80,6 +143,10 @@ function readNpmShimEntry(shimPath: string): string | null {
  *    拿它跑脚本会被当成"启动一个新应用"，脚本根本不执行（实测无输出）。
  * 所以这里把壳里的 JS 入口解析出来直接用 execPath 跑，并按需补上纯 Node 模式的环境变量。
  * 非 Windows、或 `.exe` 这类本就可直接执行的目标，一律原样返回。
+ *
+ * 另外：应用内安装下来的托管副本本来就是**一个 JS 文件**（没有 .cmd 壳，见 server-installer），
+ * 这类目标在所有平台上都要用"execPath + 纯 Node 模式"来跑——直接 exec 一个 .js 在 Windows 上
+ * 会走文件关联、在 Linux 上要靠 shebang，都不可靠。
  */
 export function resolveLaunchTarget(
   executablePath: string,
@@ -88,14 +155,25 @@ export function resolveLaunchTarget(
   execPath: string = process.execPath,
   isElectron = Boolean(process.versions?.electron),
 ): LspLaunchTarget {
+  if (/\.(mjs|cjs|js)$/i.test(executablePath)) {
+    return {
+      command: execPath,
+      args: [toRealDiskPath(executablePath), ...args],
+      ...(isElectron ? { env: { ELECTRON_RUN_AS_NODE: "1" } } : {}),
+    };
+  }
   if (platform !== "win32" || !/\.(cmd|bat)$/i.test(executablePath)) {
     return { command: executablePath, args: [...args] };
   }
   const entry = readNpmShimEntry(executablePath);
-  if (!entry) return { command: executablePath, args: [...args] };
+  if (!entry) {
+    // 解析不出 JS 入口还硬 spawn，Windows 上必然 EINVAL，报错比这里更难懂；
+    // 宁可在这里说清楚"这个壳不是 npm 生成的标准格式"
+    throw new Error(`无法解析语言服务的启动壳：${executablePath}（不是 npm 生成的 .cmd/.bat 格式）`);
+  }
   return {
     command: execPath,
-    args: [entry, ...args],
+    args: [toRealDiskPath(entry), ...args],
     ...(isElectron ? { env: { ELECTRON_RUN_AS_NODE: "1" } } : {}),
   };
 }
@@ -127,6 +205,53 @@ function abortError(): Error {
   return error;
 }
 
+/**
+ * 服务端声明的文档同步方式：`textDocumentSync` 可能是数字，也可能是 `{ change }` 对象。
+ *
+ * 三种必须分开对待：**None(0) / Full(1) / Incremental(2)**。按 LSP 规范，
+ * 字段**缺失等价于 None**，而不是"默认增量"——对声明 None 的服务端发 didChange，
+ * 它可能直接拒绝或忽略，编辑器里的改动就永远同步不过去（补全/跳转一直停在旧内容上）。
+ */
+type DocumentSyncMode = "none" | "full" | "incremental";
+
+function resolveDocumentSyncMode(initializeResult: unknown): DocumentSyncMode {
+  const raw = (initializeResult as { capabilities?: { textDocumentSync?: unknown } } | null)?.capabilities
+    ?.textDocumentSync;
+  const value = typeof raw === "number" ? raw : (raw as { change?: unknown } | undefined)?.change;
+  if (value === 2) return "incremental";
+  if (value === 1) return "full";
+  return "none";
+}
+
+/** 文档末尾位置（LSP 的行、列都从 0 起算） */
+function documentEnd(content: string): { line: number; character: number } {
+  const lines = content.split(/\r?\n/);
+  const lastLine = lines.length - 1;
+  return { line: lastLine, character: lines[lastLine].length };
+}
+
+/**
+ * 组装 didChange 的变更项。
+ *
+ * 为什么不能无脑发全文：服务端声明**增量**同步时，LSP 规范要求 change 必须带 `range`。
+ * 少了 range 它既不报错也不拒绝，但会把这次变更处理错——现象很隐蔽：**打开那一刻的内容
+ * 它一直看得到（悬停、跳转、引用都正常），之后敲进去的字它完全看不到**，于是补全退化成
+ * "作用域 + 全局"那一大坨（表现为"在刚敲的那行上没有任何成员补全"）。
+ * 我们每次都发全量文本，所以 range 直接取"旧文档的整个范围"。反过来，服务端声明 Full/None 时
+ * 必须只发全文、不带 range。
+ */
+function buildDocumentChange(
+  incremental: boolean,
+  previousContent: string,
+  nextContent: string,
+): { range?: { start: { line: number; character: number }; end: { line: number; character: number } }; text: string } {
+  if (!incremental) return { text: nextContent };
+  return {
+    range: { start: { line: 0, character: 0 }, end: documentEnd(previousContent) },
+    text: nextContent,
+  };
+}
+
 /** 一个工作区内单个外部 LSP 服务进程的 JSON-RPC 客户端。 */
 export class LspClient {
   private readonly spawnImpl: NonNullable<LspClientOptions["spawnImpl"]>;
@@ -137,15 +262,36 @@ export class LspClient {
   private readonly diagnosticsListeners = new Set<(filePath: string, diagnostics: Diagnostic[]) => void>();
   private initialized = false;
   private disposed = false;
+  /** 进行中的初始化：把并发调用收敛成一次 spawn，见 initialize */
+  private initPromise: Promise<void> | null = null;
+  /** 服务端声明的同步方式；决定 didChange 发不发、要不要带 range（见 buildDocumentChange） */
+  private syncMode: DocumentSyncMode = "none";
 
   constructor(private readonly options: LspClientOptions) {
     this.spawnImpl = options.spawnImpl ?? defaultSpawn;
   }
 
+  /**
+   * 初始化（幂等，且**并发安全**）。
+   * AI 的 lsp 工具与工作台编辑器共用同一个 client，两边可能同时进这里；
+   * 光靠 `initialized` 标志挡不住——它要等服务端的 initialize 响应回来才置位，
+   * 中间那段窗口两个调用都过得去，结果 spawn 出两个语言服务进程、前一个没人收尸。
+   * 所以用一条"进行中的 Promise"兜住，后来者复用它。
+   */
   async initialize(): Promise<void> {
     if (this.initialized) return;
     if (this.disposed) throw new Error("LSP client has been disposed");
+    if (!this.initPromise) {
+      this.initPromise = this.doInitialize().catch((cause: unknown) => {
+        // 失败要允许下次重试：否则一次启动抖动就把这个 client 永久废掉了
+        this.initPromise = null;
+        throw cause;
+      });
+    }
+    return this.initPromise;
+  }
 
+  private async doInitialize(): Promise<void> {
     const launch = resolveLaunchTarget(this.options.server.executablePath, this.options.server.args);
     let child: LspChildProcess;
     try {
@@ -195,7 +341,7 @@ export class LspClient {
     this.child = child;
     this.connection = connection;
     const rootUri = pathToFileURL(this.options.workspaceRoot).toString();
-    await withTimeout(
+    const initializeResult = await withTimeout(
       connection.sendRequest("initialize", {
         processId: process.pid,
         rootUri,
@@ -211,11 +357,16 @@ export class LspClient {
             hover: { contentFormat: ["markdown", "plaintext"] },
           },
         },
-        initializationOptions: this.options.server.definition.initializationOptions,
+        initializationOptions: withBundledL10nDir(
+          this.options.server.definition.initializationOptions,
+          this.options.server.executablePath,
+        ),
       }),
       INITIALIZE_TIMEOUT_MS,
       "LSP_INITIALIZE_TIMEOUT",
     );
+    // 记下服务端要的同步方式：增量就得给带 range 的变更，否则后续改动它一律看不到
+    this.syncMode = resolveDocumentSyncMode(initializeResult);
     connection.sendNotification("initialized", {});
     this.initialized = true;
   }
@@ -237,37 +388,58 @@ export class LspClient {
       return;
     }
     if (existing.content === content) return;
+    const previous = existing.content;
     const version = existing.version + 1;
     this.documents.set(uri, { uri, version, content, source: "disk" });
-    connection.sendNotification("textDocument/didChange", {
-      textDocument: { uri, version },
-      contentChanges: [{ text: content }],
-    });
+    // 服务端声明 None（或没声明）时不该发 didChange——发了它可能拒绝或忽略
+    if (this.syncMode !== "none") {
+      connection.sendNotification("textDocument/didChange", {
+        textDocument: { uri, version },
+        contentChanges: [buildDocumentChange(this.syncMode === "incremental", previous, content)],
+      });
+    }
   }
 
   /**
    * 工作台编辑器同步文档内容。与 touchFile 的差别是内容由调用方给出、不读磁盘：
    * 编辑器里的内容可能还没保存，语言服务必须看到眼前这一份，否则诊断和用户看到的对不上。
+   *
+   * `revision` 是编辑器侧的修订号（Monaco 的 model 版本号）。编辑器和"防抖同步"两条路都会
+   * 送内容，**迟到的旧同步必须丢弃**：否则它会把新内容覆盖成旧的，语言服务据此算出来的补全
+   * 就比你眼前看到的落后一步（现象：悬停正常，刚敲那行的补全不给成员）。
    */
-  async syncFromEditor(filePath: string, languageId: string, content: string): Promise<void> {
+  async syncFromEditor(filePath: string, languageId: string, content: string, revision?: number): Promise<void> {
     await this.initialize();
     const connection = this.requireConnection();
     const uri = pathToFileURL(path.resolve(filePath)).toString();
     const existing = this.documents.get(uri);
+    if (existing && revision !== undefined && existing.revision !== undefined && revision < existing.revision) {
+      // 迟到的旧同步：丢掉。它会把语言服务手里的新内容覆盖成旧的，
+      // 于是补全按旧内容算——现象是"刚敲的那行拿不到成员补全，而悬停却是对的"
+      return;
+    }
     if (!existing) {
-      this.documents.set(uri, { uri, version: 1, content, source: "editor" });
+      this.documents.set(uri, { uri, version: 1, content, source: "editor", revision });
       connection.sendNotification("textDocument/didOpen", {
         textDocument: { uri, languageId, version: 1, text: content },
       });
       return;
     }
-    if (existing.source === "editor" && existing.content === content) return;
+    if (existing.source === "editor" && existing.content === content) {
+      // 内容没变也要把修订号推进，否则下一次真改动会被误判成"迟到的旧同步"
+      if (revision !== undefined) existing.revision = revision;
+      return;
+    }
+    const previous = existing.content;
     const version = existing.version + 1;
-    this.documents.set(uri, { uri, version, content, source: "editor" });
+    this.documents.set(uri, { uri, version, content, source: "editor", revision });
+    // 服务端声明 None（或没声明）时不该发 didChange
+    if (this.syncMode === "none") return;
     connection.sendNotification("textDocument/didChange", {
       textDocument: { uri, version },
-      // 全量同步：编辑器一次改动可能牵连多处，算增量既不划算也不稳
-      contentChanges: [{ text: content }],
+      // 每次发全量文本，但变更形状要跟服务端协商的同步方式一致（见 buildDocumentChange）：
+      // 增量服务端必须收到带 range 的变更，否则这次改动它看不到
+      contentChanges: [buildDocumentChange(this.syncMode === "incremental", previous, content)],
     });
   }
 
@@ -328,11 +500,16 @@ export class LspClient {
     } catch {
       // 进程已退出时仍应继续释放本地资源。
     } finally {
+      // exit 通知是异步写出的：紧接着 dispose 连接会把还没落地的帧打断，
+      // jsonrpc 会在已销毁的流上继续写，抛出**未处理**的 ERR_STREAM_DESTROYED
+      // （测试里表现为 vitest 报 unhandled error 而失败）。给一个极短窗口让它写完。
+      await new Promise((resolve) => setTimeout(resolve, 50));
       this.connection?.dispose();
       this.child?.kill();
       this.connection = null;
       this.child = null;
       this.initialized = false;
+      this.initPromise = null;
     }
   }
 

@@ -7,6 +7,7 @@
  */
 
 import { app, BrowserWindow, dialog, screen } from "electron";
+import * as fs from "fs";
 import * as path from "path";
 import { autoUpdater } from "electron-updater";
 
@@ -59,6 +60,7 @@ import type { PluginManager } from "../../plugins/manager";
 import { setLive2dWindowSender } from "../orchestrator/tools/built-in-tools";
 import { registerAllTools } from "../orchestrator/tools/registry/tool-registration";
 import { LspManager } from "../lsp/manager";
+import { createLspServerInstaller } from "../lsp/server-installer";
 import { resolveLspServer } from "../lsp/server-discovery";
 import { initSandbox } from "../orchestrator/sandbox/sandbox-exec";
 import {
@@ -148,6 +150,21 @@ function broadcastToAuxWindows(channel: string, payload: unknown): void {
     if (win && !win.isDestroyed()) {
       win.webContents.send(channel, payload);
     }
+  }
+}
+
+/**
+ * 列出随应用打包的语言服务目录（`vendor/lsp-servers/<服务 id>/`，由
+ * `scripts/build/lsp-servers.mjs` 生成）。开发环境没跑过那个脚本时目录不存在，
+ * 返回空数组即可——少一档搜索目录而已，程序照常按 PATH 找用户自己装的。
+ */
+function listBundledSingleFileLspDirs(root: string): string[] {
+  try {
+    return fs.readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+      .map((entry) => path.join(root, entry.name));
+  } catch {
+    return [];
   }
 }
 
@@ -355,13 +372,42 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         configureChangeLedger(changeLedger);
 
         // LSP：管理器预创建；具体语言服务进程按需启动。
-        // 查找目录里额外加一档"应用自带"（app 根下的 node_modules/.bin）：
-        // 用户不必自己安装语言服务，开箱就有诊断可用；项目里自己装了的话仍优先用项目那份。
+        // 查找目录里额外加两档"应用自带"：
+        // ① node_modules/.bin —— 用户不必自己安装语言服务，开箱就有诊断可用；
+        // ② vendor/lsp-servers/<id>/ —— npm 上那些**不带自己依赖**的服务（yaml 等），
+        //    直接进 dependencies 会让安装包多出十几 MB 和两千多个文件，所以打成单文件随包发
+        //    （见 scripts/build/lsp-servers.mjs）。排在前面的原因：它是我们实测过的版本，
+        //    且开发环境装的那份是 devDependency，开发/打包两条路径的行为才一致。
+        // 项目里自己装了的话仍优先用项目那份（工作区 node_modules/.bin 在最前）。
         const bundledLspBinDir = path.join(app.getAppPath(), "node_modules", ".bin");
+        const bundledSingleFileLspDirs = listBundledSingleFileLspDirs(
+          path.join(app.getAppPath(), "vendor", "lsp-servers"),
+        );
+        // 应用内安装的语言服务：下载物放 userData（不能进安装目录——那里通常只读，
+        // 而且升级应用时不该把用户下载的东西一起清掉）。进度广播给所有窗口，工作台据此画进度条。
+        const lspInstaller = createLspServerInstaller({
+          rootDir: path.join(app.getPath("userData"), "lsp-servers"),
+          onProgress: (progress) => {
+            for (const win of BrowserWindow.getAllWindows()) {
+              if (!win.isDestroyed()) win.webContents.send(IPC.WORKBENCH_LSP_INSTALL_PROGRESS, progress);
+            }
+          },
+        });
         const lsp = new LspManager({
           getServerOverrides: () => loadGeneralSettings().lspServerOverrides,
-          resolveServer: (definition, workspaceRoot) =>
-            resolveLspServer(definition, workspaceRoot, { extraBinDirs: [bundledLspBinDir] }),
+          resolveServer: (definition, workspaceRoot) => {
+            // 托管副本优先：用户是在工作台里点了"下载并启用"才装上的，
+            // 那就该用它——否则会出现"我明明装了，它却跑去用别的"这种说不清的困惑。
+            const managedEntry = lspInstaller.installedEntry(definition.id);
+            if (managedEntry) {
+              const pkg = lspInstaller.getPackage(definition.id);
+              const args = pkg?.args ?? definition.commands[0]?.args ?? [];
+              return { definition, executablePath: managedEntry, args: [...args] };
+            }
+            return resolveLspServer(definition, workspaceRoot, {
+              extraBinDirs: [...bundledSingleFileLspDirs, bundledLspBinDir],
+            });
+          },
         });
 
         // 截图：原生 helper IPC、全局热键。预热在 background 阶段执行。
@@ -397,6 +443,7 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           changeLedger,
           workspaceFiles,
           lsp,
+          lspInstaller,
           screenshot,
           music,
           update,
@@ -547,6 +594,7 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         registerWorkbenchLspBridge({
           ipc,
           lsp: services.lsp,
+          installer: services.lspInstaller,
           getWorkspaceRoot: (sessionId) => chatsStore.getSession(sessionId)?.workspaceBinding?.workspaceRoot,
           publishDiagnostics: (payload) => {
             for (const win of BrowserWindow.getAllWindows()) {

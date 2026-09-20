@@ -85,6 +85,10 @@ resources/mingit/
 .cache/music-component/
 dist/components/
 
+# 随应用分发的语言服务单文件包（esbuild 现打，见 scripts/build/lsp-servers.mjs；
+# 打包/开发前由 npm run build:lsp-servers 生成，不进 git）
+vendor/lsp-servers/
+
 # === 显式产品资源白名单 ===
 # 上方 lines 4-23 + 64-86 忽略了 dist/ 下的 Vite 构建产物；
 # 以下路径默认被跟踪（无显式 ignore 匹配），是「有意豁免」的产品资源：

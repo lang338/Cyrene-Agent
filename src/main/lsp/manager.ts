@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { languageIdForPath } from "../../shared/workbench-languages";
 import { LspClient } from "./client";
 import { BUILTIN_LSP_SERVERS, findServerCandidates } from "./server-catalog";
 import { resolveLspServer, type ResolvedLspServer } from "./server-discovery";
@@ -20,9 +21,12 @@ export interface LspClientLike {
  * LspClientLike 是给 AI 工具链用的最小契约，让它背上编辑器的方法会逼着所有替身一起实现。
  */
 export interface LspEditorSupport {
-  syncFromEditor(filePath: string, languageId: string, content: string): Promise<void>;
+  /** revision = 编辑器模型的版本号，用于丢弃迟到的旧同步（可选） */
+  syncFromEditor(filePath: string, languageId: string, content: string, revision?: number): Promise<void>;
   closeFromEditor(filePath: string): Promise<void>;
   onDiagnostics(listener: (filePath: string, diagnostics: Diagnostic[]) => void): () => void;
+  /** 编辑器主动提问（补全/悬停/跳转/查引用）：返回语言服务的原始结果，形状由调用方拍平 */
+  request<T = unknown>(method: string, params: unknown, timeoutMs?: number): Promise<T>;
 }
 
 function asEditorSupport(client: LspClientLike): LspEditorSupport | null {
@@ -30,7 +34,8 @@ function asEditorSupport(client: LspClientLike): LspEditorSupport | null {
   const supported =
     typeof candidate.syncFromEditor === "function" &&
     typeof candidate.closeFromEditor === "function" &&
-    typeof candidate.onDiagnostics === "function";
+    typeof candidate.onDiagnostics === "function" &&
+    typeof candidate.request === "function";
   return supported ? (candidate as LspEditorSupport) : null;
 }
 
@@ -44,17 +49,6 @@ export interface LspManagerOptions {
 export interface LspExecutionContext {
   resolvedWorkspaceRoot?: string;
   signal?: AbortSignal;
-}
-
-function languageIdFor(filePath: string): string {
-  const extension = path.extname(filePath).toLowerCase();
-  if ([".ts", ".tsx"].includes(extension)) return "typescript";
-  if ([".js", ".jsx", ".mjs", ".cjs"].includes(extension)) return "javascript";
-  if (extension === ".py") return "python";
-  if (extension === ".go") return "go";
-  if (extension === ".rs") return "rust";
-  if ([".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"].includes(extension)) return "cpp";
-  return extension.slice(1) || "plaintext";
 }
 
 function isInside(root: string, target: string): boolean {
@@ -92,7 +86,7 @@ export class LspManager {
     const { client, serverId } = await this.clientFor(workspaceRoot, filePath);
 
     if (filePath && query.operation !== "workspaceSymbol") {
-      await client.touchFile(filePath, languageIdFor(filePath));
+      await client.touchFile(filePath, languageIdForPath(filePath));
     }
 
     let value: unknown;
@@ -134,6 +128,17 @@ export class LspManager {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * 这个文件"理论上"有没有对应的语言服务——不看本机装没装。
+   * 编辑器据此判断该不该出提示条、以及提示用户装什么：有定义但拿不到服务 = 提示安装；
+   * 没定义（.md、.css 这类）就什么都不说，因为那本来就不在语义补全的覆盖范围内。
+   * 走的是和真正启动服务同一份候选列表，所以不会出现"提示装了某服务但服务其实用不上"。
+   */
+  describeServerFor(filePath: string): { serverId: string; installHint: string } | null {
+    const definition = findServerCandidates(filePath, this.getServerOverrides())[0];
+    return definition ? { serverId: definition.id, installHint: definition.installHint } : null;
   }
 
   async releaseWorkspace(workspaceRoot: string): Promise<void> {
