@@ -30,6 +30,13 @@
   color-scheme: dark;
 }
 
+/* 容器只是进入时的焦点落点（tabindex="-1"）：整屏描一圈焦点环没有意义，
+   焦点环留给里面的控件。键盘打开工作台时浏览器会按 focus-visible 给它描边。 */
+.cy-workbench:focus,
+.cy-workbench:focus-visible {
+  outline: none;
+}
+
 .cy-workbench--column-resizing,
 .cy-workbench--column-resizing * {
   cursor: col-resize !important;

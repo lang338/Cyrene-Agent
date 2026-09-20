@@ -211,6 +211,20 @@ function cleanIpcError(cause: unknown): string {
 const INCLUDE_ACTIVE_FILE_KEY = "cy-workbench-include-active-file";
 
 /**
+ * 对话框内"可聚焦元素"的判定（Tab 环绕用）。
+ * 只列真正能进键盘顺序的：tabindex="-1" 的容器与 [disabled] 的控件不算。
+ */
+const FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "textarea:not([disabled])",
+  "select:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+  '[contenteditable="true"]',
+].join(",");
+
+/**
  * 窗口控制桥：preload 挂在 window.chat（与 ChatPage 同款）。
  * 仓库没有全局 Window.chat 声明，按既有惯例（useComposerAttachments 等）显式 cast。
  */
@@ -290,15 +304,54 @@ export function WorkbenchPage({
   const [pathError, setPathError] = useState<string | null>(null);
 
   const editorRef = useRef<monacoNs.editor.IStandaloneCodeEditor | null>(null);
-  // 键盘收起那一侧后，分隔条会被卸载，焦点得交给这两个边缘箭头
+  // 全屏模态的容器：进入时焦点落点、也是 inert 包围盒的对照物
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  // 键盘收起/展开后的焦点接力：收起时交给边缘箭头，用箭头展开后交还给分隔条。
+  // 两侧元素都是条件渲染的，所以不能在按键/点击的当场 focus——那一刻另一头还没挂载
+  // （收起时箭头不存在）或已被卸载（展开时分隔条不存在），focus 打在 null 上，焦点掉回
+  // 页面，再按 Tab 就从中栏"代码"页签重新开始。这里只记下待交接的目标，
+  // 由下面的 layout effect 在 DOM 就绪后执行。
   const revealLeftRef = useRef<HTMLButtonElement | null>(null);
   const revealRightRef = useRef<HTMLButtonElement | null>(null);
+  const resizerLeftRef = useRef<HTMLDivElement | null>(null);
+  const resizerRightRef = useRef<HTMLDivElement | null>(null);
+  const pendingFocusRef = useRef<{ target: "reveal" | "resizer"; side: ColumnSide } | null>(null);
   // buffers 的最新镜像：openFile/saveFile 的异步回调里读取，避免依赖闭包里的旧状态
   const buffersRef = useRef<Record<string, BufferEntry>>({});
   // 只在提交后的布局阶段同步 ref：渲染体保持纯净（StrictMode/并发渲染安全）
   useLayoutEffect(() => {
     buffersRef.current = buffers;
   }, [buffers]);
+
+  // 收起/展开提交后再交接焦点；目标还没挂载（比如收起失败、箭头没渲染）就留着等下一次
+  useLayoutEffect(() => {
+    const pending = pendingFocusRef.current;
+    if (!pending) return;
+    const element = pending.target === "reveal"
+      ? (pending.side === "left" ? revealLeftRef.current : revealRightRef.current)
+      : (pending.side === "left" ? resizerLeftRef.current : resizerRightRef.current);
+    if (!element) return;
+    pendingFocusRef.current = null;
+    element.focus();
+  }, [columns.leftCollapsed, columns.rightCollapsed]);
+
+  /**
+   * 进工作台：焦点先搬进对话框，再把底下被盖住的聊天页整片设为 inert。
+   * 工作台是 portal 到 body 的全屏模态，DOM 上排在应用根节点之后，所以不做这件事时
+   * 打开后前几下半 Tab 都会落在底下那些看不见的控件上游走（表现为"按 Tab 没反应"），
+   * 要等它们走完才轮得到工作台。inert 之后 Tab 只在工作台内部循环；
+   * 退出时把焦点还给打开工作台的那个按钮，别让键盘用户又回到页面起点。
+   */
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const appRoot = document.getElementById("cyrene-react-root");
+    if (appRoot) appRoot.inert = true;
+    dialogRef.current?.focus();
+    return () => {
+      if (appRoot) appRoot.inert = false;
+      if (previous?.isConnected) previous.focus();
+    };
+  }, []);
 
   // 快照动作的 ref 化：Monaco 命令 / window 快捷键读到的是最新实现
   const saveActiveRef = useRef<() => void>(() => {});
@@ -874,18 +927,56 @@ export function WorkbenchPage({
    * 分隔条键盘操作：←/→ 步进 20px，Home/End 直达两端，按过头即收起（与拖动同一阈值）。
    * 收起后分隔条会随渲染卸载，所以必须把焦点显式交给边缘的展开箭头——
    * 否则焦点掉回 body，键盘用户会"迷失"在页面里，这是无障碍里最忌讳的状态。
+   * 交接本身延到渲染提交后做（见 pendingFocusRef 的 layout effect）。
    */
   function onResizerKeyDown(event: ReactKeyboardEvent<HTMLDivElement>, side: ColumnSide) {
     const delta = resizerKeyDelta(event.key, side);
     if (delta === null) return;
     event.preventDefault();
     if (!columns.step(side, delta).collapsed) return;
-    if (side === "left") revealLeftRef.current?.focus();
-    else revealRightRef.current?.focus();
+    pendingFocusRef.current = { target: "reveal", side };
+  }
+
+  /** 箭头展开那一侧后，把焦点交还给重新挂载的分隔条（同一套延后交接） */
+  function onRevealClick(side: ColumnSide) {
+    pendingFocusRef.current = { target: "resizer", side };
+    columns.reveal(side);
+  }
+
+  /**
+   * 对话框内的 Tab 环绕。工作台盖住整页、底下应用根节点又是 inert，
+   * Tab 从最后一个可聚焦元素（收起右栏后就是最右边那个箭头）再往前走会直接离开窗口，
+   * 焦点掉成"什么都没聚焦"。这里在两端折返，焦点始终留在工作台内。
+   * 编辑器里的 Tab 归 Monaco 管（缩进），它已经 preventDefault，不能当焦点移动处理。
+   */
+  function onDialogKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Tab" || event.defaultPrevented) return;
+    if ((event.target as HTMLElement | null)?.closest(".monaco-editor")) return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    // 收起的那一栏是 inert、隐藏的分区没有渲染盒，都不该参与环绕的首尾判定
+    const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+      .filter((element) => element.getClientRects().length > 0 && !element.closest("[inert]"));
+    if (focusable.length === 0) return;
+    const active = document.activeElement;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey ? active === first : active === last) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    }
   }
 
   return createPortal(
-    <div className="cy-workbench" role="dialog" aria-label={t("workbench.title")}>
+    <div
+      ref={dialogRef}
+      className="cy-workbench"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("workbench.title")}
+      tabIndex={-1}
+      onKeyDown={onDialogKeyDown}
+    >
       <header className="cy-workbench__topbar">
         <div className="cy-workbench__topbar-left">
           <button type="button" className="cy-workbench__back" onClick={onClose} title={t("workbench.back")}>
@@ -947,7 +1038,12 @@ export function WorkbenchPage({
       </header>
 
       <div className="cy-workbench__body" ref={columns.bodyRef}>
-        <aside className="cy-workbench__col cy-workbench__col--left" style={{ width: columns.left }}>
+        {/* 收起后这一栏宽度为 0，内容仍在 DOM 里——不 inert 的话 Tab 会落到看不见的文件树上 */}
+        <aside
+          className="cy-workbench__col cy-workbench__col--left"
+          style={{ width: columns.left }}
+          inert={columns.leftCollapsed}
+        >
           <div className="cy-workbench__col-header">{t("workbench.filesHeader")}</div>
           <div className="cy-workbench__col-body">
             <WorkspaceTree
@@ -962,6 +1058,7 @@ export function WorkbenchPage({
 
         {!columns.leftCollapsed && (
           <div
+            ref={resizerLeftRef}
             className="cy-workbench__resizer"
             title={t("workbench.resizerHint")}
             role="separator"
@@ -1213,6 +1310,7 @@ export function WorkbenchPage({
 
         {!columns.rightCollapsed && (
           <div
+            ref={resizerRightRef}
             className="cy-workbench__resizer"
             title={t("workbench.resizerHint")}
             role="separator"
@@ -1227,7 +1325,12 @@ export function WorkbenchPage({
           />
         )}
 
-        <section className="cy-workbench__col cy-workbench__col--right" style={{ width: columns.right }}>
+        {/* 同左栏：收起后内容还在 DOM 里，必须 inert 掉，否则 Tab 会落到看不见的会话区 */}
+        <section
+          className="cy-workbench__col cy-workbench__col--right"
+          style={{ width: columns.right }}
+          inert={columns.rightCollapsed}
+        >
           <div className="cy-workbench__col-header">{t("workbench.chatHeader")}</div>
           <div className="cy-workbench__col-body cy-workbench__chat-body">
             {messages.length > 0 && (
@@ -1300,7 +1403,7 @@ export function WorkbenchPage({
             ref={revealLeftRef}
             type="button"
             className="cy-workbench__reveal cy-workbench__reveal--left"
-            onClick={() => columns.reveal("left")}
+            onClick={() => onRevealClick("left")}
             title={t("workbench.expandLeft")}
             aria-label={t("workbench.expandLeft")}
           >
@@ -1314,7 +1417,7 @@ export function WorkbenchPage({
             ref={revealRightRef}
             type="button"
             className="cy-workbench__reveal cy-workbench__reveal--right"
-            onClick={() => columns.reveal("right")}
+            onClick={() => onRevealClick("right")}
             title={t("workbench.expandRight")}
             aria-label={t("workbench.expandRight")}
           >
