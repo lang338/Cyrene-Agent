@@ -106,7 +106,12 @@ async function buildServer(server) {
 
   for (const asset of server.assets) {
     const from = path.join(packageDir, asset);
-    if (!existsSync(from)) continue;
+    if (!existsSync(from)) {
+      // 声明的运行时资源必须在：少了它产物表面看不出问题，服务却会在 initialize 里报 ENOENT
+      // （yaml-language-server 的 l10n 就是这样——现象只是"没有任何补全"）。
+      // 静默降级比构建失败难查得多，所以这里直接让构建红掉。
+      throw new Error(`${server.packageName} 缺少声明的运行时资源：${asset}`);
+    }
     await cp(from, path.join(outDir, asset), { recursive: true });
   }
 
