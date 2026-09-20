@@ -288,7 +288,6 @@ export function WorkbenchPage({
   const [pathError, setPathError] = useState<string | null>(null);
 
   const editorRef = useRef<monacoNs.editor.IStandaloneCodeEditor | null>(null);
-  const autoSnapshotTimer = useRef<number | null>(null);
   // 键盘收起那一侧后，分隔条会被卸载，焦点得交给这两个边缘箭头
   const revealLeftRef = useRef<HTMLButtonElement | null>(null);
   const revealRightRef = useRef<HTMLButtonElement | null>(null);
@@ -309,19 +308,7 @@ export function WorkbenchPage({
     registerLspProviders();
   }, []);
 
-  // 进入工作台：做一次 auto 快照（无变化时服务端去重返回 null），刷新时间线
-  useEffect(() => {
-    const api = workbenchApi();
-    if (!api) return;
-    void api
-      .snapshot(sessionId, "auto")
-      .then(() => setTimelineRefresh((value) => value + 1))
-      .catch(() => {
-        // 未绑定工作区等场景静默：文件树会显示各自错误
-      });
-  }, [sessionId]);
-
-  // 快照落盘广播（AI 回合结束 / 编辑器保存防抖 / 回退保底）→ 时间线自动跟上，
+  // 快照落盘广播（回退保底 / 每 N 轮的保底 / 手动按钮）→ 时间线自动跟上，
   // 文件树也一起刷新：快照意味着工作区内容变了，其中包含不经写文件工具的改动（如 shell 建文件）
   useEffect(() => {
     const unsubscribe = workbenchApi()?.onCheckpointChanged?.((payload) => {
@@ -354,24 +341,6 @@ export function WorkbenchPage({
     setPathDraft(null);
     setPathError(null);
   }, [activePath]);
-
-  // 卸载：清掉挂起的防抖快照
-  useEffect(() => () => {
-    if (autoSnapshotTimer.current !== null) window.clearTimeout(autoSnapshotTimer.current);
-  }, []);
-
-  const scheduleAutoSnapshot = useCallback(() => {
-    if (autoSnapshotTimer.current !== null) window.clearTimeout(autoSnapshotTimer.current);
-    autoSnapshotTimer.current = window.setTimeout(() => {
-      autoSnapshotTimer.current = null;
-      const api = workbenchApi();
-      if (!api) return;
-      void api
-        .snapshot(sessionId, "auto")
-        .then(() => setTimelineRefresh((value) => value + 1))
-        .catch(() => undefined);
-    }, 5000);
-  }, [sessionId]);
 
   /**
    * 从磁盘装载文件内容。
@@ -736,7 +705,6 @@ export function WorkbenchPage({
       });
       if (!external) {
         setTreeRefresh((value) => value + 1);
-        scheduleAutoSnapshot();
       }
       setError(null);
       // 用户已用保存做出选择：跟随被挡下的提示不再成立
@@ -744,7 +712,7 @@ export function WorkbenchPage({
     } catch (cause) {
       setError(cleanIpcError(cause));
     }
-  }, [scheduleAutoSnapshot, sessionId]);
+  }, [sessionId]);
 
   saveActiveRef.current = () => {
     if (activePath) void saveFile(activePath);

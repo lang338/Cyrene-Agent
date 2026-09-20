@@ -13,6 +13,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { app } from "electron";
+import { isInsideWorkspace, resolveRealPath } from "./path-guard";
 import { toolRegistry } from "./registry/tool-registry";
 import type { ToolContext } from "./registry/tool-context";
 import type { ToolDiffLine, ToolFileChange } from "../../../shared/chat-types";
@@ -53,10 +54,21 @@ interface ApplyResult {
 
 // ── 路径安全 ──────────────────────────────────────────────
 
+/**
+ * 路径是否在工作区内。
+ * 词法判断挡不住"工作区里指向外部的符号链接"，所以再按 realpath 复核一次
+ * （目标可能还不存在——新建文件时，对最近的已存在祖先取 realpath 再拼回去）。
+ */
 function isWithinWorkspace(filePath: string, workspaceRoot: string): boolean {
   const resolved = path.resolve(workspaceRoot, filePath);
   const normalizedRoot = path.normalize(workspaceRoot);
-  return resolved === normalizedRoot || resolved.startsWith(normalizedRoot + path.sep);
+  const lexicalInside = resolved === normalizedRoot || resolved.startsWith(normalizedRoot + path.sep);
+  if (!lexicalInside) return false;
+  const realRoot = resolveRealPath(workspaceRoot);
+  const realTarget = resolveRealPath(resolved);
+  // 解析不出来 = 证不出它在工作区内 → 按"界外"处理（fail-closed）
+  if (!realRoot || !realTarget) return false;
+  return isInsideWorkspace(realRoot, realTarget);
 }
 
 // ── EOL 检测 ──────────────────────────────────────────────
