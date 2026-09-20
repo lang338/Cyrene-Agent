@@ -954,14 +954,22 @@ export function WorkbenchPage({
     if ((event.target as HTMLElement | null)?.closest(".monaco-editor")) return;
     const dialog = dialogRef.current;
     if (!dialog) return;
-    // 收起的那一栏是 inert、隐藏的分区没有渲染盒，都不该参与环绕的首尾判定
+    // 收起的那一栏是 inert、隐藏的分区没有渲染盒，都不该参与环绕的首尾判定；
+    // tabIndex < 0 的元素（原生控件也能显式退出 Tab 顺序）同样不算
     const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
-      .filter((element) => element.getClientRects().length > 0 && !element.closest("[inert]"));
+      .filter((element) => (
+        element.tabIndex >= 0
+        && element.getClientRects().length > 0
+        && !element.closest("[inert]")
+      ));
     if (focusable.length === 0) return;
     const active = document.activeElement;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
-    if (event.shiftKey ? active === first : active === last) {
+    // 反向还要多认一种：焦点还在对话框容器上——进入时的落点就是它（tabIndex=-1 不在列表里），
+    // 此时 Shift+Tab 会直接离开窗口
+    const backward = active === first || active === dialog;
+    if (event.shiftKey ? backward : active === last) {
       event.preventDefault();
       (event.shiftKey ? last : first).focus();
     }
