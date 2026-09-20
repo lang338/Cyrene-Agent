@@ -42,6 +42,11 @@ export interface LspServerDefinition {
   rootMarkers: string[];
   installHint: string;
   initializationOptions?: unknown;
+  /**
+   * 靠**文件名**匹配的文件（没有扩展名的那种，例如 `Dockerfile`）。
+   * 没有它的话 `path.extname()` 拿到空串，这类文件会被判成"没有对应的语言服务"。
+   */
+  filenames?: string[];
 }
 
 /** 用户为已知服务提供的本地命令覆盖；不会由模型参数直接构造。 */

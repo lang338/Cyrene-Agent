@@ -118,7 +118,8 @@
       "ruby-lsp": "Requires Ruby first: run gem install ruby-lsp (a Gemfile is needed for project features), then restart the app.",
       "kotlin-language-server": "Requires a JVM (Java 17+) first: this server is a JVM program. Put its executable on your PATH, then restart the app.",
       "lua-language-server": "Download the lua-language-server release and put its executable on your PATH, then restart the app.",
-      "yaml-language-server": "The bundled YAML language server could not start. You can install your own copy with npm i -g yaml-language-server, then restart the app."
+      "yaml-language-server": "The bundled YAML language server could not start. You can install your own copy with npm i -g yaml-language-server, then restart the app.",
+      "dockerfile-language-server": "The bundled Dockerfile language server could not start. You can install your own copy with npm i -g dockerfile-language-server-nodejs, then restart the app."
     },
     "chatHeader": "Chat",
     "chatEmpty": "No messages yet. Say something to Cyrene",

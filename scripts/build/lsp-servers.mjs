@@ -35,6 +35,15 @@ const SERVERS = [
     entry: "out/server/src/server.js",
     /** 要一起带上的运行时目录（上游按相对路径读，见文件头说明） */
     assets: ["l10n"],
+    /** npm 的 bin 壳会设这个环境变量（服务端据此报版本），我们绕过了壳，自己补上 */
+    versionEnvVar: "YAML_LANGUAGE_SERVER_VERSION",
+  },
+  {
+    serverId: "dockerfile-language-server",
+    packageName: "dockerfile-language-server-nodejs",
+    // 这个包的 `bin` 是 `./bin/docker-langserver`，但真正起服务的是 lib/server.js
+    entry: "lib/server.js",
+    assets: [],
   },
 ];
 
@@ -89,8 +98,9 @@ async function buildServer(server) {
     // ⚠️ 必须 module 优先。默认（node 平台）是 main 优先，会命中 jsonc-parser 的 UMD 分支，
     // 它内部的 require("./impl/format") 在打包产物里变成运行期解析 → 直接 Cannot find module。
     mainFields: ["module", "main"],
-    // npm 的 bin 壳会设这个环境变量（服务端据此报版本），我们绕过了壳，自己补上
-    banner: { js: `process.env.YAML_LANGUAGE_SERVER_VERSION = process.env.YAML_LANGUAGE_SERVER_VERSION || "${packageJson.version}";` },
+    ...(server.versionEnvVar
+      ? { banner: { js: `process.env.${server.versionEnvVar} = process.env.${server.versionEnvVar} || "${packageJson.version}";` } }
+      : {}),
     logLevel: "warning",
   });
 

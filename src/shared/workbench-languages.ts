@@ -53,6 +53,7 @@ export const LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = {
   bash: "shell",
   yml: "yaml",
   yaml: "yaml",
+  dockerfile: "dockerfile",
   sql: "sql",
   xml: "xml",
   toml: "ini",
@@ -66,6 +67,12 @@ export interface LspLanguage {
   languageId: string;
   /** 该语言参与语义补全的扩展名（小写、含点），必须与主进程 catalog 完全对应 */
   extensions: readonly string[];
+  /**
+   * 靠**文件名**识别的语言（没有扩展名的那种）。
+   * Dockerfile 就是典型：文件就叫 `Dockerfile`，`path.extname` 拿到的是空串，
+   * 只按扩展名找服务的话主进程会认为"这类文件没有语言服务"。
+   */
+  filenames?: readonly string[];
 }
 
 /**
@@ -93,9 +100,21 @@ export const LSP_LANGUAGES: readonly LspLanguage[] = [
   { languageId: "kotlin", extensions: [".kt", ".kts"] },
   { languageId: "lua", extensions: [".lua"] },
   { languageId: "yaml", extensions: [".yaml", ".yml"] },
+  { languageId: "dockerfile", extensions: [".dockerfile"], filenames: ["Dockerfile", "Containerfile"] },
 ];
 
 const LSP_LANGUAGE_IDS = new Set(LSP_LANGUAGES.map((language) => language.languageId));
+
+/**
+ * 文件名（小写）→ Monaco languageId，由 LSP_LANGUAGES 的 `filenames` 派生。
+ * 派生而不是另写一份表：上面那张扩展名表与这张表分头维护必然漂移，
+ * 而"靠文件名识别"的语言一定也是接了语言服务的（否则连高亮都不必认）。
+ */
+const LANGUAGE_BY_FILENAME: Readonly<Record<string, string>> = Object.fromEntries(
+  LSP_LANGUAGES.flatMap((language) =>
+    (language.filenames ?? []).map((name) => [name.toLowerCase(), language.languageId] as const),
+  ),
+);
 
 /**
  * 这个 Monaco languageId 上有没有注册语义补全 provider。
@@ -110,8 +129,12 @@ export function isLspLanguage(languageId: string | null): boolean {
 /**
  * 从文件路径推 Monaco languageId（猜不出就是 plaintext）。
  * 大小写不敏感：用户在 Windows 上常见 `Main.PY` 这种扩展名。
+ * 先看**文件名**再看扩展名：`Dockerfile` 没有扩展名，只看扩展名会当成纯文本。
  */
 export function languageIdForPath(path: string): string {
+  const base = path.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  const byName = LANGUAGE_BY_FILENAME[base];
+  if (byName) return byName;
   const extension = path.split(".").pop()?.toLowerCase() ?? "";
   return LANGUAGE_BY_EXTENSION[extension] ?? "plaintext";
 }

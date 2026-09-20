@@ -52,4 +52,16 @@ describe("built-in LSP server catalog", () => {
       expect(server.commands[1].command).toBe(`${server.id}.cjs`);
     }
   });
+
+  it("没有扩展名的文件靠文件名匹配（Dockerfile 这类）", () => {
+    expect(findServerCandidates("Dockerfile").map((server) => server.id)).toEqual(["dockerfile-language-server"]);
+    expect(findServerCandidates("deploy/Containerfile").map((server) => server.id)).toEqual(["dockerfile-language-server"]);
+    // 大小写不敏感（Windows 上常见 DockerFile / dockerfile）
+    expect(findServerCandidates("build/dockerfile").map((server) => server.id)).toEqual(["dockerfile-language-server"]);
+    // 带扩展名的写法照旧走扩展名那条路
+    expect(findServerCandidates("ops/app.dockerfile").map((server) => server.id)).toEqual(["dockerfile-language-server"]);
+    // 别的无扩展名文件不能被认成 Dockerfile
+    expect(findServerCandidates("Makefile")).toEqual([]);
+    expect(findServerCandidates("LICENSE")).toEqual([]);
+  });
 });
