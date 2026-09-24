@@ -398,7 +398,8 @@ export function registerChatsIpc(
       if (!payload?.sessionId || !payload?.workspaceRoot) {
         return { ok: false, error: "missing sessionId or workspaceRoot" };
       }
-      const existing = chatsStore.getSession(payload.sessionId);
+      // 用 v1/v2 通吃的视图读元数据：CTA 之后会话是 v2，只认 v1 的 getSession 会误报 session not found
+      const existing = chatsStore.getSessionView(payload.sessionId);
       if (!existing) return { ok: false, error: "session not found" };
       if (existing.mode !== "work" && existing.mode !== "code" && existing.mode !== "learn") {
         return { ok: false, error: `${existing.mode ?? "unknown"} mode does not support workspace binding` };
@@ -443,7 +444,8 @@ export function registerChatsIpc(
       if (!sessionId) return { ok: false, error: "missing sessionId" };
       const binding = chatsStore.getWorkspaceBinding(sessionId);
       if (!binding) return { ok: false, error: "no workspace binding" };
-      const session = chatsStore.getSession(sessionId);
+      // 同上：v2 会话要用 getSessionView 读 mode，否则 learn 模式会被误判成"不是 learn"
+      const session = chatsStore.getSessionView(sessionId);
       if (!session || session.mode !== "learn") {
         return { ok: false, error: "session is not in learn mode" };
       }

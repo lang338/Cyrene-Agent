@@ -317,6 +317,18 @@ export function getSession(id: string): ChatSession | null {
   return readSessionFile(id);
 }
 
+/**
+ * v1/v2 通吃的会话视图（v2 记录不带正式 messages，用空数组补齐）。
+ *
+ * ⚠️ 只读元数据（mode / workspaceBinding / 标题等）的调用方**不要用 `getSession`**：
+ * CTA 之后会话会瘦身为 v2，而 `getSession` 只认 v1 记录、对 v2 返回 null，
+ * 表现是"明明有这个会话却报找不到"（工作台文件树就踩过这个坑）。
+ */
+export function getSessionView(id: string): ChatSession | null {
+  const record = readSessionRecordFile(id);
+  return record ? sessionView(record) : null;
+}
+
 /** 同步读取磁盘元数据；v2 记录没有正式 messages。 */
 export function getSessionRecord(id: string): ChatSessionRecord | null {
   return readSessionRecordFile(id);

@@ -40,6 +40,30 @@ describe("chats store", () => {
     expect(page?.session.messageCount).toBe(3);
   });
 
+  it("v2 会话：getSession 只认 v1 会返回 null，getSessionView 仍读得到元数据（工作台文件树踩过的坑）", async () => {
+    const store = await import("./chats-store");
+    store.initialize();
+    const session = store.createSession({ title: "v2 会话" });
+    const file = path.join(store.getRootDir(), "sessions", `${session.id}.json`);
+    const persisted = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    delete persisted.messages;
+    persisted.schemaVersion = 2;
+    persisted.messageCount = 0;
+    fs.writeFileSync(file, JSON.stringify(persisted));
+
+    // 旧访问器：对 v2 直接"找不到这个会话"
+    expect(store.getSession(session.id)).toBeNull();
+    // 只读元数据的调用方必须走这个
+    const view = store.getSessionView(session.id);
+    expect(view?.id).toBe(session.id);
+    expect(view?.mode).toBe(session.mode);
+
+    // v1 记录两条路都能读（回归保护）
+    const legacy = store.createSession({ title: "v1 会话" });
+    expect(store.getSession(legacy.id)?.id).toBe(legacy.id);
+    expect(store.getSessionView(legacy.id)?.id).toBe(legacy.id);
+  });
+
   it("v2 元数据记录保留 pending 状态往返且磁盘不写回 messages", async () => {
     const store = await import("./chats-store");
     store.initialize();

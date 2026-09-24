@@ -370,13 +370,13 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           return resolvedGit;
         };
         const git = createGitService({
-          getSession: chatsStore.getSession,
+          getSession: chatsStore.getSessionView,
           resolveExecutable: resolveGitExecutableCached,
         });
 
         // 工作台：checkpoint 时间机器（git 变化防抖自动快照 + AI 回合结束快照）+ 工作区文件服务
         const checkpoint = createCheckpointService({
-          getSession: chatsStore.getSession,
+          getSession: chatsStore.getSessionView,
           resolveExecutable: resolveGitExecutableCached,
           // 任何来源的快照落盘后都广播一次，工作台时间线据此自动刷新
           onSnapshot: (entry) => {
@@ -388,7 +388,9 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           },
         });
         git.onChanged(({ sessionId }) => checkpoint.notifyActivity(sessionId));
-        const workspaceFiles = createWorkspaceFileService({ getSession: chatsStore.getSession });
+        // 用 getSessionView（v1/v2 通吃）：getSession 只认 v1，对 CTA 之后的 v2 会话会返回 null，
+        // 表现是工作台文件树报"找不到当前对话"
+        const workspaceFiles = createWorkspaceFileService({ getSession: chatsStore.getSessionView });
 
         // 改动账本：工作台"改动时间线"的数据源。
         // 与 checkpoint 不同，它不要求工作区是 git 仓库、也不受工作区规模限制，
@@ -636,7 +638,8 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
               if (!win.isDestroyed()) win.webContents.send(IPC.WORKBENCH_LEDGER_CHANGED, { sessionId });
             }
           },
-          getWorkspaceRoot: (sessionId) => chatsStore.getSession(sessionId)?.workspaceBinding?.workspaceRoot,
+          // 只读工作区绑定：走 getWorkspaceBinding（v1/v2 通吃），不要用只认 v1 的 getSession
+          getWorkspaceRoot: (sessionId) => chatsStore.getWorkspaceBinding(sessionId)?.workspaceRoot,
         });
 
         // 工作台编辑器的语言服务桥：编辑器内容同步给外部语言服务，诊断回推给 Monaco 画红线。
@@ -645,7 +648,8 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           ipc,
           lsp: services.lsp,
           installer: services.lspInstaller,
-          getWorkspaceRoot: (sessionId) => chatsStore.getSession(sessionId)?.workspaceBinding?.workspaceRoot,
+          // 只读工作区绑定：走 getWorkspaceBinding（v1/v2 通吃），不要用只认 v1 的 getSession
+          getWorkspaceRoot: (sessionId) => chatsStore.getWorkspaceBinding(sessionId)?.workspaceRoot,
           publishDiagnostics: (payload) => {
             for (const win of BrowserWindow.getAllWindows()) {
               if (!win.isDestroyed()) win.webContents.send(IPC.WORKBENCH_LSP_DIAGNOSTICS, payload);
