@@ -217,15 +217,22 @@ export const IPC = {
   CHATS_GET: "chats:get",
   CHATS_GET_PAGE: "chats:get-page",
   CHATS_CREATE: "chats:create",
-  CHATS_APPEND: "chats:append",
-  CHATS_UPSERT: "chats:upsert",
-  CHATS_SET_MESSAGE_TTS_CACHE: "chats:set-message-tts-cache",
-  CHATS_REPLACE_MESSAGES: "chats:replace-messages",
-  CHATS_REPLACE_TAIL: "chats:replace-tail",
+  CTA_PRESENTATION_CHECKPOINT: "cta:presentation-checkpoint",
   // renderer → main：主动压缩会话上下文（模型窗口内旧消息摘要成一条记忆）
   CHATS_COMPACT: "chats:compact",
   CHATS_RENAME: "chats:rename",
   CHATS_DELETE: "chats:delete",
+  // 会话级待发队列（运行中排队、未派发；独立于正式 messages 历史）
+  CHATS_PENDING_ENQUEUE: "chats:pending-enqueue",
+  CHATS_PENDING_LIST: "chats:pending-list",
+  CHATS_PENDING_REMOVE: "chats:pending-remove",
+  // 认领队首（单次写入：待发条目 → 正式用户消息 + 派发状态）与派发确认
+  CHATS_PENDING_CLAIM: "chats:pending-claim",
+  CHATS_PENDING_COMPLETE_DISPATCH: "chats:pending-complete-dispatch",
+  // 修改未认领的待发条目文字（按会话 + 条目稳定标识；复用页面解析结果）
+  CHATS_PENDING_EDIT: "chats:pending-edit",
+  // 调整：把待发条目插入当前运行的下一步（绑定 active run，由 agui-bridge 处理）
+  CHATS_PENDING_ADJUST: "chats:pending-adjust",
   CHATS_SET_PINNED: "chats:set-pinned",
   CHATS_SET_MODEL_PROFILE: "chats:set-model-profile",
   CHATS_OPEN_FOLDER: "chats:open-folder",
@@ -272,6 +279,18 @@ export const IPC = {
   // renderer → main：把指定 Run 修改过的文件恢复到运行前状态（基于 before/ 基线）
   REVIEW_RESTORE: "review:restore",
 
+  // 会话工作区只读文件（右侧面板文件树 / 文件预览）
+  // renderer → main：列出工作区内某目录的条目（懒加载用）
+  WORKSPACE_FILES_LIST: "workspace-files:list",
+  // renderer → main：读取工作区内某文件的内容（预览用，带大小/二进制限制）
+  WORKSPACE_FILES_READ: "workspace-files:read",
+
+  // 工作区右上角"打开"菜单（用本机应用打开工作区根目录）
+  // renderer → main：探测本机可打开工作区的应用（VSCode / Cursor 等，进程内缓存）
+  WORKSPACE_OPEN_IN_LIST_APPS: "workspace-open-in:list-apps",
+  // renderer → main：执行打开动作（explorer 走 shell.openPath，其余走 detached spawn）
+  WORKSPACE_OPEN_IN: "workspace-open-in:open",
+
 // sticker manager window
 	  STICKERS_MINIMIZE: "stickers:minimize",
 	  STICKERS_CLOSE: "stickers:close",
@@ -297,10 +316,6 @@ export const IPC = {
   LIVE2D_PLAY_ACTION: "live2d:play-action",        // 主进程 → 桌宠窗口：执行动作（motion 或 expression）
   LIVE2D_GET_MAIN_DIAGNOSTICS: "live2d:get-main-diagnostics",
   // embedding model status
-  EMBEDDING_GET_STATUS: "embedding:get-status",
-  EMBEDDING_DOWNLOAD: "embedding:download",
-  EMBEDDING_DELETE: "embedding:delete",
-  EMBEDDING_PROGRESS: "embedding:progress",
   EMBEDDING_SET_MODEL: "embedding:set-model",
   RERANKER_SET_MODE: "reranker:set-mode",
   RERANKER_GET_STATUS: "reranker:get-status",
@@ -466,6 +481,11 @@ export const IPC = {
   CHANNELS_FEISHU_TEST_CONNECTION: "channels:feishu:test-connection",
   CHANNELS_FEISHU_TEST_WEBHOOK_REACHABLE: "channels:feishu:test-webhook-reachable",
   CHANNELS_QQ_TEST_CONNECTION: "channels:qq:test-connection",
+  /**
+   * QQ 监听鉴权预检：主进程按 listenMode/customHost 解析真实监听地址，并判定是否
+   * 必须配置 Access Token。渲染进程看不到网络接口，因此该判定只能由主进程给出。
+   */
+  CHANNELS_QQ_RESOLVE_AUTH_REQUIREMENT: "channels:qq:resolve-auth-requirement",
   // QQ 官方机器人（QQ 开放平台）专属
   CHANNELS_QQBOT_TEST_CONNECTION: "channels:qqbot:test-connection",
   // 消息日志
@@ -542,4 +562,3 @@ export const IPC = {
   PLUGINS_MARKET_INSTALL: "plugins:market:install",
 
 } as const;
-

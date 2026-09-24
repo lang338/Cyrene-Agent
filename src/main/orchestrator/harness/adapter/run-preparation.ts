@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { ChatMessage, VendorConfig } from "../../vendors/types";
 import type { ToolDefinition } from "../../tools/registry/tool-registry";
 import { toolRegistry } from "../../tools/registry/tool-registry";
-import { prepareHarnessRecovery } from "../run-recovery";
+import { prepareHarnessRecoveryState } from "../run-recovery";
 import { getHarnessRunStore, type HarnessRequestSnapshot } from "../run-store";
 import type { CyreneRunOptions } from "../../cyrene-agent";
 import type { PromptLayers } from "../../prompt-layers";
@@ -73,7 +73,7 @@ export interface PreparedHarnessRun {
   harnessPromptLayers: PromptLayers;
   systemPrompt: string;
   runMessages: ChatMessage[];
-  recovered?: ReturnType<typeof prepareHarnessRecovery>;
+  recovered?: ReturnType<typeof prepareHarnessRecoveryState>;
   runStore: ReturnType<typeof getHarnessRunStore>;
 }
 
@@ -108,26 +108,46 @@ export async function prepareHarnessRun(
 
   const tools = [...(options.capabilities?.tools ?? options.tools ?? toolRegistry.getEnabledTools())];
   const runStore = getHarnessRunStore(app.getPath("userData"));
+  // 恢复校验必须使用当前稳定前缀与工具目录指纹；恢复上下文本身只进入 runtimeContext，
+  // 因而先用未附加恢复说明的稳定前缀计算一次，不把 run recovery 变成循环依赖。
+  const preRecoveryPromptLayers = options.resumeFromRunId
+    ? buildHarnessPromptLayers(
+      [options.recoveryContext, planContextBlock].filter(Boolean).length > 0
+        ? {
+          ...options,
+          recoveryContext: [options.recoveryContext, planContextBlock].filter(Boolean).join("\n\n"),
+        }
+        : options,
+    )
+    : undefined;
+  const preRecoveryHarnessPromptLayers: PromptLayers | undefined = preRecoveryPromptLayers
+    ? {
+      stablePrefix: preRecoveryPromptLayers.stablePrefix,
+      ...(preRecoveryPromptLayers.sessionPrefix ? { sessionPrefix: preRecoveryPromptLayers.sessionPrefix } : {}),
+      ...(preRecoveryPromptLayers.mode ? { mode: preRecoveryPromptLayers.mode } : {}),
+    }
+    : undefined;
+  const currentRequestFingerprint = preRecoveryHarnessPromptLayers
+    ? snapshotHarnessRequest(options, preRecoveryHarnessPromptLayers, tools)
+    : undefined;
   const recovered = options.resumeFromRunId
     ? (() => {
       const previous = runStore.get(options.resumeFromRunId!);
       if (!previous || previous.conversationId !== threadId) throw new Error("HARNESS_RECOVERY_NOT_FOUND");
-      return prepareHarnessRecovery(previous, {
+      return prepareHarnessRecoveryState(previous, {
+        conversationId: threadId,
         workspaceRoot: options.resolvedWorkspaceRoot,
         provider: options.settings.provider,
         model: options.settings.model,
         enabledToolIds: tools.map((tool) => tool.id),
+        promptFingerprint: currentRequestFingerprint?.promptFingerprint,
+        toolSchemaFingerprint: currentRequestFingerprint?.toolSchemaFingerprint,
       });
     })()
     : undefined;
 
-  const latestIncomingMessage = options.messages.at(-1);
-  const baseRunMessages = recovered
-    ? [
-      ...recovered.messages,
-      ...(latestIncomingMessage?.role === "user" ? [{ ...latestIncomingMessage }] : []),
-    ]
-    : options.messages;
+  // 消息历史始终来自 Task 6 journal；resume 只带回执行状态，不能覆盖权威轨迹。
+  const baseRunMessages = options.messages;
   const recoveryContext = [options.recoveryContext, recovered?.recoveryContext, planContextBlock]
     .filter(Boolean).join("\n\n");
   const promptLayers = buildHarnessPromptLayers(
@@ -152,7 +172,7 @@ export async function prepareHarnessRun(
     runId,
     messages: runMessages,
     request: snapshotHarnessRequest(options, harnessPromptLayers, tools),
-    ...(recovered ? { state: recovered.state, cache: recovered.cache } : {}),
+    ...(recovered ? { state: recovered.state, cache: recovered.cacheState } : {}),
     ...(options.resumeFromRunId ? { resumedFromRunId: options.resumeFromRunId } : {}),
   });
 

@@ -54,23 +54,37 @@ export function isInsideWorkspace(root: string, target: string): boolean {
 }
 
 /**
- * 写入前的边界断言：不在工作区内就抛错。
- * 未绑定工作区时一律拒绝——宁可拒绝，也不要留下"无界写入"的口子。
+ * 写入前的边界断言：不在允许的根目录内就抛错。
+ *
+ * 允许的根目录按优先级取：会话绑定的工作区 → 调用方给的兜底根（通常是桌面）。
+ * 没绑工作区时退回桌面是**有意保留**的行为：learn 模式记笔记就是写"笔记.md"这种
+ * 相对路径落到桌面；这条路上工具调用仍然有边界，只是范围放宽到桌面。
+ * 两个根都没有（既没绑工作区、也取不到桌面）才拒绝。
+ *
  * @returns 归一后的真实路径，调用方可以直接用它落盘
  */
-export function assertWritableInsideWorkspace(target: string, workspaceRoot: string | undefined): string {
-  if (!workspaceRoot || !workspaceRoot.trim()) {
+export function assertWritableInsideWorkspace(
+  target: string,
+  workspaceRoot: string | undefined,
+  fallbackRoot?: string,
+): string {
+  const boundRoot = workspaceRoot && workspaceRoot.trim() ? workspaceRoot : undefined;
+  const root = boundRoot ?? (fallbackRoot && fallbackRoot.trim() ? fallbackRoot : undefined);
+  if (!root) {
     throw new WorkspaceBoundaryError(
-      `当前会话没有绑定工作区，拒绝写入：${target}。请先在工作台里选择工作区目录。`,
+      `当前会话没有绑定工作区，也没有可用的备用写入目录，拒绝写入：${target}。请先在工作台里选择工作区目录。`,
     );
   }
-  const root = resolveRealPath(workspaceRoot);
+  const resolvedRoot = resolveRealPath(root);
   const resolved = resolveRealPath(target);
-  // 解析不出来（root 或 target 任一）同样按"界外"处理：证不出它在工作区内，就不能放行
-  if (!root || !resolved || !isInsideWorkspace(root, resolved)) {
+  // 解析不出来（root 或 target 任一）同样按"界外"处理：证不出它在允许范围内，就不能放行
+  if (!resolvedRoot || !resolved || !isInsideWorkspace(resolvedRoot, resolved)) {
     throw new WorkspaceBoundaryError(
-      `拒绝写入工作区之外的文件：${target}（工作区：${workspaceRoot}）。` +
-        `如需改动工作区外的文件，请在工作台里手动编辑，或把该目录设为工作区。`,
+      boundRoot
+        ? `拒绝写入工作区之外的文件：${target}（工作区：${boundRoot}）。` +
+          `如需改动工作区外的文件，请在工作台里手动编辑，或把该目录设为工作区。`
+        : `未绑定工作区时只能写入桌面：${target}（桌面：${root}）。` +
+          `如需写入别处，请先把该目录设为工作区。`,
     );
   }
   return resolved;

@@ -12,10 +12,10 @@ jobs:
     env:
       NODE_OPTIONS: --max-old-space-size=4096
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Node.js 24 LTS
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
 
@@ -25,88 +25,54 @@ jobs:
       - name: Verify Electron installation
         run: npx electron --version
 
+      # 生产依赖审计：高危基线清零或限期登记前仅留存报告，不阻断合入。
+      # 处置清单见 docs/refactor/2026-09-14-dependency-audit-baseline.md；
+      # 基线清零后把本步骤改为 npm audit --omit=dev --audit-level=high 并移除 continue-on-error。
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --json > npm-audit-prod.json
+        continue-on-error: true
+
+      - name: Upload production dependency audit report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-audit-prod
+          path: npm-audit-prod.json
+
       - name: Build
         run: npm run build
 
-      - name: Test src/main/orchestrator/vendors
-        if: success() || failure()
-        run: npx vitest run --reporter=verbose --maxWorkers=1 src/main/orchestrator/vendors
+      # 渲染端类型检查：vite build 走 esbuild、不做类型检查，"构建绿"掩盖不了类型错误；
+      # 工作台就在渲染端，这条是它的长期兜底（主进程/预加载的 tsc 已包含在 build 里）。
+      - name: Typecheck renderer
+        run: npm run check:renderer
 
-      - name: Test src/main/orchestrator/structured-output
-        if: success() || failure()
-        run: npx vitest run --reporter=verbose --maxWorkers=1 src/main/orchestrator/structured-output
+      # 插件清单契约检查：源码类型与 manifest.schema.json 保持一致
+      - name: Check plugin schema contract
+        run: npm run check:plugin-schema
 
-      - name: Test src/main/orchestrator/tools
-        if: success() || failure()
-        run: npx vitest run --reporter=verbose --maxWorkers=1 src/main/orchestrator/tools
-
-      - name: Test src/main/orchestrator root files
-        if: success() || failure()
-        shell: pwsh
-        run: |
-          $files = Get-ChildItem -Path "src/main/orchestrator" -Filter "*.test.ts" | Select-Object -ExpandProperty FullName
-          if (-not $files) { Write-Host "No root test files found"; exit 0 }
-          npx vitest run --reporter=verbose --maxWorkers=1 $files
-
-      - name: Test src/main/music
-        if: success() || failure()
-        run: npx vitest run --reporter=verbose --maxWorkers=1 src/main/music
-
-      - name: Test src/main/memory
-        if: success() || failure()
-        run: npx vitest run --reporter=verbose --maxWorkers=1 src/main/memory
-
-      - name: Test src/main/channels+chats+chat+cita
-        if: success() || failure()
-        run: npx vitest run --reporter=verbose --maxWorkers=1 src/main/channels src/main/chats src/main/chat src/main/cita
-
-      - name: Test src/main/screenshot+rag+scheduler+proactive
-        if: success() || failure()
-        run: npx vitest run --reporter=verbose --maxWorkers=1 src/main/screenshot src/main/rag src/main/scheduler src/main/proactive
-
-      - name: Test src/main/skills+social+relationship+runtime-policy+game-bot
-        if: success() || failure()
-        run: npx vitest run --reporter=verbose --maxWorkers=1 src/main/skills src/main/social-context src/main/relationship src/main/runtime-policy src/main/game-bot
-
-      - name: Test src/main root files
-        if: success() || failure()
-        shell: pwsh
-        run: |
-          $files = Get-ChildItem -Path "src/main" -Filter "*.test.ts" | Select-Object -ExpandProperty FullName
-          if (-not $files) { Write-Host "No root test files found"; exit 0 }
-          npx vitest run --reporter=verbose --maxWorkers=1 $files
-
-      # 工作台 / 语言智能 / git / 设置 / 启动链路这几块原先落在所有分段之外：本地能跑、CI 从来没执行过。
-      # 原因是按目录白名单切段，而 "src/main root files" 那条的 Get-ChildItem 是非递归的，
-      # 子目录里的用例不会被带到。补上这一段，避免"CI 绿"掩盖住整块无人跑过的测试。
-      #
-      # ⚠️ src/main/code-git 暂未纳入：它的 real git 集成用例在 windows runner 上两次都没稳住——
-      #   第一次：默认 5 秒超时不够（`Test timed out in 5000ms`）+ 收尾删临时目录 EPERM（git 仍占句柄）；
-      #   放宽超时（探针 15s / 用例 60s）并让清理带重试后，**用例本身全过（254 项）**，但 vitest 的
-      #   fork worker 在收尾时 "exited unexpectedly"（1 个 unhandled error，整段仍判红）。
-      # 结论：要让它稳定进 CI 得单独查（大概率与真实 git 子进程 / 文件 watcher 的退出时序有关），
-      # 不混进这个纯配置改动。用例侧的健壮性改进（超时 + 清理重试）保留在仓库里。
-      - name: Test src/main/lsp + settings + application
-        if: success() || failure()
-        run: npx vitest run --reporter=verbose --maxWorkers=1 src/main/lsp src/main/settings src/main/application
-
-      - name: Test orchestrator harness/review/sandbox + packages
-        if: success() || failure()
-        run: npx vitest run --reporter=verbose --maxWorkers=1 src/main/orchestrator/harness src/main/orchestrator/review src/main/orchestrator/sandbox packages
-
-      - name: Test src/plugins
-        if: success() || failure()
-        run: npx vitest run --reporter=verbose --maxWorkers=1 src/plugins
-
-      - name: Test src/renderer
-        if: success() || failure()
-        run: npx vitest run --reporter=verbose --maxWorkers=1 src/renderer
-
-      - name: Test src/shared + src/cli
-        if: success() || failure()
-        run: npx vitest run --reporter=verbose --maxWorkers=1 src/shared src/cli
-
-      - name: Test skills
-        if: success() || failure()
-        run: npx vitest run --reporter=verbose --maxWorkers=1 skills
-
+      # 分块测试：与 vitest.config.ts 的 include 对应，各步骤之和不重不漏覆盖全部测试文件
+      # （已用 vitest list 逐一核对；filter 带尾斜杠、exclude 用根相对路径避免前缀误匹配）。
+      # 拆成多个独立步骤是为了 CI 上出现 fork worker 崩溃时能一眼定位目录
+      # （此前单步骤只有 “Worker exited unexpectedly”，无法判断死在哪）。
+      - name: Test · src / plugins + shared + cli
+        run: npx vitest run src/plugins src/shared src/cli
+      - name: Test · src / renderer
+        run: npx vitest run src/renderer
+      - name: Test · main / orchestrator
+        run: npx vitest run src/main/orchestrator
+      - name: Test · main / moments + music
+        run: npx vitest run src/main/moments src/main/music
+      - name: Test · main / memory + rag
+        run: npx vitest run src/main/memory src/main/rag
+      - name: Test · main / channels
+        run: npx vitest run src/main/channels
+      - name: Test · main / platform（app / plugins / tts / cita / skills / scheduler / proactive / chats）
+        run: npx vitest run src/main/tts/ src/main/plugin-host/ src/main/application/ src/main/cita/ src/main/skills/ src/main/scheduler/ src/main/proactive/ src/main/chats/
+      - name: Test · main / core（其余）
+        run: npx vitest run src/main --exclude "src/main/orchestrator/**" --exclude "src/main/moments/**" --exclude "src/main/music/**" --exclude "src/main/memory/**" --exclude "src/main/rag/**" --exclude "src/main/channels/**" --exclude "src/main/tts/**" --exclude "src/main/plugin-host/**" --exclude "src/main/application/**" --exclude "src/main/cita/**" --exclude "src/main/skills/**" --exclude "src/main/scheduler/**" --exclude "src/main/proactive/**" --exclude "src/main/chats/**"
+      - name: Test · packages + skills + poc
+        # packages 的 include 目前在 vitest.config.ts 中临时禁用（windows-2025 镜像下
+        # fork worker 静默崩溃，改由 plugin-sdk workflow 单独验证），skills / cline-poc
+        # 暂无测试文件，因此允许空跑；packages 恢复或新增测试后本步骤自动生效。
+        run: npx vitest run --exclude "src/**" --passWithNoTests

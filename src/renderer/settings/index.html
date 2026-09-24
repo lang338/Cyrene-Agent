@@ -529,10 +529,6 @@
                 </div>
               </label>
               <label class="setting-row">
-                <div><strong><span data-i18n="panel.appearance.personalize.assistantBubble.title">昔涟回复气泡</span></strong><span><span data-i18n="panel.appearance.personalize.assistantBubble.desc">关闭后以无背景文本显示昔涟的正式回答；用户消息气泡始终保留。</span></span></div>
-                <span class="switch"><input id="assistant-bubble-enabled" type="checkbox" /><span class="switch__track"><span class="switch__thumb"></span></span></span>
-              </label>
-              <label class="setting-row">
                 <div><strong><span data-i18n="panel.appearance.personalize.chatParaSpacing.title">段间距</span></strong><span><span data-i18n="panel.appearance.personalize.chatParaSpacing.desc">调整消息气泡内段落之间的间距（0.2 ~ 1.2em）。</span></span></div>
                 <div class="range-row">
                   <input id="chat-para-spacing" type="range" min="0.2" max="1.2" step="0.05" value="0.5" />
@@ -608,6 +604,14 @@
 
             <div class="setting-row">
               <div>
+                <strong><span data-i18n="panel.general.rememberWindowState.title">记住窗口位置</span></strong>
+                <span><span data-i18n="panel.general.rememberWindowState.desc">记忆设置与音乐窗口的位置和大小，重启后恢复。</span></span>
+              </div>
+              <span class="switch"><input id="remember-window-state" type="checkbox" checked /><span class="switch__track"><span class="switch__thumb"></span></span></span>
+            </div>
+
+            <div class="setting-row">
+              <div>
                 <strong><span data-i18n="panel.general.toastSound.title">提醒音效</span></strong>
                 <span><span data-i18n="panel.general.toastSound.desc">昔涟有事等你确认或任务跑完时，右下角弹窗的提示音。</span></span>
               </div>
@@ -621,15 +625,6 @@
               </div>
               <span class="switch"><input id="launch-at-login" type="checkbox" /><span class="switch__track"><span class="switch__thumb"></span></span></span>
             </label>
-            <div class="setting-row">
-              <div>
-                <strong><span data-i18n="panel.general.chatHistory.title">聊天记录管理</span></strong>
-                <span><span data-i18n="panel.general.chatHistory.desc">清空全部本地聊天会话。</span></span>
-              </div>
-              <button type="button" class="ghost-btn" id="clear-chat-history-btn"><span data-i18n="panel.general.chatHistory.clearButton">清空记录</span></button>
-            </div>
-
-
             <label class="setting-row">
               <div>
                 <strong><span data-i18n="panel.general.language.title">语言</span></strong>
@@ -742,7 +737,7 @@
                 <div class="rag-model-options">
                   <button type="button" class="rag-model-card is-active" data-value="bgem3">
                     <span class="rag-model-card__title"><span data-i18n="panel.cyrene.embedding.bgem3Title">BGE-M3</span></span>
-                    <span class="rag-model-card__desc"><span data-i18n="panel.cyrene.embedding.bgem3Desc">中文效果优秀，支持贴纸语义匹配和场景语气注入。</span></span>
+                    <span class="rag-model-card__desc"><span data-i18n="panel.cyrene.embedding.bgem3Desc">中文效果优秀，支持贴纸语义匹配和长期记忆召回。</span></span>
                     <em id="embedding-bgem3-status">检测中...</em>
                   </button>
                 </div>
@@ -771,27 +766,6 @@
                   </button>
                 </div>
               </div>
-
-              <div class="agent-status-row rag-status-row">
-                <strong><span data-i18n="panel.cyrene.embedding.modeTitle">当前模式</span></strong>
-                <em><span data-i18n="panel.cyrene.embedding.modeAuto">自动（优先使用已安装模型）</span></em>
-              </div>
-
-              <div class="agent-actions-row rag-actions-row">
-                <button type="button" class="ghost-btn" id="embedding-download-btn"><span data-i18n="panel.cyrene.embedding.downloadButton">📖 模型安装说明</span></button>
-                <button type="button" class="ghost-btn" id="embedding-delete-btn"><span data-i18n="panel.cyrene.embedding.deleteButton">删除缓存</span></button>
-                <button type="button" class="ghost-btn" id="embedding-update-btn"><span data-i18n="panel.cyrene.embedding.updateButton">检查更新</span></button>
-              </div>
-
-              <div class="agent-setting-subgroup" style="margin-top:12px">
-                <strong><span data-i18n="panel.cyrene.embedding.mirrorTitle">下载镜像源</span></strong>
-                <div class="option-blocks option-blocks--wide" id="embedding-mirror" role="radiogroup" aria-label="镜像源">
-                  <button type="button" class="option-block is-active" data-value="official" aria-pressed="true"><span data-i18n="panel.cyrene.embedding.mirrorOfficial">官方源</span></button>
-                  <button type="button" class="option-block" data-value="hf-mirror" aria-pressed="false"><span data-i18n="panel.cyrene.embedding.mirrorHf">hf-mirror</span></button>
-                </div>
-              </div>
-
-              <p class="agent-setting-card__note"><span data-i18n="panel.cyrene.embedding.note">按钮暂为界面预留；后续会接入安装包可选模型、模型状态检测和文档导入检索。</span></p>
             </article>
           </div>
 

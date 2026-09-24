@@ -30,6 +30,19 @@ export function sendHarnessEventAsAgui(
       } as BaseEvent);
       break;
     }
+    case "candidate_text_delta":
+    case "candidate_text_discard": {
+      send({
+        type: EventType.CUSTOM,
+        name: "cyrene.candidate_text",
+        value: event.type === "candidate_text_delta"
+          ? { action: "delta", roundId: event.roundId, delta: event.delta }
+          : { action: "discard", roundId: event.roundId },
+        threadId,
+        runId,
+      } as BaseEvent);
+      break;
+    }
     case "progress_text": {
       send({
         type: EventType.CUSTOM,
@@ -48,7 +61,8 @@ export function sendHarnessEventAsAgui(
       break;
     }
     case "reasoning_start": {
-      send({ type: EventType.REASONING_MESSAGE_START, messageId: event.messageId, role: "assistant", threadId, runId } as BaseEvent);
+      // AG-UI 规范：REASONING_MESSAGE_START 的 role 固定为 "reasoning"。
+      send({ type: EventType.REASONING_MESSAGE_START, messageId: event.messageId, role: "reasoning", threadId, runId } as BaseEvent);
       break;
     }
     case "reasoning_delta": {
@@ -64,6 +78,7 @@ export function sendHarnessEventAsAgui(
         type: EventType.TOOL_CALL_START,
         toolCallId: event.toolCallId,
         toolCallName: event.toolName,
+        toolCallDisplayName: event.displayName,
         threadId,
         runId,
       } as BaseEvent);

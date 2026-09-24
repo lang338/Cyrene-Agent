@@ -11,7 +11,7 @@ import { useTranslation } from "../../i18n";
 import type { ConversationMode } from "../../../../shared/chat-types";
 import type { LedgerRestoreResult, WorkbenchFileContent, WorkbenchFileEntry, WorkbenchLspDiagnostic } from "../../../../shared/code-workbench-types";
 import { ChatMessageList, type ChatMessageItem } from "../chat/components/ChatMessageList";
-import { MessageFileLinkContext, type MessageFileOpenTarget } from "../chat/components/message-file-link";
+import { useFeedback } from "../../components/feedback/FeedbackProvider";
 import { ComposerInteractionPanel, type ComposerInteractionCallbacks } from "../chat/components/ComposerSlot";
 import type { ComposerInteraction } from "../chat/components/run-presentation";
 import { setupMonaco } from "./monaco-setup";
@@ -257,6 +257,8 @@ export function WorkbenchPage({
   ...interactionCallbacks
 }: WorkbenchPageProps) {
   const { t } = useTranslation();
+  // 弹窗一律走应用的反馈层：生产代码里不用浏览器原生 alert/confirm（有规约测试盯着）
+  const feedback = useFeedback();
   const columns = useResizableColumns({
     storageKey: "cy-workbench-columns",
     initial: { left: 260, right: 360 },
@@ -515,13 +517,13 @@ export function WorkbenchPage({
    * 消息正文里的文件路径被点开：走与路径栏完全同一条通道（解析、存在性校验、错误提示都一致）。
    * 失败时额外在顶栏提示一次——用户刚点的是正文里的链接，视线不在路径栏，而路径栏没打开文件时根本不渲染。
    */
-  const handleFileLink = useCallback(async (target: MessageFileOpenTarget) => {
-    const openedPath = await openByPath(target.path);
+  const handleFileLink = useCallback(async (relPath: string, line?: number) => {
+    const openedPath = await openByPath(relPath);
     if (!openedPath) {
-      setError(t("workbench.fileLinkFailed", { path: target.path }));
+      setError(t("workbench.fileLinkFailed", { path: relPath }));
       return;
     }
-    if (target.line !== undefined) setPendingReveal({ path: openedPath, line: target.line });
+    if (line !== undefined) setPendingReveal({ path: openedPath, line });
   }, [openByPath, t]);
 
   /**
@@ -730,9 +732,19 @@ export function WorkbenchPage({
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
 
-  const closeTab = useCallback((path: string) => {
+  const closeTab = useCallback(async (path: string) => {
     const entry = buffers[path];
-    if (entry?.dirty && !window.confirm(t("workbench.closeConfirm", { name: fileBaseName(path) }))) return;
+    // 脏缓冲关标签要确认：不只是"点错了"，而是这一关会丢掉用户没保存的改动
+    if (entry?.dirty) {
+      const confirmed = await feedback.confirm({
+        title: t("workbench.closeConfirmTitle"),
+        message: t("workbench.closeConfirm", { name: fileBaseName(path) }),
+        confirmText: t("common.confirm"),
+        cancelText: t("common.cancel"),
+        dangerous: true,
+      });
+      if (!confirmed) return;
+    }
     setOpenTabs((current) => {
       const next = current.filter((item) => item !== path);
       setActivePath((active) => {
@@ -748,7 +760,7 @@ export function WorkbenchPage({
       return next;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [buffers]);
+  }, [buffers, feedback, t]);
 
   /**
    * 回退完成后的收尾。
@@ -899,7 +911,7 @@ export function WorkbenchPage({
             <button
               type="button"
               className="cy-workbench__win-btn"
-              onClick={() => windowControls()?.minimize()}
+              onClick={() => windowControls()?.minimize?.()}
               aria-label={t("ui.minimize")}
               title={t("ui.minimize")}
             >
@@ -910,7 +922,7 @@ export function WorkbenchPage({
             <button
               type="button"
               className="cy-workbench__win-btn"
-              onClick={() => windowControls()?.toggleMaximize()}
+              onClick={() => windowControls()?.toggleMaximize?.()}
               aria-label={t("ui.maximizeOrRestore")}
               title={t("ui.maximizeOrRestore")}
             >
@@ -921,7 +933,7 @@ export function WorkbenchPage({
             <button
               type="button"
               className="cy-workbench__win-btn cy-workbench__win-btn--close"
-              onClick={() => windowControls()?.close()}
+              onClick={() => windowControls()?.close?.()}
               aria-label={t("ui.closeChatWindow")}
               title={t("ui.closeChatWindow")}
             >
@@ -1047,7 +1059,7 @@ export function WorkbenchPage({
                       <button
                         type="button"
                         className="cy-workbench__file-tab-close"
-                        onClick={() => closeTab(path)}
+                        onClick={() => void closeTab(path)}
                         title={t("workbench.closeTab")}
                       >
                         ×
@@ -1219,18 +1231,18 @@ export function WorkbenchPage({
           <div className="cy-workbench__col-header">{t("workbench.chatHeader")}</div>
           <div className="cy-workbench__col-body cy-workbench__chat-body">
             {messages.length > 0 && (
-              // 只有工作台提供这个上下文：右栏消息里的文件路径才变成可点开的链接。
-              // 主聊天页不提供，同一份 ChatMessageList 在那里仍渲染纯文本，行为一行没变。
-              <MessageFileLinkContext.Provider value={handleFileLink}>
-                <ChatMessageList
-                  messages={messages}
-                  conversationId={sessionId}
-                  mode={mode}
-                  preferredAddress={preferredAddress}
-                  stickerSize={stickerSize}
-                  onTtsCacheKey={onTtsCacheKey}
-                />
-              </MessageFileLinkContext.Provider>
+              // 把工作区根与"点开文件"交给 ChatMessageList：右栏消息里的文件路径
+              // （模型写的 file:/// 链接，以及正文里裸写的 src/a.ts:42）都由它按这个环境渲染成可点。
+              <ChatMessageList
+                messages={messages}
+                conversationId={sessionId}
+                mode={mode}
+                preferredAddress={preferredAddress}
+                stickerSize={stickerSize}
+                onTtsCacheKey={onTtsCacheKey}
+                workspaceRoot={workspaceRoot}
+                onOpenFileLink={handleFileLink}
+              />
             )}
             {messages.length === 0 && (
               <div className="cy-workbench__chat-empty">{t("workbench.chatEmpty")}</div>

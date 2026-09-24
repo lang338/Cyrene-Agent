@@ -1,11 +1,9 @@
-import * as React from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  MessageFileLinkContext,
-  linkifyFilePaths,
-  linkifyNode,
+  findMessageFilePaths,
   parseMessageFilePath,
+  rewriteBareFilePaths,
+  toAbsoluteFilePath,
 } from "./message-file-link";
 
 describe("parseMessageFilePath", () => {
@@ -49,56 +47,100 @@ describe("parseMessageFilePath", () => {
   });
 });
 
-describe("linkifyFilePaths", () => {
-  it("只替换完整的路径 token，句子其余部分原样", () => {
-    const nodes = linkifyFilePaths("我改了 src/a.ts:12 和 README.md，其它没动");
-    const html = renderToStaticMarkup(
-      React.createElement(MessageFileLinkContext.Provider, { value: () => {} }, React.createElement("p", null, ...nodes)),
-    );
+describe("findMessageFilePaths", () => {
+  it("只认整段是路径的 token，下标落在剥掉包裹字符之后", () => {
+    const text = "我改了 (src/a.ts:12) 和 README.md，其它没动";
+    const matches = findMessageFilePaths(text);
 
-    expect(html).toContain("我改了 ");
-    expect(html).toContain("其它没动");
-    // 两个路径各成为一个可点元素，且显示的是原文（含行号）
-    const links = html.match(/class="cy-file-link"/g) ?? [];
-    expect(links).toHaveLength(2);
-    expect(html).toContain("src/a.ts:12");
-    expect(html).toContain("README.md");
+    expect(matches).toHaveLength(2);
+    // 切出来的正是路径本身（不含括号与句末标点），改写时不会吃掉它们
+    expect(text.slice(matches[0].start, matches[0].end)).toBe("src/a.ts:12");
+    expect(matches[0].target).toEqual({ path: "src/a.ts", line: 12 });
+    expect(text.slice(matches[1].start, matches[1].end)).toBe("README.md");
   });
 
-  it("没有可替换内容时原样返回，不制造多余节点", () => {
-    expect(linkifyFilePaths("今天天气不错")).toEqual(["今天天气不错"]);
-    expect(linkifyFilePaths("看看 user.name 这个字段")).toEqual(["看看 user.name 这个字段"]);
-  });
-
-  it("没有提供方（主聊天页）时退化成纯文本，不出现可点元素", () => {
-    const nodes = linkifyFilePaths("改了 src/a.ts");
-    const html = renderToStaticMarkup(React.createElement("p", null, ...nodes));
-    expect(html).not.toContain("cy-file-link");
-    expect(html).toContain("src/a.ts");
-  });
-
-  it("有提供方时点击回调拿到解析后的路径与行号", () => {
-    const onOpen = vi.fn();
-    const nodes = linkifyFilePaths("改了 src/a.ts:12");
-    const html = renderToStaticMarkup(
-      React.createElement(MessageFileLinkContext.Provider, { value: onOpen }, React.createElement("p", null, ...nodes)),
-    );
-    expect(html).toContain("cy-file-link");
-    expect(parseMessageFilePath("src/a.ts:12")).toEqual({ path: "src/a.ts", line: 12 });
+  it("普通词与点号常见的写法不误标", () => {
+    expect(findMessageFilePaths("今天天气不错")).toHaveLength(0);
+    expect(findMessageFilePaths("看看 user.name 这个字段")).toHaveLength(0);
+    expect(findMessageFilePaths("版本是 v1.2.3")).toHaveLength(0);
   });
 });
 
-describe("linkifyNode", () => {
-  it("字符串切分、数组逐个处理、其它元素原样透传（不动代码块与加粗内部）", () => {
-    expect(linkifyNode(undefined)).toBeUndefined();
-    expect(linkifyNode(42)).toBe(42);
+describe("toAbsoluteFilePath", () => {
+  it("绝对路径原样（统一正斜杠），相对路径挂到工作区根下", () => {
+    expect(toAbsoluteFilePath("D:\\proj\\a.ts")).toBe("D:/proj/a.ts");
+    expect(toAbsoluteFilePath("/home/x/a.py")).toBe("/home/x/a.py");
+    expect(toAbsoluteFilePath("src/a.ts", "E:\\ws")).toBe("E:/ws/src/a.ts");
+    expect(toAbsoluteFilePath("./src/a.ts", "E:/ws/")).toBe("E:/ws/src/a.ts");
+  });
 
-    const element = React.createElement("code", null, "src/a.ts");
-    expect(linkifyNode(element)).toBe(element); // 同一个引用，说明没被改写
+  it("相对路径但不知道工作区根时无法定位", () => {
+    expect(toAbsoluteFilePath("src/a.ts")).toBeNull();
+    expect(toAbsoluteFilePath("src/a.ts", "")).toBeNull();
+  });
+});
 
-    const rendered = linkifyNode(["看 src/a.ts", React.createElement("strong", { key: "s" }, "重点")]);
-    const html = renderToStaticMarkup(React.createElement("p", null, ...(rendered as React.ReactNode[])));
-    expect(html).toContain("src/a.ts");
-    expect(html).toContain("<strong>重点</strong>");
+/** 造一棵最小 hast 树，只包含本模块会改写的形状。 */
+function paragraphTree(text: string) {
+  return {
+    type: "root",
+    children: [{ type: "element", tagName: "p", children: [{ type: "text", value: text }] }],
+  };
+}
+
+type RewrittenNode = {
+  type?: string;
+  tagName?: string;
+  value?: string;
+  properties?: Record<string, unknown>;
+  children?: RewrittenNode[];
+};
+
+describe("rewriteBareFilePaths", () => {
+  it("把裸写路径包成 file 链接，其余文本原样保留", () => {
+    const tree = paragraphTree("我改了 src/a.ts:12，其它没动");
+    rewriteBareFilePaths(tree, "E:/ws");
+
+    const children = (tree.children[0] as unknown as RewrittenNode).children ?? [];
+    const anchor = children.find((child) => child.tagName === "a");
+    expect(anchor).toBeDefined();
+    expect(anchor?.properties).toEqual({ href: "file:///E:/ws/src/a.ts#L12" });
+    expect(anchor?.children?.[0]?.value).toBe("src/a.ts:12");
+    // 前后文本都还在，句子没被切碎
+    expect(children.map((child) => child.value ?? "").join("")).toBe("我改了 ，其它没动");
+  });
+
+  it("代码块与既有链接里的文本不改写", () => {
+    const fenced = {
+      type: "root",
+      children: [{ type: "element", tagName: "pre", children: [{ type: "element", tagName: "code", children: [{ type: "text", value: "src/a.ts" }] }] }],
+    };
+    rewriteBareFilePaths(fenced, "E:/ws");
+    expect(JSON.stringify(fenced)).not.toContain("href");
+
+    const existingLink = {
+      type: "root",
+      children: [{ type: "element", tagName: "a", properties: { href: "https://x" }, children: [{ type: "text", value: "src/a.ts" }] }],
+    };
+    rewriteBareFilePaths(existingLink, "E:/ws");
+    expect(JSON.stringify(existingLink)).not.toContain("file:///");
+  });
+
+  it("行内代码整段是路径时也变成链接（放行空格）", () => {
+    const inline = {
+      type: "root",
+      children: [{ type: "element", tagName: "p", children: [{ type: "element", tagName: "code", children: [{ type: "text", value: "src/my file.ts" }] }] }],
+    };
+    rewriteBareFilePaths(inline, "E:/ws");
+
+    const code = ((inline.children[0] as unknown as RewrittenNode).children ?? [])[0];
+    expect(code.children?.[0]?.tagName).toBe("a");
+    expect(code.children?.[0]?.properties).toEqual({ href: "file:///E:/ws/src/my file.ts" });
+  });
+
+  it("没有工作区根时什么都不改（纯文本）", () => {
+    const tree = paragraphTree("我改了 src/a.ts");
+    rewriteBareFilePaths(tree);
+    expect(JSON.stringify(tree)).not.toContain("file:///");
   });
 });

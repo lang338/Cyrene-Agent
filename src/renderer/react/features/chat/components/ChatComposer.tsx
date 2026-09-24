@@ -1,6 +1,6 @@
 import { Sender } from "@ant-design/x";
 import { Popover } from "antd";
-import { useEffect, useRef, useState, type ClipboardEvent } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
 import { useTranslation } from "../../../i18n";
 import { resolveAsset } from "../../../../../shared/renderer-base";
 import type { ContextUsageSnapshot } from "../../../../../shared/context-usage";
@@ -10,6 +10,7 @@ import { StyleControl } from "./StyleControl";
 import { PermissionControl } from "./PermissionControl";
 import { PlanModeToggle } from "./PlanModeToggle";
 import { ModelSelector } from "./ModelSelector";
+import { PendingQueueDock, type PendingQueueDockItem } from "./PendingQueueDock";
 import chatWelcomeUrl from "../../../assets/welcome/chat.png?url";
 import codeWelcomeUrl from "../../../assets/welcome/code.png?url";
 import learnWelcomeUrl from "../../../assets/welcome/learn.png?url";
@@ -27,12 +28,14 @@ interface ChatComposerProps {
   attachments: ComposerAttachment[];
   attachmentBusy?: boolean;
   modelBusy?: boolean;
-  pendingQueue?: Array<{ id: string; content: string }>;
+  pendingQueue?: PendingQueueDockItem[];
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
   onCancel?: () => void;
   onQueueMessage?: (value: string) => void;
   onRemoveQueuedMessage?: (id: string) => void;
+  onEditQueuedMessage?: (id: string, content: string) => Promise<boolean>;
+  onAdjustQueuedMessage?: (id: string) => Promise<boolean>;
   onChooseWorkspace: () => void;
   /** 打开代码工作台（仅 work/code 模式由父级提供） */
   onOpenWorkbench?: () => void;
@@ -227,6 +230,8 @@ export function ChatComposer({
   onCancel,
   onQueueMessage,
   onRemoveQueuedMessage,
+  onEditQueuedMessage,
+  onAdjustQueuedMessage,
   onChooseWorkspace,
   onOpenWorkbench,
   onChooseFiles,
@@ -240,6 +245,7 @@ export function ChatComposer({
 }: ChatComposerProps) {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const compositionActiveRef = useRef(false);
   const [enabledStickers, setEnabledStickers] = useState<EnabledSticker[]>([]);
   const supportsWorkFiles = ["work", "code"].includes(mode);
   const supportsObsidianLibrary = mode === "learn";
@@ -290,8 +296,18 @@ export function ChatComposer({
     onChange(nextValue.replace(/ {2,}/g, " ").trim());
   };
 
-  const hasComposerHeader = attachments.length > 0 || selectedStickers.length > 0 || pendingQueue.length > 0;
-  const shiftPressedRef = useRef(false);
+  const hasComposerHeader = attachments.length > 0 || selectedStickers.length > 0;
+
+  // Sender 的 onKeyDown 声明在 Element 层级；函数体只用基类属性，参数随组件声明放宽
+  const handleSenderKeyDown = (event: KeyboardEvent<Element>) => {
+    if (!modelBusy || event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
+    const nativeEvent = event.nativeEvent as globalThis.KeyboardEvent;
+    if (compositionActiveRef.current || nativeEvent.isComposing || nativeEvent.keyCode === 229) return;
+    event.preventDefault();
+    if (value.trim()) onQueueMessage?.(value);
+    // Sender 会先调用 onKeyDown；返回 false 可阻止它继续执行内建提交逻辑。
+    return false;
+  };
 
   // Ctrl+V 粘贴图片：仅当剪贴板无 text/plain 且含白名单图片时才拦截默认粘贴行为——
   // 浏览器剪贴板常同时带 text/plain + image/png（复制网页富文本），
@@ -310,8 +326,19 @@ export function ChatComposer({
   };
 
   return (
-    <div className={`cy-composer-stack ${docked ? "is-docked" : "is-centered"}`}>
+    <div
+      className={`cy-composer-stack ${docked ? "is-docked" : "is-centered"}`}
+      onCompositionStartCapture={() => { compositionActiveRef.current = true; }}
+      onCompositionEndCapture={() => { compositionActiveRef.current = false; }}
+    >
       {!docked && <img className="cy-composer-welcome" src={welcomeImageUrl} alt="" />}
+      <PendingQueueDock
+        items={pendingQueue}
+        adjustmentAvailable={modelBusy}
+        onEdit={onEditQueuedMessage}
+        onAdjust={onAdjustQueuedMessage}
+        onRemove={onRemoveQueuedMessage}
+      />
       <div className="cy-composer-shell">
         <input
           ref={fileInputRef}
@@ -329,37 +356,26 @@ export function ChatComposer({
         rootClassName="cy-composer"
         value={value}
         placeholder={modelBusy ? t("composer.placeholderBusy") : placeholder}
+        // 忙态使用 Sender 自带的停止按钮；Enter 入队由 onKeyDown 在内建提交前处理。
         loading={modelBusy}
-        // `disabled` 会同时禁掉 Sender 内建的取消键；运行中的任务必须始终可停止。
         disabled={!modelBusy && requiresWorkspace && !workspaceName}
         autoSize={{ minRows: 3, maxRows: 7 }}
         onChange={onChange}
         onCancel={onCancel}
         onPaste={handlePaste}
-        onKeyDown={(event) => { shiftPressedRef.current = event.shiftKey; }}
+        onKeyDown={handleSenderKeyDown}
         onSubmit={(submitValue) => {
-          if (modelBusy) {
-            if (shiftPressedRef.current) {
-              onQueueMessage?.(submitValue);
-            } else {
-              onCancel?.();
-            }
-          } else {
-            onSubmit(submitValue);
-          }
+          if (!submitValue.trim()) return;
+          onSubmit(submitValue);
         }}
+        suffix={(actionNode, { components }) => modelBusy ? (
+          <components.LoadingButton
+            title={t("composer.stopRun")}
+            aria-label={t("composer.stopRun")}
+          />
+        ) : actionNode}
         header={hasComposerHeader ? (
           <div className="cy-composer__attachments" aria-label={t("composer.attachmentsLabel")}>
-            {pendingQueue.length > 0 && (
-              <div className="cy-composer__queue" aria-label={t("composer.queueLabel")}>
-                {pendingQueue.map((item) => (
-                  <div className="cy-composer__queue-item" key={item.id}>
-                    <span className="cy-composer__queue-text" title={item.content}>{item.content.slice(0, 40)}{item.content.length > 40 ? "..." : ""}</span>
-                    <button type="button" aria-label={t("composer.removeQueuedMessage")} onClick={() => onRemoveQueuedMessage?.(item.id)}>×</button>
-                  </div>
-                ))}
-              </div>
-            )}
             {attachments.map((attachment, index) => (
               <div className={`cy-composer__attachment ${attachment.kind === "image" && attachment.previewUrl ? "is-image" : ""}`} key={`${attachment.filePath ?? attachment.name}-${index}`}>
                 {attachment.kind === "image" && attachment.previewUrl ? (
