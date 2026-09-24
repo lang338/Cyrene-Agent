@@ -42,6 +42,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      # 渲染端类型检查：vite build 走 esbuild、不做类型检查，"构建绿"掩盖不了类型错误；
+      # 工作台就在渲染端，这条是它的长期兜底（主进程/预加载的 tsc 已包含在 build 里）。
+      - name: Typecheck renderer
+        run: npm run check:renderer
+
       # 插件清单契约检查：源码类型与 manifest.schema.json 保持一致
       - name: Check plugin schema contract
         run: npm run check:plugin-schema

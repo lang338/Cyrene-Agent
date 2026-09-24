@@ -176,7 +176,7 @@ export function ChatPage() {
   });
   const [mode, setMode] = useState<ConversationMode>(getInitialMode);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  // 代码工作台（work/code 模式入口）：全屏覆盖层，会话消息与发送仍走本页运行时
+  // 代码工作台（仅 code 模式入口）：全屏覆盖层，会话消息与发送仍走本页运行时
   const [workbenchOpen, setWorkbenchOpen] = useState(false);
 
   const [workspaceNames, setWorkspaceNames] = useState<Partial<Record<ConversationMode, string>>>({});
@@ -1152,7 +1152,7 @@ export function ChatPage() {
   }
 
   /**
-   * 工作台入口放在 composer 底栏，work/code 模式常驻：
+   * 工作台入口放在 composer 底栏，仅 code 模式常驻：
    * 欢迎页（尚无会话）点击时先自动建会话，再打开工作台。
    */
   async function openWorkbench(): Promise<void> {
@@ -1822,7 +1822,7 @@ export function ChatPage() {
               ? queueFlow.adjustMessage(activeSessionId, id)
               : Promise.resolve(false)}
             onChooseWorkspace={() => void chooseWorkspace()}
-            onOpenWorkbench={(mode === "work" || mode === "code") ? () => void openWorkbench() : undefined}
+            onOpenWorkbench={mode === "code" ? () => void openWorkbench() : undefined}
             onChooseFiles={(files) => void chooseFiles(files)}
             onRemoveAttachment={removeAttachment}
             onScreenshot={() => void handleScreenshot()}

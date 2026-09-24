@@ -621,9 +621,8 @@ export function WorkbenchPage({
     if (!activePath || isExternalPath(activePath)) return;
     const entry = buffers[activePath];
     if (!entry || entry.loading || entry.error || entry.binary || entry.truncated) return;
-    // 先取出方法本身：可选成员在闭包里拿不到窄化，留着 api?. 调用会一直报"可能为 undefined"
-    const syncLspDocument = workbenchApi()?.syncLspDocument;
-    if (!syncLspDocument) return;
+    const api = workbenchApi();
+    if (!api?.syncLspDocument) return;
     const sync = () => {
       // 只同步编辑器模型的**实时内容**：它带模型修订号，主进程据此丢弃迟到的旧同步。
       // 模型与当前文件对不上时（正在切文件等瞬时状态）**跳过这一拍**，不要拿 buffers 镜像顶替——
@@ -631,7 +630,8 @@ export function WorkbenchPage({
       const model = editorRef.current?.getModel();
       const modelPath = (model?.uri.path ?? "").replace(/^\/+/, "");
       if (!model || modelPath !== activePath) return;
-      void syncLspDocument(sessionId, activePath, model.getValue(), languageIdForPath(activePath), model.getVersionId())
+      void api
+        .syncLspDocument(sessionId, activePath, model.getValue(), languageIdForPath(activePath), model.getVersionId())
         .catch(() => undefined);
     };
     const timer = window.setTimeout(sync, 400);

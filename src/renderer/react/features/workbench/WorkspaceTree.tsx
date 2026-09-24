@@ -25,29 +25,35 @@ interface WorkbenchApi {
   diffCheckpoint(sessionId: string, hash: string): Promise<unknown>;
   restoreCheckpoint(sessionId: string, hash: string): Promise<unknown>;
   snapshot(sessionId: string, kind?: "auto" | "pre-restore" | "manual"): Promise<unknown>;
+  /**
+   * 以下成员在 preload 的 workbenchApi 里都是无条件挂上的对象字面量成员，所以这里声明为
+   * 非可选。之前全写成可选，导致内部直接调用（如 api.syncLspDocument(...)）被判定
+   * "可能是 undefined"。外部拿到的类型仍是 `WorkbenchApi | undefined`（window.workbench
+   * 本身可能不存在），调用方照旧用 `api?.xxx` 保护。
+   */
   /** 快照落盘广播订阅；返回退订函数 */
-  onCheckpointChanged?(callback: (payload: { sessionId: string }) => void): () => void;
+  onCheckpointChanged(callback: (payload: { sessionId: string }) => void): () => void;
   /** 改动账本（时间线）：不要求工作区是 git 仓库，巨型目录同样可用 */
-  listLedgerRounds?(sessionId: string): Promise<unknown>;
-  ledgerFileVersions?(sessionId: string, roundId: string, path: string): Promise<unknown>;
+  listLedgerRounds(sessionId: string): Promise<unknown>;
+  ledgerFileVersions(sessionId: string, roundId: string, path: string): Promise<unknown>;
   /** 回退前预检：本次回退实际触及的全部相对路径（目标轮及之后，脏缓冲把关用） */
-  ledgerRestoreAffected?(sessionId: string, roundId: string): Promise<string[]>;
-  restoreLedgerRound?(sessionId: string, roundId: string): Promise<unknown>;
-  ledgerUsage?(): Promise<unknown>;
-  pruneLedgerRounds?(sessionId: string, roundIds: string[]): Promise<unknown>;
-  onLedgerChanged?(callback: (payload: { sessionId: string }) => void): () => void;
+  ledgerRestoreAffected(sessionId: string, roundId: string): Promise<string[]>;
+  restoreLedgerRound(sessionId: string, roundId: string): Promise<unknown>;
+  ledgerUsage(): Promise<unknown>;
+  pruneLedgerRounds(sessionId: string, roundIds: string[]): Promise<unknown>;
+  onLedgerChanged(callback: (payload: { sessionId: string }) => void): () => void;
   /** 语言服务（LSP）：把编辑器内容同步给外部语言服务；返回 false = 没有可用服务，编辑器静默降级 */
-  syncLspDocument?(sessionId: string, path: string, content: string, languageId: string, revision?: number): Promise<boolean>;
+  syncLspDocument(sessionId: string, path: string, content: string, languageId: string, revision?: number): Promise<boolean>;
   /** 查语言服务环境：有没有可用服务 / 往上有没有项目配置 / 配置该写在哪 / 能不能一键装（渲染端据此说明降级原因） */
-  lspEnv?(sessionId: string, path: string): Promise<WorkbenchLspEnv | null>;
-  closeLspDocument?(sessionId: string, path: string): Promise<boolean>;
+  lspEnv(sessionId: string, path: string): Promise<WorkbenchLspEnv | null>;
+  closeLspDocument(sessionId: string, path: string): Promise<boolean>;
   /** 编辑器主动提问（补全/悬停/跳转/查引用）；null = 没有可用服务，编辑器静默降级 */
-  requestLsp?(input: WorkbenchLspRequestInput): Promise<WorkbenchLspRequestResult | null>;
-  onLspDiagnostics?(callback: (payload: { sessionId: string; path: string; diagnostics: WorkbenchLspDiagnostic[] }) => void): () => void;
+  requestLsp(input: WorkbenchLspRequestInput): Promise<WorkbenchLspRequestResult | null>;
+  onLspDiagnostics(callback: (payload: { sessionId: string; path: string; diagnostics: WorkbenchLspDiagnostic[] }) => void): () => void;
   /** 下载并安装语言服务（只认主进程清单里钉死版本的包）；取消与失败都在返回值里区分 */
-  installLspServer?(serverId: string): Promise<WorkbenchLspInstallResult>;
-  cancelLspInstall?(serverId: string): Promise<boolean>;
-  onLspInstallProgress?(callback: (payload: WorkbenchLspInstallProgress) => void): () => void;
+  installLspServer(serverId: string): Promise<WorkbenchLspInstallResult>;
+  cancelLspInstall(serverId: string): Promise<boolean>;
+  onLspInstallProgress(callback: (payload: WorkbenchLspInstallProgress) => void): () => void;
 }
 
 export function workbenchApi(): WorkbenchApi | undefined {
