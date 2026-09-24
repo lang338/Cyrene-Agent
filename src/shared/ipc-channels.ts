@@ -78,6 +78,8 @@ export const IPC = {
   // main → toast 窗口：推送/更新条目（同 id 覆盖）、移除条目（关闭回执/点击消隐/通知档超时/结算清退）
   TOAST_PUSH: "toast:push",
   TOAST_REMOVE: "toast:remove",
+  // main → toast 窗口：任务完成播报的语音（合成好后单独推，渲染页负责播；与提示音相互独立）
+  TOAST_TTS_AUDIO: "toast:tts-audio",
   // toast 窗口 → main：页面加载/重载后恢复当前显示列表；用户点击与关闭只带 toast id，
   // 跳转目标由主进程查权威状态解析；resize 上报内容区实际高度（高度协议）
   TOAST_GET_ALL: "toast:get-all",

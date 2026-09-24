@@ -30,7 +30,7 @@ import { exposeMusicApi } from "./music";
 import { normalizeChatAppearance, type ChatAppearanceSettings } from "../shared/chat-appearance";
 import type { AppUpdateApi, AppUpdateState } from "../shared/app-update";
 import type { ConversationMode } from "../shared/chat-types";
-import type { ToastItem, ToastPushPayload } from "../shared/toast-types";
+import type { ToastItem, ToastPushPayload, ToastTtsAudioPayload } from "../shared/toast-types";
 
 // 渲染目标标识：preload 每次加载（即每次页面初始化/重新加载）生成一次，
 // 随活动会话一并上报主进程；同一页面内切换会话不改变该标识。
@@ -253,6 +253,11 @@ const toastApi: import("../shared/toast-types").ToastRendererApi = {
     const handler = (_e: unknown, id: string) => callback(id);
     ipcRenderer.on(IPC.TOAST_REMOVE, handler);
     return () => ipcRenderer.removeListener(IPC.TOAST_REMOVE, handler);
+  },
+  onTtsAudio: (callback: (payload: ToastTtsAudioPayload) => void) => {
+    const handler = (_e: unknown, payload: ToastTtsAudioPayload) => callback(payload);
+    ipcRenderer.on(IPC.TOAST_TTS_AUDIO, handler);
+    return () => ipcRenderer.removeListener(IPC.TOAST_TTS_AUDIO, handler);
   },
 };
 contextBridge.exposeInMainWorld("toast", toastApi);

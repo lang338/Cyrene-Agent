@@ -31,6 +31,15 @@ export interface ToastServiceDeps {
    * 仅通知档使用；等待操作档不受抑制（长输出流里卡片易被滚没）。
    */
   shouldSuppressNotify?: (event: SchedulerFinishedEvent) => boolean;
+  /**
+   * 任务完成播报的语音：合成好返回音频，未启用或失败返回 null。
+   * 只负责合成，怎么送到渲染页由本服务决定——"要不要提醒"的判定只在这里一处，
+   * 所以不会出现"弹窗被抑制却冒出声音"。
+   */
+  synthesizeTaskAnnouncement?: (input: {
+    taskTitle: string;
+    outputPreview?: string;
+  }) => Promise<{ base64: string; format: string } | null>;
 }
 
 /** 去重键：类别 + 业务身份 */
@@ -246,6 +255,23 @@ export function createToastService(deps: ToastServiceDeps) {
       createdAt: nowFn(),
     };
     pushToast(item);
+    // 语音播报：与弹窗并行合成（合成要花时间，晚一两秒出声），好了再推给渲染页播。
+    // 未启用（设置门控）或合成失败都返回 null，静默跳过——语音永远不该影响弹窗。
+    const announce = deps.synthesizeTaskAnnouncement;
+    if (announce) {
+      void announce({ taskTitle: event.taskTitle, outputPreview: event.outputPreview })
+        .then((audio) => {
+          // 即便这轮 toast 已被点掉或超时消隐也照播：提醒的意义就在这声
+          if (audio) {
+            deps.window.send(IPC.TOAST_TTS_AUDIO, {
+              toastId: item.id,
+              base64: audio.base64,
+              format: audio.format,
+            });
+          }
+        })
+        .catch(() => undefined);
+    }
     // 通知档 10s 自动消隐：主进程定时器为唯一权威；
     // 提前结束（点击/手动关闭）时 removeToast 会清掉定时器
     const timer = setTimeout(() => {

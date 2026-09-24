@@ -9,6 +9,7 @@ import {
   type ToastItem,
   type ToastPushPayload,
   type ToastTier,
+  type ToastTtsAudioPayload,
 } from "../../shared/toast-types";
 import avatarIconUrl from "./assets/toast-avatar.png";
 import actionSoundUrl from "./assets/toast-action.mp3";
@@ -35,6 +36,8 @@ const cards = new Map<string, CardEntry>();
 
 const actionSound = new Audio(actionSoundUrl);
 const notifySound = new Audio(notifySoundUrl);
+/** 任务完成播报的语音：主进程合成好后单独推过来，复用同一个元素（新的一条顶掉上一条） */
+const ttsAudio = new Audio();
 
 /** 档位决定音效：等待操作档引起注意型，通知档轻提示型 */
 function playSound(tier: ToastTier): void {
@@ -42,6 +45,15 @@ function playSound(tier: ToastTier): void {
   audio.currentTime = 0;
   void audio.play().catch(() => {
     // 播放失败不影响提醒展示本身
+  });
+}
+
+/** 播报语音：data URL 直接喂给 Audio；失败只记日志，不影响提醒展示 */
+function playTtsAudio(payload: ToastTtsAudioPayload): void {
+  ttsAudio.src = `data:audio/${payload.format};base64,${payload.base64}`;
+  ttsAudio.currentTime = 0;
+  void ttsAudio.play().catch((err) => {
+    console.warn("[Toast] 播报语音播放失败:", err);
   });
 }
 
@@ -215,6 +227,8 @@ function main(): void {
   if (!stack) return;
   api?.onPush(push);
   api?.onRemove(remove);
+  // 任务完成播报：晚于弹窗到达的语音，到了就播（与提示音相互独立）
+  api?.onTtsAudio(playTtsAudio);
   // 字体加载等原因导致卡片高度变化时，重算折叠高度并重新上报
   new ResizeObserver(() => relayout()).observe(stack);
   void restore();

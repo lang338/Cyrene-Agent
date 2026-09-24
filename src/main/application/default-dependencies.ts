@@ -97,6 +97,7 @@ import { registerChatUiIpc, getActiveChatSessionId } from "../chats/chat-ui-ipc"
 import { createToastWindowController } from "../toast/toast-window";
 import { createToastService } from "../toast/toast-service";
 import { toastEvents } from "../toast/toast-events";
+import { synthesizeTaskAnnouncement } from "../toast/task-alert-tts";
 import { createToastWindowShell } from "../windows/create-toast-window";
 import * as chatsStore from "../chats/chats-store";
 import { flush as flushTokenUsage } from "../token-usage-store";
@@ -732,6 +733,9 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           openTasksWindow: () => { windowManager.createTasksWindow(); },
           // 音效总开关：设置页可关；每次弹窗时读取，改动即时生效
           isSoundEnabled: () => loadGeneralSettings().toastSoundEnabled,
+          // 任务完成语音播报：门控（提醒音效总开关 + 是否配了 TTS 引擎）在模块内部读设置，
+          // 这里只做接线；未启用时返回 null，弹窗照旧
+          synthesizeTaskAnnouncement,
           shouldSuppressNotify: (event) => {
             // 焦点抑制三条件：事件带会话 + 聊天窗口聚焦 + 激活会话一致。
             // 调度任务结果落在任务历史（无会话落点），恒不抑制。

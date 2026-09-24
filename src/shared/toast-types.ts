@@ -43,6 +43,20 @@ export interface ToastPushPayload extends ToastItem {
   sound: boolean;
 }
 
+/**
+ * 任务完成播报的语音。
+ * 与 ToastPushPayload.sound 的区别：sound 是固定提示音、随弹窗同帧到达；
+ * 这里是"昔涟说话"，合成要花时间，所以晚于弹窗单独推（到了就播，不依赖 toast 是否还在屏幕上）。
+ */
+export interface ToastTtsAudioPayload {
+  /** 归属的 toast（排查与去重用；播放本身不依赖它） */
+  toastId: string;
+  /** 合成后的音频数据（base64），渲染页拼 data URL 播放 */
+  base64: string;
+  /** 音频容器格式（mp3 / wav / …），拼 data URL 的 MIME 用 */
+  format: string;
+}
+
 /** 单窗口内最多同时显示的 toast 条数：等待操作档优先占位，超出容器内部滚动 */
 export const TOAST_MAX_VISIBLE = 4;
 
@@ -60,4 +74,6 @@ export interface ToastRendererApi {
   onPush(callback: (payload: ToastPushPayload) => void): () => void;
   /** 订阅移除（主进程已决定移除，渲染页播退出动画）；返回退订函数 */
   onRemove(callback: (id: string) => void): () => void;
+  /** 订阅任务完成播报的语音（合成完成后单独推送，与提示音相互独立）；返回退订函数 */
+  onTtsAudio(callback: (payload: ToastTtsAudioPayload) => void): () => void;
 }
