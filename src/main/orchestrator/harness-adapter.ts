@@ -75,7 +75,7 @@ export async function runHarnessWithAdapter(
     messages: runMessages,
     runId,
     ...(recovered ? { initialState: recovered.state } : {}),
-    ...(recovered ? { initialCache: recovered.cache } : {}),
+    ...(recovered ? { initialCache: recovered.cacheState } : {}),
     tools,
     vendorConfig,
     config: {
@@ -108,6 +108,7 @@ export async function runHarnessWithAdapter(
     },
     onCompactionLifecycle: (event) => runStore.recordCompaction(runId, event),
     ...(options.onToolFinished ? { onToolFinished: options.onToolFinished } : {}),
+    ...(options.pollRunAdjustments ? { pollRunAdjustments: options.pollRunAdjustments } : {}),
     requestUserClarification: options.requestUserClarification
       ? (card) => options.requestUserClarification!(card as never, signal)
       : undefined,
@@ -118,6 +119,7 @@ export async function runHarnessWithAdapter(
     executionLedger: options.executionLedger,
     checkPermission,
     taskExecutor,
+    ...(options.transcriptSink ? { transcriptSink: options.transcriptSink } : {}),
   };
 
   // ── 运行 Harness ──
@@ -133,13 +135,42 @@ export async function runHarnessWithAdapter(
   // 若 finalState.uncertainEffects 非空，externalEffectsMayContinue 必须为 true，
   // 即使 status=success 也不能谎报 false（unknown-side-effect 的诚实 final 是允许的）。
   const hasUncertainEffects = result.finalState.uncertainEffects.length > 0;
-  const terminal = result.terminal ?? mapTerminateReasonToTerminal(
+  let terminal = result.terminal ?? mapTerminateReasonToTerminal(
     result.terminateReason,
     hasUncertainEffects,
   );
-  const terminalRunStatus = terminal.status === "success"
+  let terminalRunStatus: "completed" | "cancelled" | "failed" = terminal.status === "success"
     ? "completed"
     : terminal.status === "cancelled" ? "cancelled" : "failed";
+
+  // ── 中断轨迹闭合（先于 runStore 终态结算）──
+  // cancelled：为 started / planned 工具补确定性闭合条目并写 interruption 边界；
+  // 闭合失败不得声称轨迹协议完整 → 转 runtime_error 终态（fail-closed）。
+  if (terminal.status === "cancelled" || result.terminateReason === "cancelled") {
+    try {
+      await options.transcriptSink?.closeInterruption({
+        reason: "user_cancel",
+        runSession: runStore.get(runId),
+      });
+    } catch (error) {
+      console.error(`${LOG_PREFIX} transcript interruption closure failed:`, error);
+      terminal = { status: "runtime_error", reason: "transcript_interruption_closure_failed", externalEffectsMayContinue: true };
+      terminalRunStatus = "failed";
+    }
+  } else if (terminal.status === "timeout" || terminal.status === "runtime_error") {
+    // 失败/超时终态同样写 interruption 边界：下一轮模型上下文才能区分
+    // 「系统没完成」与「用户主动取消」。闭合失败只记日志——终态本身就是
+    // 失败，无需像取消路径那样转写 runtime_error（else-if 也保证了取消闭合
+    // 失败转出的 runtime_error 不会二次写入不同 reason 的边界）
+    try {
+      await options.transcriptSink?.closeInterruption({
+        reason: "runtime_error",
+        runSession: runStore.get(runId),
+      });
+    } catch (error) {
+      console.error(`${LOG_PREFIX} transcript failure closure failed:`, error);
+    }
+  }
   // 终态持久化必须先于 Review 收尾：Review 读取的是刚写入的不可变 run 结果。
   const finalSession = runStore.markTerminal(runId, terminalRunStatus);
 
@@ -173,6 +204,13 @@ export async function runHarnessWithAdapter(
   console.log(
     `${LOG_PREFIX} harness run complete, rounds=${result.rounds} terminated=${result.terminated} terminal=${terminal.status}`,
   );
+
+  // ── 终态后轨迹快照：失败不改已确定终态，下次读取从 JSONL 重放增量 ──
+  try {
+    await options.transcriptSink?.checkpoint();
+  } catch (error) {
+    console.error("[ConversationTranscriptStore] snapshot checkpoint failed:", error);
+  }
 
   return {
     reply: result.finalAnswer,

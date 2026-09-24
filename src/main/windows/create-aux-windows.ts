@@ -2,9 +2,9 @@ import { app, BrowserWindow, screen } from "electron";
 import * as path from "path";
 import { IPC } from "../../shared/ipc-channels";
 import { isDev } from "../env";
+import { loadGeneralSettings } from "../settings/settings-facade";
 import { computeLayout } from "../window-layout";
 import { stopCall, setCallWindow } from "../call/call-manager";
-import { attachExternalLinkHandler } from "./external-link";
 import {
   callWindow,
   getCurrentAppIconPath,
@@ -31,6 +31,15 @@ export interface ReactChatWindowHandle {
   window: BrowserWindow;
   load(sessionId?: string): Promise<void>;
   show(sessionId?: string): void;
+}
+
+export function persistedWindowState(
+  name: string,
+  enabled: boolean,
+): { name?: string; windowStatePersistence?: Electron.WindowStatePersistence } {
+  return enabled
+    ? { name, windowStatePersistence: { bounds: true, displayMode: false } }
+    : {};
 }
 
 /**
@@ -71,9 +80,6 @@ export function createReactChatWindowShell(): BrowserWindow {
     },
   });
   setReactChatWindow(window);
-
-  // 聊天窗口内出现外链（如插件收录仓库）时转交系统浏览器打开，不再派生新窗口
-  attachExternalLinkHandler(window);
 
   window.webContents.on("did-start-loading", () => {
     reactChatSession.markLoading();
@@ -244,7 +250,9 @@ export function createSettingsWindow(section?: string): void {
   const { x: dx, y: dy, width: dw, height: dh } = display.workArea;
   const width = 1060;
   const height = 920;
+  const rememberWindowState = loadGeneralSettings().rememberWindowState;
   const window = new BrowserWindow({
+    ...persistedWindowState("cyrene.settings", rememberWindowState),
     x: dx + Math.max(0, Math.floor((dw - width) / 2)),
     y: dy + Math.max(0, Math.floor((dh - height) / 2)),
     width,
@@ -267,8 +275,6 @@ export function createSettingsWindow(section?: string): void {
     },
   });
   setSettingsWindow(window);
-
-  attachExternalLinkHandler(window);
 
   const hash = section ? `#${section}` : "";
   if (isDev) {

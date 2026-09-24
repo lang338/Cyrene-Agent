@@ -35,7 +35,15 @@ import { perf } from "./perf-trace";
 import type { StyleId } from "../shared/style-sampling";
 import type { PendingTurnLifecycle } from "./plugin-host/pending-turn-lifecycle";
 import * as chatsStore from "./chats/chats-store";
-import type { ConversationMode } from "../shared/chat-types";
+import { createRunAdjustmentPoller } from "./chats/pending-adjustment";
+import { broadcastChatsChanged } from "./chats/chats-ipc";
+import type { ChatMessage, ConversationMode, PendingChatAttachment } from "../shared/chat-types";
+import { prepareTranscriptDispatch, type TranscriptRewindRequest } from "./orchestrator/conversation-transcript-coordinator";
+import { getConversationTranscriptStore } from "./orchestrator/conversation-transcript-store";
+import { createConversationSessionMigration } from "./orchestrator/conversation-session-migration";
+import { ConversationJournalService } from "./orchestrator/conversation-journal-service";
+import type { MaterializedTranscript } from "./orchestrator/conversation-transcript-projection";
+import type { TranscriptPresentationPatch } from "./orchestrator/conversation-transcript-types";
 import {
   requestUserClarification,
   cancelPendingChoicesForRun,
@@ -86,10 +94,43 @@ function extractTerminalFromRunFinished(baseEvent: unknown): CyreneRunTerminalRe
   return { status: "success", externalEffectsMayContinue: false };
 }
 
-/** 渲染进程发起 run 时传的输入。 */
+/** 当前轮的结构化用户事实；renderer 不再上传完整历史。 */
+export interface AguiCurrentUserInput {
+  turnId: string;
+  text: string;
+  visibleContent: string;
+  attachments?: PendingChatAttachment[];
+  sticker?: string;
+  at?: number;
+}
+
+function normalizeCurrentUserAttachments(value: unknown): PendingChatAttachment[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const attachments = value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const raw = item as Record<string, unknown>;
+    const kind = raw.kind === "image" || raw.kind === "document" ? raw.kind : null;
+    if (!kind || typeof raw.name !== "string" || typeof raw.filePath !== "string") return [];
+    return [{
+      kind: kind as "image" | "document",
+      name: raw.name,
+      filePath: raw.filePath,
+      ...(typeof raw.mime === "string" ? { mime: raw.mime } : {}),
+      ...(typeof raw.caption === "string" ? { caption: raw.caption } : {}),
+      ...(raw.hasAnnotations === true ? { hasAnnotations: true } : {}),
+    }];
+  });
+  return attachments.length > 0 ? attachments : undefined;
+}
+
+/** 渲染进程发起 run 时传的控制输入。 */
 export interface AguiRunInput {
-  messages: unknown[];   // 原始 {role, content}[]，主进程会 normalize
-  /** Renderer 已落库的稳定 turn ID；用于 Chat 社交原子的证据锚点。 */
+  sessionId: string;
+  currentUser?: AguiCurrentUserInput;
+  mode?: ConversationMode;
+  /** 主进程在 append 后构建的权威模型上下文，renderer 无法构造。 */
+  modelContext?: MaterializedTranscript;
+  /** 仅旧内部调用兼容；renderer 新协议只放在 currentUser.turnId。 */
   userTurnId?: string;
   /** 本轮 assistant 占位消息的稳定 turn ID。 */
   assistantTurnId?: string;
@@ -97,7 +138,6 @@ export interface AguiRunInput {
   style?: string;
   /** 本轮表达风格，与 executionMode 正交。 */
   styleId?: StyleId | string;
-  sessionId?: string;    // 会话 ID；桌面运行模式只信任该会话持久化的 mode
   /** 主进程内部使用：为共享上下文指定工作区绑定来源；null 表示本轮不加载任何工作区。 */
   workspaceBindingSessionId?: string | null;
   /** 外部渠道入口。桌面聊天不传；微信/飞书用于注入渠道语气规则。 */
@@ -108,8 +148,6 @@ export interface AguiRunInput {
   promptChannel?: string;
   /** @deprecated 仅保留 Renderer 兼容；主进程按 ChatSession.mode 分流并忽略该值。 */
   executionMode?: ConversationMode | "soul-only" | "collaboration";
-  /** 主进程内部使用：由 ChatSession.mode 注入，用于选择对应模式的 system prompt。 */
-  mode?: ConversationMode;
   /** 本轮附件（文本内容，临时注入系统上下文，不存历史）。 */
   attachments?: { name: string; text: string }[];
   /** 本轮图片附件。主进程会安全读取并转成 OpenAI-compatible image_url content block。 */
@@ -122,6 +160,8 @@ export interface AguiRunInput {
   takeoverFromRunId?: string;
   /** 只由主进程根据会话持久化字段注入，渲染端传值不可信。 */
   modelProfileId?: string;
+  /** 桌面 edit / regenerate 的轨迹回退锚点（主进程写 turn_rewind；渲染端只传锚点元数据）。 */
+  transcriptRewind?: TranscriptRewindRequest;
 }
 
 /** 调用方（index.ts）注入：把输入转成 agent 需要的 options（含 system prompt 拼接）。 */
@@ -205,6 +245,11 @@ function releaseSessionGuardEntry(sessionId: string, runId: string, resolveSettl
 /** 测试专用：读取会话当前 active run 的 runId。 */
 export function __getSessionActiveRunForTest(sessionId: string): string | undefined {
   return sessionActiveRuns.get(sessionId)?.runId;
+}
+
+/** 后台派生任务用：任一主会话运行期间避免并发占用模型配置。 */
+export function hasActiveConversationRun(): boolean {
+  return sessionActiveRuns.size > 0;
 }
 
 /** 测试专用：缩短 takeover 结算等待上限（避免真实等待 5s）。 */
@@ -342,6 +387,28 @@ export function registerAgUiIpc(
   const ipc = ipcOption ?? createIpcScope();
   buildOptionsFn = buildOptions;
   getChatWindowFn = getChatWindow;
+  const sessionMigration = createConversationSessionMigration(app.getPath("userData"));
+  const transcriptStore = getConversationTranscriptStore(app.getPath("userData"));
+  // Journal（会话日志服务）与 migration（迁移器）共享同一底层 store；
+  // pending withdrawal 对账复用 Task 5 的持久状态，不创建旁路协议。
+  // runReader 接入 harness 运行存储：崩溃孤儿工具按运行状态归类为 unknown，
+  // 而不是被误判为 not_executed（避免模型重发外部副作用）。
+  const journal = new ConversationJournalService({
+    store: transcriptStore,
+    pendingStore: chatsStore,
+    runReader: getHarnessRunStore(app.getPath("userData")),
+  });
+  const loadComposedSession = async (sessionId: string) => {
+    const recordReader = (chatsStore as typeof chatsStore & {
+      getSessionRecord?: (id: string) => ReturnType<typeof chatsStore.getSessionRecord>;
+    }).getSessionRecord;
+    const migrated = typeof recordReader === "function"
+      ? await sessionMigration.ensureConversationMigrated(sessionId)
+      : null;
+    await journal.reconcilePendingWithdrawals();
+    if (!migrated) return chatsStore.getSession(sessionId);
+    return sessionMigration.loadComposedSession(sessionId);
+  };
 
   // 渲染端落盘确认（单向通知）：ChatPage 在 checkpointRun("terminal", true) 成功后上报。
   // 协调器据此在"终态 + 落盘确认"双条件满足时发布桌面 turn:finished。
@@ -411,7 +478,7 @@ export function registerAgUiIpc(
       lifecycle?.onConversationEnded();
       throw new Error("AGUI_RUN 缺少 sessionId");
     }
-    const session = chatsStore.getSession(sessionId);
+    const session = await loadComposedSession(sessionId);
     if (!session) {
       lifecycle?.onConversationEnded();
       throw new Error(`AGUI_RUN 会话不存在: ${sessionId}`);
@@ -463,18 +530,162 @@ export function registerAgUiIpc(
       clearTimeout(settleTimeout);
     }
 
+    // ── 轨迹派发：canonical user/rewind → presentation → model context ──
+    // renderer 的 messages（即使恶意/旧版载荷仍携带）永远不参与模型上下文。
+    const currentUser = input.currentUser ?? (input.userTurnId
+      ? (() => {
+          const message = session.messages.find((candidate) => candidate.id === input.userTurnId && candidate.role === "user");
+          return message ? {
+            turnId: message.id,
+            text: message.content,
+            visibleContent: message.content,
+            at: message.at,
+            ...(message.attachments ? { attachments: message.attachments } : {}),
+            ...(message.sticker ? { sticker: message.sticker } : {}),
+          } : undefined;
+        })()
+      : undefined);
+    if (input.currentUser && (!input.currentUser.turnId || typeof input.currentUser.text !== "string"
+      || typeof input.currentUser.visibleContent !== "string")) {
+      lifecycle?.onConversationEnded();
+      throw new Error("AGUI_RUN_INVALID_CURRENT_USER");
+    }
+    if (input.userTurnId && !currentUser) {
+      lifecycle?.onConversationEnded();
+      throw new Error("TRANSCRIPT_USER_TURN_NOT_FOUND");
+    }
+    const currentUserAttachments = currentUser
+      ? normalizeCurrentUserAttachments(currentUser.attachments)
+      : undefined;
+    let modelContext: MaterializedTranscript | undefined;
+    if (currentUser) {
+      try {
+        const currentMessage: ChatMessage = {
+          id: currentUser.turnId,
+          role: "user" as const,
+          content: currentUser.text,
+          at: currentUser.at ?? Date.now(),
+          ...(currentUserAttachments ? {
+            attachments: currentUserAttachments.map((attachment) => attachment.kind === "image"
+              ? {
+                  kind: "image" as const,
+                  name: attachment.name,
+                  filePath: attachment.filePath,
+                  mime: attachment.mime ?? "application/octet-stream",
+                  ...(attachment.caption ? { caption: attachment.caption } : {}),
+                  status: "pending" as const,
+                  ...(attachment.hasAnnotations ? { hasAnnotations: true } : {}),
+                }
+              : {
+                  kind: "document" as const,
+                  name: attachment.name,
+                  filePath: attachment.filePath,
+                  status: "pending" as const,
+                }),
+          } : {}),
+          ...(currentUser.sticker ? { sticker: currentUser.sticker } : {}),
+        };
+        const sessionRecord = (chatsStore as typeof chatsStore & {
+          getSessionRecord?: (id: string) => ReturnType<typeof chatsStore.getSessionRecord>;
+        }).getSessionRecord?.(sessionId);
+        const migrated = sessionRecord?.schemaVersion === 2
+          || (session as unknown as { schemaVersion?: number }).schemaVersion === 2;
+        let presentationRevision: number = 1;
+        if (migrated && input.transcriptRewind) {
+          const rewindEntry = await journal.appendRewind(sessionId, {
+            anchorUserTurnId: input.transcriptRewind.anchorUserTurnId,
+            disposition: input.transcriptRewind.disposition,
+            runId,
+            at: currentMessage.at,
+            ...(input.transcriptRewind.disposition === "replace_user" ? {
+              replacementUser: {
+                turnId: currentUser.turnId,
+                text: currentUser.text,
+                attachments: currentUserAttachments,
+              },
+            } : {}),
+          });
+          presentationRevision = rewindEntry.revision ?? 1;
+        } else if (migrated) {
+          await journal.appendUser(sessionId, {
+            id: `user:v1:${currentUser.turnId}:r1`,
+            turnId: currentUser.turnId,
+            text: currentUser.text,
+            attachments: currentUserAttachments,
+            at: currentMessage.at,
+            revision: 1,
+          });
+        } else {
+          // v1 记录仍复用 Task 3 的确定性回填协调器；迁移完成后不会再次走这里。
+          await prepareTranscriptDispatch({
+            store: transcriptStore,
+            session: {
+              ...session,
+              messages: [
+                ...session.messages.filter((message) => message.id !== currentUser.turnId),
+                currentMessage,
+              ],
+            },
+            userTurnId: currentUser.turnId,
+            runId,
+            rewind: input.transcriptRewind,
+          });
+        }
+        const presentationMessageId = input.transcriptRewind
+          ? `${runId}:rewind:${input.transcriptRewind.anchorUserTurnId}`
+          : `user:v1:${currentUser.turnId}:r1`;
+        // v2 pending claim 的 reconcile 可能已写入 revision 1 sticker patch；
+        // 续派展示补丁递增 revision，避免被同 ID 幂等写吞掉。
+        if (!input.transcriptRewind && session.pendingDispatch?.messageId === currentUser.turnId) {
+          presentationRevision = 2;
+        }
+        const presentation: Record<string, unknown> = {};
+        if (currentUser.visibleContent !== currentUser.text) presentation.content = currentUser.visibleContent;
+        if (currentUser.sticker) presentation.sticker = currentUser.sticker;
+        const canPresent = !input.transcriptRewind || input.transcriptRewind.disposition === "replace_user";
+        if (canPresent && Object.keys(presentation).length > 0) {
+          await journal.appendPresentation(
+            sessionId,
+            presentationMessageId,
+            presentationRevision,
+            presentation as TranscriptPresentationPatch,
+          );
+        }
+        modelContext = await journal.buildModelContext(sessionId);
+      } catch (error) {
+        // 轨迹写入失败即阻断模型启动（fail-closed），复位守卫与插话标记后上抛
+        perf.dump();
+        try { chatsStore.resetPendingAdjustByRun(sessionId, runId); } catch { /* 复位尽力而为 */ }
+        releaseSessionGuard?.();
+        releaseSessionGuard = null;
+        lifecycle?.onConversationEnded();
+        throw error;
+      }
+    }
+
     // ── Chat / Work / Learn / Code：共用 CyreneAgent 外壳 ──
     const agentExecutionMode: AgentExecutionMode = mode === "chat" ? "chat" : "work";
     let built;
     try {
+    // 运行时拒绝未知的历史旁路字段；类型层已不再声明 renderer messages。
+    const { messages: _ignoredLegacyMessages, ...safeInput } = input as AguiRunInput & Record<string, unknown>;
     built = await perf.track("build_options", () => buildOptionsFn!({
-      ...input,
+      ...safeInput,
       mode,
+      ...(currentUser ? {
+        currentUser: {
+          ...currentUser,
+          ...(currentUserAttachments ? { attachments: currentUserAttachments } : {}),
+        },
+        modelContext,
+      } : {}),
       modelProfileId: session.modelProfileId,
       executionMode: agentExecutionMode,
     }));
     } catch (error) {
       perf.dump();
+      // run 未开跑即失败：清掉这期间可能落下的插话标记，条目回普通队列
+      try { chatsStore.resetPendingAdjustByRun(sessionId, runId); } catch { /* 复位尽力而为 */ }
       releaseSessionGuard?.();
       releaseSessionGuard = null;
       lifecycle?.onConversationEnded();
@@ -482,18 +693,67 @@ export function registerAgUiIpc(
     }
     const { options, latestUserText } = built;
     options.executionMode = agentExecutionMode;
-    options.recoveryContext = input.recoveryContext;
-    options.resumeFromRunId = input.resumeFromRunId;
+    // 轨迹侧崩溃孤儿提示与派发侧（渠道）恢复上下文合并，互不覆盖
+    const mergedRecoveryContext = [options.recoveryContext, input.recoveryContext]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join("\n\n");
+    if (mergedRecoveryContext) options.recoveryContext = mergedRecoveryContext;
+    // 只有明确的非空 run ID 才代表用户要求继续中断运行；普通轮次不得
+    // 因空白/旧兼容字段意外进入恢复路径，更不会自动继承 cancelled run。
+    if (typeof input.resumeFromRunId === "string" && input.resumeFromRunId.trim()) {
+      options.resumeFromRunId = input.resumeFromRunId.trim();
+    } else {
+      delete options.resumeFromRunId;
+    }
     options.conversationMode = mode;
     // 把 bridge 创建的 canonical runId 注入 CyreneRunOptions，
     // 一路传到 Agent / Harness adapter / ToolContext / 所有 AG-UI 事件。
     // ack.runId 与 RUN_STARTED.runId 必须一致。
     options.runId = runId;
+    // 轨迹写入总开关（CTA）：桌面 dispatch 带 userTurnId 才写轨迹——
+    // 缺 userTurnId 的兼容调用按渲染端消息走，sink 与插话轨迹端口都不注入，
+    // 否则模型回写没有对应 user 的孤立 assistant 条目。
+    // renderer 回退只切换读取源，不影响这里（带 userTurnId 时双写持续）。
+    const transcriptEnabled = Boolean(currentUser);
+    // 轨迹提交端（CTA）：每 run 一个 sink，entryId 全程确定性，canonical assistant /
+    // tool_result 经它写入权威轨迹。
+    // 渲染端 assistantTurnId 存在时透传（ChatLoop 单轮路径的 assistant 条目锚点）。
+    options.transcriptSink = transcriptEnabled ? journal.createRunSink({
+      conversationId: sessionId,
+      runId,
+      ...(input.assistantTurnId ? { assistantTurnId: input.assistantTurnId } : {}),
+    }) : undefined;
     // AbortController 已在会话守卫注册前创建（守卫的 abort 需要引用它）。
     // signal 一路传到 Agent / harness；AGUI_CANCEL / takeover 调用 abort()，
     // 触发 harness 返回 cancelled，CyreneAgent 发出 RUN_FINISHED(result.status="cancelled")，
     // complete 回调自然清理。
     options.signal = runAbortController.signal;
+    // 插话轮询：把"插入当前运行下一步"的待发条目在模型请求边界提交并注入。
+    // Chat 无工具链路是单请求运行，没有安全的下一步，不接轮询（IPC 侧同步拒绝）。
+    // 双写顺序在 poller 内：先以稳定 ID 写权威轨迹（含附件元数据），
+    // 再提交聊天历史；任一步失败 pending 保留并上抛（fail-closed）。
+    if (mode !== "chat") {
+      // 插话轨迹端口只在轨迹开启时注入：兼容调用缺省，poller 退化为只提交聊天历史
+      options.pollRunAdjustments = createRunAdjustmentPoller(
+        sessionId,
+        runId,
+        chatsStore,
+        transcriptEnabled ? {
+          // 稳定 entryId 规则与正常派发一致（user:v1:turnId:r1）：重试时幂等命中
+          appendUser: async ({ turnId, text, attachments }) => {
+            const transcriptStore = getConversationTranscriptStore(app.getPath("userData"));
+            await transcriptStore.append(sessionId, {
+              id: `user:v1:${turnId}:r1`,
+              at: Date.now(),
+              kind: "user",
+              turnId,
+              revision: 1,
+              payload: { text, ...(attachments ? { attachments } : {}) },
+            });
+          },
+        } : undefined,
+      );
+    }
     options.requestUserClarification = (card) => requestUserClarification(card, (cardData) => {
       send({ type: "CUSTOM", name: "cyrene.choice", value: cardData, threadId, runId });
     }, (settlement) => {
@@ -510,6 +770,7 @@ export function registerAgUiIpc(
       } catch (error) {
         // 守卫已注册：configure 失败时必须释放，否则该会话永久拒绝新 run。
         // 语义保持"配置失败 → 中断本次 run"（learn 工具不可用时不静默降级）。
+        try { chatsStore.resetPendingAdjustByRun(sessionId, runId); } catch { /* 复位尽力而为 */ }
         releaseSessionGuard?.();
         releaseSessionGuard = null;
         lifecycle?.onConversationEnded();
@@ -568,6 +829,13 @@ export function registerAgUiIpc(
     const endLifecycle = (): void => {
       if (lifecycleEnded) return;
       lifecycleEnded = true;
+      // 插话复位：运行终态（任何路径）后，已标记但未注入的条目清标记回普通队列。
+      // 必须先于会话守卫释放执行，让接续的新 run 从干净的普通队列消费。
+      try {
+        chatsStore.resetPendingAdjustByRun(sessionId, runId);
+      } catch (err) {
+        console.warn("[AgUiBridge] 插话标记复位失败:", err);
+      }
       // 释放会话守卫（compare-and-delete）并 resolve settled：
       // 等待中的 takeover 此刻才被放行，保证其开局时旧 run 的 checkpoint 已落盘。
       releaseSessionGuard?.();
@@ -900,5 +1168,29 @@ export function registerAgUiIpc(
       }
     }
     return true;
+  });
+
+  // ── 调整：把待发条目标记为"插入当前运行下一步" ──
+  // 绑定会话当前活跃运行（会话级运行守卫是唯一可信来源）。
+  // 无活跃运行、Chat 模式（单请求运行没有安全的下一步）、条目带附件、
+  // 已被认领或已标记其他运行时明确拒绝，消息留在普通队列并返回最新权威队列。
+  ipc.handle(IPC.CHATS_PENDING_ADJUST, async (event: IpcMainInvokeEvent, payload: unknown) => {
+    const body = payload as { sessionId?: unknown; messageId?: unknown };
+    const sessionId = typeof body?.sessionId === "string" ? body.sessionId : "";
+    const messageId = typeof body?.messageId === "string" ? body.messageId : "";
+    if (!sessionId || !messageId) return { ok: false, error: "invalid-payload" };
+    const session = await loadComposedSession(sessionId);
+    if (!session) return { ok: false, error: "session-not-found" };
+    const active = sessionActiveRuns.get(sessionId);
+    if (!active) {
+      return { ok: false, error: "no-active-run", queue: chatsStore.getPendingMessages(sessionId) ?? [] };
+    }
+    const mode = session.mode ?? (session.purpose === "proactive-chat" ? "chat" : "work");
+    if (mode === "chat") {
+      return { ok: false, error: "no-safe-next-step", queue: chatsStore.getPendingMessages(sessionId) ?? [] };
+    }
+    const result = chatsStore.markPendingAdjust(sessionId, messageId, active.runId);
+    if (result.ok) broadcastChatsChanged(event.sender);
+    return result;
   });
 }

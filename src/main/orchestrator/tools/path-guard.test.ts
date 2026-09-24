@@ -42,9 +42,23 @@ describe("写入路径的工作区边界", () => {
 
     expect(() => assertWritableInsideWorkspace(outside, root)).toThrow(WorkspaceBoundaryError);
     expect(() => assertWritableInsideWorkspace(path.join(root, "..", "evil.ts"), root)).toThrow(WorkspaceBoundaryError);
-    // 没绑工作区时必须拒绝——宁可拒绝，也不要留下"无界写入"的口子
+    // 既没绑工作区、调用方也没给兜底根：拒绝（没有可写范围，不能放行）
     expect(() => assertWritableInsideWorkspace(path.join(root, "a.ts"), undefined)).toThrow(WorkspaceBoundaryError);
     expect(() => assertWritableInsideWorkspace(path.join(root, "a.ts"), "   ")).toThrow(WorkspaceBoundaryError);
+  });
+
+  it("未绑工作区时退回兜底根（桌面）：界内放行，界外仍拒绝", () => {
+    const desktop = makeRoot();
+    // learn 模式记笔记：没绑工作区，相对文件名由调用方解析到桌面下
+    expect(() => assertWritableInsideWorkspace(path.join(desktop, "笔记.md"), undefined, desktop)).not.toThrow();
+
+    // 放宽的是范围而不是取消边界：桌面之外的绝对路径照样拦下
+    expect(() => assertWritableInsideWorkspace(path.join(makeRoot(), "elsewhere.ts"), undefined, desktop))
+      .toThrow(WorkspaceBoundaryError);
+
+    // 绑了工作区时以工作区为准，兜底根不参与判定
+    expect(() => assertWritableInsideWorkspace(path.join(desktop, "a.ts"), makeRoot(), desktop))
+      .toThrow(WorkspaceBoundaryError);
   });
 
   it("工作区内指向外部的符号链接会被 realpath 识破", () => {

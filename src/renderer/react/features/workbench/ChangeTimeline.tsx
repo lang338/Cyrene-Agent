@@ -56,11 +56,15 @@ export function ChangeTimeline({ sessionId, refreshToken, busy, onBusyChange, on
 
   const load = useCallback(async () => {
     const api = workbenchApi();
-    if (!api?.listLedgerRounds) return;
+    // 先取出方法本身：可选成员在 async 回调里拿不到窄化
+    const listLedgerRounds = api?.listLedgerRounds;
+    if (!listLedgerRounds) return;
+    // 用量是可选的：桥里没有这个方法时只显示轮次，不显示占用
+    const readUsage = api?.ledgerUsage;
     try {
       const [nextRounds, nextUsage] = await Promise.all([
-        api.listLedgerRounds(sessionId) as Promise<LedgerRound[]>,
-        api.ledgerUsage() as Promise<LedgerUsage>,
+        listLedgerRounds(sessionId) as Promise<LedgerRound[]>,
+        readUsage ? (readUsage() as Promise<LedgerUsage>) : Promise.resolve(null),
       ]);
       setRounds([...nextRounds].reverse()); // 最近的在最上面
       setUsage(nextUsage);

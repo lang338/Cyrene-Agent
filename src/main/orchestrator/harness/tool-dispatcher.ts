@@ -168,6 +168,7 @@ export async function dispatchToolCall(
     toolCallId: call.id,
     toolName: call.name,
     args,
+    displayName: tool.name,
   });
 
   let result: ToolCallResult;

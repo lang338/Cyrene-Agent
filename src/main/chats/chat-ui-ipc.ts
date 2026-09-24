@@ -9,7 +9,6 @@ import {
   loadModelSettings,
   saveModelProfile,
   saveModelSettings,
-  loadVisionConfig,
   resolveModelSettingsProfile,
 } from "../settings/model-settings";
 import { resolveVendorRuntimeSettings } from "../orchestrator/vendors/runtime-settings";
@@ -22,14 +21,15 @@ import {
   cancelDocumentIndexJob,
 } from "../rag/document-index-queue";
 import { retrieveQueuedDocumentChunks } from "../rag/document-index-worker";
-import { validateCaptionImagePath, buildImageCaptionPrompt } from "../chat/image-caption";
-import { decideImageSendStrategy } from "../chat/image-send-strategy";
+import { captionImageSafe, buildImageCaptionPrompt, validateCaptionImagePath } from "../chat/image-caption";
+import { resolveCaptionVisionConfig, resolveImageRoute } from "../orchestrator/image-router";
 import type { WindowManager } from "../windows/window-manager";
 import { reactChatSession, reactChatWindow } from "../windows/window-state";
 import {
   activeChatTargetRegistry,
   parseActiveTargetPayload,
 } from "../plugin-host/active-chat-target";
+import { activeConversationRegistry } from "./active-conversation-registry";
 
 export interface ChatUiIpcDependencies {
   live2dWindowLifecycle: { getDiagnostics(): unknown };
@@ -43,8 +43,12 @@ export interface ChatUiIpcDependencies {
 
 /** 兼容旧语义：当前活动会话 ID（无目标或欢迎页时为 null）。 */
 export function getActiveChatSessionId(): string | null {
-  return activeChatTargetRegistry.getActive()?.sessionId ?? null;
+  return activeConversationRegistry.getMostRecent()?.sessionId ?? null;
 }
+
+activeChatTargetRegistry.onInvalidated((_reason, affected) => {
+  if (affected) activeConversationRegistry.clearWindow(affected.webContentsId);
+});
 
 export function registerChatUiIpc(deps: ChatUiIpcDependencies): void {
   const { live2dWindowLifecycle } = deps;
@@ -136,11 +140,15 @@ export function registerChatUiIpc(deps: ChatUiIpcDependencies): void {
     saveModelSettings({ reasoning: normalized });
   });
 
-  ipc.handle(IPC.CHAT_INGEST_FILES, async (_event, paths: unknown) => {
-    const list = Array.isArray(paths) ? paths.filter((p): p is string => typeof p === "string") : [];
+  ipc.handle(IPC.CHAT_INGEST_FILES, async (_event, entries: unknown) => {
+    const list = Array.isArray(entries)
+      ? entries.filter((entry): entry is { path: string; mime?: string } =>
+          typeof entry === "object" && entry !== null
+          && typeof (entry as { path?: unknown }).path === "string")
+      : [];
     if (list.length === 0) return [];
     try {
-      return list.map((filePath) => describePendingAttachment(filePath));
+      return list.map((entry) => describePendingAttachment(entry.path, entry.mime));
     } catch (err: any) {
       console.error("[Cyrene] ingestFiles ERROR:", err?.message || err);
       return [];
@@ -176,28 +184,13 @@ export function registerChatUiIpc(deps: ChatUiIpcDependencies): void {
     const hasAnnotations = payload && typeof payload === "object"
       ? (payload as { hasAnnotations?: unknown }).hasAnnotations === true
       : false;
-    const validated = validateCaptionImagePath(filePath);
-    if (!validated.ok) return { ok: false, error: validated.error };
-
-    const visionCfg = loadVisionConfig();
-    if (!visionCfg) {
-      return { ok: false, error: "未配置视觉模型，无法分析图片" };
+    const settings = resolveModelSettingsProfile(loadModelSettings());
+    const vision = resolveCaptionVisionConfig(settings);
+    if (!vision.ok) {
+      return { ok: false, error: vision.error };
     }
 
-    try {
-      const { captionImage } = await import("../orchestrator/vision-captioner");
-      const caption = await captionImage(
-        { base64: validated.buffer.toString("base64"), mime: validated.mime },
-        buildImageCaptionPrompt(hasAnnotations),
-        visionCfg,
-      );
-      if (caption.startsWith("[错误")) {
-        return { ok: false, error: caption };
-      }
-      return { ok: true, caption };
-    } catch (err: any) {
-      return { ok: false, error: err?.message || String(err) };
-    }
+    return captionImageSafe(filePath, buildImageCaptionPrompt(hasAnnotations), vision.config);
   });
 
   ipc.handle(IPC.CHAT_GET_IMAGE_PREVIEW, (_event, payload: unknown) => {
@@ -225,10 +218,11 @@ export function registerChatUiIpc(deps: ChatUiIpcDependencies): void {
         settings = resolveModelSettingsProfile(settings, session.modelProfileId);
       }
     }
-    return decideImageSendStrategy({
-      multimodal: settings.multimodal,
-      vision: loadVisionConfig(),
-    });
+    // 图片路由统一收口在 image-router；返回形状保持 { mode: "direct" | "caption" } 不变。
+    // reject（纯文本主模型 + 未配视觉模型）映射为 caption：UI 侧转述请求会拿到路由的
+    // 人话错误并如实展示，而不是假装能直发。
+    const imageRoute = resolveImageRoute("attachment", settings);
+    return { mode: imageRoute.mode === "direct" ? "direct" as const : "caption" as const };
   });
 
   // 状态栏专用入口：打开/复用 reactChatWindow
@@ -262,10 +256,12 @@ export function registerChatUiIpc(deps: ChatUiIpcDependencies): void {
     let activeSessionId: string | null = null;
     if (payload == null) {
       activeChatTargetRegistry.clearActive(event.sender);
+      activeConversationRegistry.clearWindow(event.sender.id);
     } else {
       const parsed = parseActiveTargetPayload(payload);
       if (parsed) {
         activeChatTargetRegistry.setActive({ sender: event.sender, ...parsed });
+        activeConversationRegistry.set(event.sender.id, parsed.sessionId, parsed.mode);
         activeSessionId = parsed.sessionId;
       }
     }

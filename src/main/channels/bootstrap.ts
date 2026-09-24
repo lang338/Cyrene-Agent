@@ -1,33 +1,32 @@
 import { randomUUID } from "node:crypto";
-import type { BrowserWindow } from "electron";
+import { app, type BrowserWindow } from "electron";
 import type { IpcScope } from "../application/ipc-scope";
 import { IPC } from "../../shared/ipc-channels";
 import type { PluginPromptMode, PluginTurnStatus } from "../../plugins/api";
 import { loadGeneralSettings } from "../settings/settings-facade";
-import { loadModelSettings, loadVisionConfig, resolveModelSettingsProfile } from "../settings/model-settings";
+import { loadModelSettings, resolveModelSettingsProfile } from "../settings/model-settings";
 import type { LifecyclePublisher } from "../plugin-host/lifecycle-publisher";
 import { CyreneAgent } from "../orchestrator/cyrene-agent";
 import { toolRegistry } from "../orchestrator/tools/registry/tool-registry";
-import { decideImageSendStrategy } from "../chat/image-send-strategy";
-import {
-  IMAGE_CAPTION_PROMPT,
-  validateCaptionImagePath,
-} from "../chat/image-caption";
+import { captionImageSafe, IMAGE_CAPTION_PROMPT } from "../chat/image-caption";
+import { resolveCaptionVisionConfig, resolveImageRoute } from "../orchestrator/image-router";
+import { ConversationJournalService } from "../orchestrator/conversation-journal-service";
+import { getConversationTranscriptStore } from "../orchestrator/conversation-transcript-store";
+import { getHarnessRunStore } from "../orchestrator/harness/run-store";
 import { indexConversationTurn } from "../orchestrator/tools/history-tools";
 import type { AgentRuntime } from "../orchestrator/agent-runtime";
 import type { TtsSynthesisService } from "../services/tts/tts-synthesis-service";
 import { buildChannelAttachmentInputs } from "./agent-input";
 import { loadChannelsSettings } from "./settings-store";
 import { enforceChannelAgentPolicy, resolveChannelAgentPolicy } from "./agent-policy";
-import { appendMessage, getSession, listSessions } from "../chats/chats-store";
+import { listSessions } from "../chats/chats-store";
 import { getChannelConversationBindingStore } from "./conversation-binding-store";
-import { ChannelDispatcher, type DispatcherDeps } from "./dispatcher";
+import { ChannelDispatcher, type ChannelAgentInput, type DispatcherDeps } from "./dispatcher";
 import {
   createChannelContext,
   formatChannelUserText,
-  type BoundConversationMessageMetadata,
 } from "./channel-context";
-import { appendHistory, migrateHistory } from "./history-log";
+import { migrateHistory } from "./history-log";
 import { createKeyedQueue } from "./keyed-queue";
 import { createChannelRateLimiter } from "./rate-limiter";
 import { createChannelDeliveryService } from "./delivery-service";
@@ -65,6 +64,8 @@ export interface ChannelsSubsystemDeps {
   ipc?: IpcScope;
   /** 生命周期事件发布器：渠道轮次事件由此发布。 */
   publishLifecycle?: LifecyclePublisher;
+  /** 可选注入共享 CTA journal；缺省复用主进程 transcript store 单例。 */
+  conversationJournal?: ConversationJournalService;
 }
 
 /**
@@ -75,10 +76,13 @@ export function createChannelsSubsystem(
   deps: ChannelsSubsystemDeps,
   lifecycle?: ChannelsLifecycleAdapter,
 ): ChannelsSubsystem {
-  const loadRecentChannelHistory = async (sessionId: string, limit: number) => {
-    const { loadRecentHistory } = await import("./history-log");
-    return loadRecentHistory(sessionId, limit);
-  };
+  const conversationJournal = deps.conversationJournal
+    // runReader 接入 harness 运行存储：渠道会话同样需要把崩溃孤儿工具
+    // 按运行状态归类为 unknown，避免被误判为 not_executed。
+    ?? new ConversationJournalService({
+      store: getConversationTranscriptStore(app.getPath("userData")),
+      runReader: getHarnessRunStore(app.getPath("userData")),
+    });
 
   const observeExternalChat: DispatcherDeps["observeExternalChat"] = (sessionId, msg) => {
     getChannelConversationBindingStore().observe({
@@ -96,53 +100,21 @@ export function createChannelsSubsystem(
     return conversationId && listSessions().some((session) => session.id === conversationId) ? conversationId : null;
   };
 
-  const loadBoundConversationHistory = async (conversationId: string, limit: number) => {
-    const session = getSession(conversationId);
-    if (!session) return [];
-    return session.messages
-      .filter((message) => (message.role === "user" || message.role === "model") && message.content.trim().length > 0)
-      .slice(-limit)
-      .map((message) => ({
-        role: message.role === "model" ? "assistant" as const : "user" as const,
-        content: message.modelContext?.trim() || message.content,
-      }));
-  };
-
-  const appendBoundConversationMessage = (
-    conversationId: string,
-    role: "user" | "assistant",
-    content: string,
-    metadata: BoundConversationMessageMetadata,
-  ) => {
-    const session = appendMessage(conversationId, {
-      id: randomUUID(),
-      role: role === "assistant" ? "model" : "user",
-      content,
-      at: Date.now(),
-      modelContext: metadata.modelContext,
-      sticker: metadata.sticker,
-      channelSource: {
-        channel: metadata.channel,
-        chatType: metadata.chatType,
-        senderName: metadata.senderName,
-      },
-    });
-    if (!session) throw new Error("Bound conversation no longer exists");
-    const win = deps.getReactChatWindow();
-    if (win && !win.isDestroyed()) {
-      try {
-        win.webContents.send(IPC.CHATS_CHANGED);
-      } catch (err) {
-        console.warn("[Channels] bound conversation refresh failed:", err);
-      }
-    }
-  };
-
   const buildAndRunAgent: DispatcherDeps["buildAndRunAgent"] = async (
     msg,
-    sessionId,
-    priorMessages,
+    input,
   ) => {
+    const channelInput = typeof input === "string"
+      ? {
+        sessionId: input,
+        target: { conversationId: input },
+        modelContext: { messages: [{ role: "user" as const, content: formatChannelUserText(msg) }], uncertainEffects: [], throughSeq: 0 },
+        transcriptSink: undefined,
+        userTurnId: `${msg.channel}:${msg.senderId}:${msg.at.toISOString()}:user`,
+        assistantTurnId: `${msg.channel}:${msg.senderId}:${msg.at.toISOString()}:assistant`,
+        runId: randomUUID(),
+      }
+      : input as ChannelAgentInput;
     const channelResult: { text: string; sticker: string | null } = { text: "", sticker: null };
 
     const sandbox = loadChannelsSettings().toolSandbox;
@@ -154,51 +126,32 @@ export function createChannelsSubsystem(
     const exposedTools = policy.exposeTools ? allTools : [];
     console.log(
       "[Channels] bot run:",
-      `msg.channel=${msg.channel} sandbox=${sandbox} tools=${exposedTools.length}/${allTools.length} priorMsgs=${priorMessages?.length ?? 0}`,
+      `msg.channel=${msg.channel} sandbox=${sandbox} tools=${exposedTools.length}/${allTools.length}`,
     );
 
-    const historyMessages = (priorMessages ?? [])
-      .filter((m) => typeof m.content === "string" && m.content.trim().length > 0)
-      .map((m) => ({
-        role: m.role as "user" | "assistant" | "system",
-        content: m.content,
-      }));
-
-    // 图片发送策略也基于解析后的配置（默认档案）——顶层镜像可能是全空的空壳
+    // 图片路由统一收口在 image-router（基于解析后的默认档案——顶层镜像可能是空壳）
     const channelModelSettings = resolveModelSettingsProfile(loadModelSettings());
-    const imageSendStrategy = decideImageSendStrategy({
-      multimodal: channelModelSettings.multimodal,
-      vision: loadVisionConfig(),
-    });
+    const channelImageRoute = resolveImageRoute("channel", channelModelSettings);
     const attachmentInputs = await buildChannelAttachmentInputs(msg, {
-      imageMode: imageSendStrategy.mode,
+      // reject 时走 caption 分支：每张图会拿到路由的人话错误并诚实告知用户
+      imageMode: channelImageRoute.mode === "direct" ? "direct" : "caption",
       captionImage: async (filePath: string) => {
-        const validated = validateCaptionImagePath(filePath);
-        if (!validated.ok) return { ok: false, error: validated.error };
-        const visionCfg = loadVisionConfig();
-        if (!visionCfg) return { ok: false, error: "未配置视觉模型，无法分析图片" };
-        try {
-          const { captionImage } = await import("../orchestrator/vision-captioner");
-          const caption = await captionImage(
-            { base64: validated.buffer.toString("base64"), mime: validated.mime },
-            IMAGE_CAPTION_PROMPT,
-            visionCfg,
-          );
-          if (caption.startsWith("[错误")) return { ok: false, error: caption };
-          return { ok: true, caption };
-        } catch (err: any) {
-          return { ok: false, error: err?.message || String(err) };
-        }
+        const settings = resolveModelSettingsProfile(loadModelSettings());
+        const vision = resolveCaptionVisionConfig(settings);
+        if (!vision.ok) return { ok: false, error: vision.error };
+        return captionImageSafe(filePath, IMAGE_CAPTION_PROMPT, vision.config);
       },
     });
     const agentUserText = formatChannelUserText(msg);
     const { options } = await deps.agentRuntime.buildOptions({
-      messages: [
-        ...historyMessages,
-        { role: "user", content: agentUserText },
-      ],
+      modelContext: channelInput.modelContext,
+      currentUser: {
+        turnId: channelInput.userTurnId,
+        text: agentUserText,
+        visibleContent: msg.text,
+      },
       style: "01_default.md",
-      sessionId,
+      sessionId: channelInput.target.conversationId,
       // 渠道绑定只共享文字上下文，不继承桌面对话的工作区权限。
       workspaceBindingSessionId: null,
       attachments: attachmentInputs.attachments,
@@ -206,26 +159,30 @@ export function createChannelsSubsystem(
       channel: msg.channel,
       executionMode: policy.executionMode,
       ...(policy.executionMode === "chat" ? {
-        userTurnId: `${msg.channel}:${msg.senderId}:${msg.at.toISOString()}:user`,
-        assistantTurnId: `${msg.channel}:${msg.senderId}:${msg.at.toISOString()}:assistant`,
+        userTurnId: channelInput.userTurnId,
+        assistantTurnId: channelInput.assistantTurnId,
       } : {}),
     });
+    if (channelInput.transcriptSink) options.transcriptSink = channelInput.transcriptSink;
+    // 运行标识贯通：sink 写入、runStore 会话与生命周期事件使用同一 runId，
+    // 崩溃孤儿工具才能按 assistant 条目上的 runId 查回运行状态。
+    options.runId = channelInput.runId;
     options.tools = policy.exposeTools
       ? [...(options.capabilities?.tools ?? exposedTools)]
       : [];
     enforceChannelAgentPolicy(options, policy);
 
-    const threadId = `thread-${sessionId}-${Date.now()}`;
+    const threadId = `thread-${channelInput.target.conversationId}-${Date.now()}`;
     const agent = new CyreneAgent({ threadId, description: `bot:${msg.channel}:${msg.senderId}` });
     // 轮次事件只带渠道会话标识，不提供桌面消息边界；绑定消息由 dispatcher 镜像写入。
     const mode: PluginPromptMode = options.conversationMode
       ?? (options.executionMode === "chat" ? "chat" : "work");
-    const runId = randomUUID();
+    const runId = channelInput.runId;
     const runStartedAt = Date.now();
     deps.publishLifecycle?.publishTurnStarted({
       source: "channel",
       channel: msg.channel,
-      conversationId: sessionId,
+      conversationId: channelInput.target.conversationId,
       runId,
       mode,
     });
@@ -247,19 +204,19 @@ export function createChannelsSubsystem(
         const finished = await deps.agentRuntime.onRunFinished(agent.lastResult, agentUserText, {
           source: "channel",
           mode,
-          conversationId: sessionId,
+          conversationId: channelInput.target.conversationId,
           channel: msg.channel,
         });
         channelResult.sticker = finished.sticker;
       }
-      void indexConversationTurn(sessionId, agentUserText, reply);
+      void indexConversationTurn(channelInput.target.conversationId, agentUserText, reply);
       return channelResult;
     } finally {
       // 无论成功、超时还是异常退出，轮次结束事件都要发布一次
       deps.publishLifecycle?.publishTurnFinished({
         source: "channel",
         channel: msg.channel,
-        conversationId: sessionId,
+        conversationId: channelInput.target.conversationId,
         runId,
         mode,
         status: lifecycleStatus,
@@ -289,10 +246,6 @@ export function createChannelsSubsystem(
 
   const context = createChannelContext({
     resolveBoundConversationId,
-    loadRecentChannelHistory,
-    loadBoundConversationHistory,
-    appendChannelHistory: appendHistory,
-    appendBoundConversationMessage,
     migrateHistory,
   });
   const baseComposer = createOutgoingComposer({ synthesizeTts });
@@ -315,6 +268,7 @@ export function createChannelsSubsystem(
     limiter,
     context,
     composer,
+    journal: conversationJournal,
     delivery: createChannelDeliveryService(channelManager),
     buildAndRunAgent,
     loadSettings: loadChannelsSettings,

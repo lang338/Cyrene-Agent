@@ -16,6 +16,7 @@ import type {
   ProactiveDeliveryTarget,
   SegmentedOutputMode,
 } from "../../../shared/preferences";
+import type { QqListenAuthRequirement } from "../../../shared/qq-listen";
 import type { CustomStyleConfig } from "../../../shared/style-sampling";
 import type { CustomEndpointMode } from "../custom-endpoint-state";
 import type { TimeoutSettings } from "../../../shared/timeout-types";
@@ -113,6 +114,7 @@ export interface GeneralSettings extends ChatAppearanceSettings {
   /** 朋友圈热闹程度：抽签人数分布与角色日调用上限联动档位 */
   momentsLiveliness: "quiet" | "natural" | "lively";
   petAlwaysOnTop: boolean;
+  rememberWindowState: boolean;
   petVisible: boolean;
   petZoom: number;
   disableGpuElectron?: boolean;
@@ -242,9 +244,6 @@ export interface SettingsApi {
   openStickerManager: () => Promise<{ ok: boolean; error?: string }>;
   stickerPickFile?: () => Promise<string | null>;
   stickerAdd?: (payload: { sourcePath: string; id: string; description: string; phrases: string[] }) => Promise<unknown>;
-  getEmbeddingStatus?: () => Promise<Record<string, { installed: boolean; sizeBytes: number }>>;
-  downloadEmbeddingModel?: (model: string, mirror: string) => Promise<{ ok: boolean; error?: string }>;
-  deleteEmbeddingModel?: (model: string) => Promise<{ ok: boolean; error?: string }>;
   embeddingSetModel?: (model: string) => Promise<{ ok: boolean; clearedEntries?: number; error?: string }>;
   rerankerSetMode?: (mode: string) => Promise<boolean>;
   setToolEnabled?: (id: string, enabled: boolean) => Promise<{ ok: boolean; error?: string }>;
@@ -297,6 +296,11 @@ export interface SettingsApi {
   channelsSaveConfig: (patch: unknown) => Promise<any>;
   channelsRestart: () => Promise<{ ok: boolean }>;
   channelsQqTestConnection: () => Promise<{ ok: boolean; error?: string; detail?: Record<string, unknown> }>;
+  /**
+   * QQ 监听鉴权预检（renderer → main）：主进程按参数解析真实监听地址并判定是否
+   * 必须配置 Access Token。渲染端看不到网络接口，因此不得自行复制该判定。
+   */
+  channelsQqResolveAuthRequirement: (input: { listenMode: string; customHost?: string }) => Promise<QqListenAuthRequirement>;
   channelsQqBotTestConnection: () => Promise<{ ok: boolean; error?: string; detail?: Record<string, unknown> }>;
   channelsLogGet: (limit?: number) => Promise<unknown[]>;
   channelsLogClear: () => Promise<{ ok: boolean }>;

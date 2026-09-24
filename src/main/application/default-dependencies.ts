@@ -32,7 +32,12 @@ import {
   settingsWindow,
   tasksWindow,
 } from "../windows/window-state";
-import { loadModelSettings, saveModelSettings } from "../settings/model-settings";
+import { loadModelSettings, resolveModelSettingsProfile, saveModelSettings } from "../settings/model-settings";
+import { getConversationTranscriptStore } from "../orchestrator/conversation-transcript-store";
+import { getHarnessRunStore } from "../orchestrator/harness/run-store";
+import { createModelBackedConversationTranscriptCompactor } from "../orchestrator/conversation-transcript-compactor";
+import { ConversationJournalService } from "../orchestrator/conversation-journal-service";
+import { activeConversationRegistry } from "../chats/active-conversation-registry";
 import { registerSettingsIpc } from "../settings/settings-ipc";
 import {
   applyGeneralSettings,
@@ -49,11 +54,13 @@ import { momentsService, registerMomentsMediaMatcher } from "../moments/moments-
 import {
   addL2MemoryVector,
   deleteUserMemoryVectors,
+  flushRAGStore,
+  flushRAGStoreSync,
   getEntriesBySource,
   initRAG,
   isUserMemoryVectorStoreReady,
 } from "../rag";
-import { getEmbeddingProvider, getSceneEmbeddingProvider } from "../rag/embedding";
+import { getEmbeddingProvider } from "../rag/embedding";
 import { toolRegistry } from "../orchestrator/tools/registry/tool-registry";
 import { pluginPromptRegistry } from "../../plugins/prompts";
 import type { PluginManager } from "../../plugins/manager";
@@ -83,6 +90,8 @@ import {
 import { memoryStore } from "../memory/memory-store";
 import { backupMemoryRagFiles, reconcileMemoryRag } from "../memory/memory-rag-reconciliation";
 import { registerChatsIpc } from "../chats/chats-ipc";
+import { registerWorkspaceFilesIpc } from "../chats/workspace-files-ipc";
+import { registerOpenInAppIpc } from "../chats/open-in-app";
 import { registerMomentsIpc } from "../moments/moments-ipc";
 import { registerChatUiIpc, getActiveChatSessionId } from "../chats/chat-ui-ipc";
 import { createToastWindowController } from "../toast/toast-window";
@@ -95,7 +104,7 @@ import { TtsSessionService } from "../tts/tts-session-service";
 import { registerTtsIpc } from "../tts/tts-ipc";
 import { loadUserProfile } from "../settings-store";
 import { getAppIconPath } from "../app-icon";
-import { registerAgUiIpc } from "../agui-bridge";
+import { hasActiveConversationRun, registerAgUiIpc } from "../agui-bridge";
 import { updateLocaleContext } from "../locale-context";
 import { registerCallIpc } from "../call/call-manager";
 import { initSkills, skillRegistry } from "../skills";
@@ -106,6 +115,7 @@ import { createPendingTurnLifecycle } from "../plugin-host/pending-turn-lifecycl
 import { startPluginRuntime } from "../plugin-runtime";
 import { createAgentRuntime } from "../orchestrator/agent-runtime";
 import { createRuntimeStateService } from "../orchestrator/runtime-state-service";
+import { createTranscriptCompactorGetter } from "./transcript-compaction-wiring";
 import { createProactiveLifecycle } from "../proactive/proactive-lifecycle";
 import { createCitaService } from "../services/cita/cita-service";
 import { createSocialContextService } from "../services/social-context/social-context-service";
@@ -113,7 +123,7 @@ import { createGitService } from "../code-git/git-service";
 import { resolveGitExecutable, type ResolvedGitExecutable } from "../code-git/git-executable";
 import { registerCodeGitIpc } from "../code-git/code-git-ipc";
 import { createCheckpointService } from "../code-git/checkpoint-service";
-import { configureChangeLedger, createChangeLedger, getConfiguredChangeLedger } from "../code-git/change-ledger-service";
+import { configureChangeLedger, createChangeLedger } from "../code-git/change-ledger-service";
 import { createWorkspaceFileService } from "../code-git/workspace-files";
 import { registerWorkbenchIpc } from "../code-git/workbench-ipc";
 import { registerWorkbenchLspBridge } from "../lsp/editor-bridge";
@@ -189,6 +199,13 @@ async function reconcileUserMemoryIndex(): Promise<void> {
 export function createDefaultApplicationDependencies(): ApplicationDependencies {
   // Agent Runtime 早于插件管理器构造；通过窄闭包在运行期转发宿主事件，避免反转启动顺序。
   let pluginManager: PluginManager | undefined;
+  // 自动压缩与 CHATS_COMPACT 必须共享同一个会话级压缩器，避免两条路径各自组装 provider。
+  const getTranscriptCompactor = createTranscriptCompactorGetter(() =>
+    createModelBackedConversationTranscriptCompactor({
+      store: getConversationTranscriptStore(app.getPath("userData")),
+      runReader: getHarnessRunStore(app.getPath("userData")),
+      loadModelSettings: () => resolveModelSettingsProfile(loadModelSettings()),
+    }));
   // 生命周期事件发布器：插件系统就绪前发布的事件没有监听器，直接丢弃
   const lifecyclePublisher = createLifecyclePublisher({
     publish: (event, payload) => pluginManager
@@ -261,7 +278,8 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
       createChatShell: (windowManager) => windowManager.createReactChatWindowShell(),
       registerProtocolHandlers,
       registerShellIpc: ({ ipc, windowManager, live2dWindowLifecycle }) => {
-        registerWindowSystemIpc({ ipc, windowManager });
+        // quit 由组合根注入：窗口系统 IPC 不直接依赖 electron app，且退出仍走受控链路。
+        registerWindowSystemIpc({ ipc, windowManager, quit: () => app.quit() });
         registerChatUiIpc({ ipc, live2dWindowLifecycle, windowManager });
       },
       createTray: (input) => createTray({
@@ -304,7 +322,14 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         });
         const citaService = createCitaService({ llmClient });
         const socialContextService = createSocialContextService({ llmClient, enqueueLLMTask });
-        const proactiveLifecycle = createProactiveLifecycle({ loadGeneralSettings });
+        const proactiveLifecycle = createProactiveLifecycle({
+          loadGeneralSettings,
+          // runReader 接入 harness 运行存储：孤儿工具按运行状态归类，避免误判 not_executed
+          conversationJournal: new ConversationJournalService({
+            store: getConversationTranscriptStore(app.getPath("userData")),
+            runReader: getHarnessRunStore(app.getPath("userData")),
+          }),
+        });
         // 主动聊天服务初始化是纯装配；触发器由 background 阶段启动
         proactiveLifecycle.initializeProactiveChatService();
 
@@ -314,10 +339,9 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
 
         // 应用图标 getter 已在工厂体开头注入（早于 shell 阶段的窗口壳/托盘创建）。
 
-        // 内置工具配置 getter（场景向量索引等）
+        // 内置工具配置 getter
         bootstrapConfigGetters({
           loadGeneralSettings,
-          getSceneEmbeddingIndex: () => embeddingIndexService.getSceneEmbeddingIndex(),
         });
 
         // Locale Context（从 GeneralSettings 的语言配置同步）
@@ -472,35 +496,45 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
       initRag: async () => {
         const modelSettings = loadModelSettings();
         await initRAG("auto", undefined, undefined, modelSettings.embeddingModel, modelSettings.embeddingDimensions);
+        // 注册 RAG 落盘：受控退出在 flushPersistence 阶段刷盘；
+        // Windows 会话结束（断电/强制关机）走同步紧急落盘兜底
+        shutdown.register({
+          id: "rag-store",
+          phase: "flushPersistence",
+          dispose: async () => { await flushRAGStore(); },
+        });
+        shutdown.registerEmergencyFlush("rag-store", () => flushRAGStoreSync());
         logger.info(LogTag.RAG, "RAG initialized OK");
       },
 
-      createRuntime: (services) => createAgentRuntime({
-        runtimeStateService: services.runtimeState,
-        llmClient: services.llm,
-        enqueueLLMTask,
-        loadModelSettings,
-        loadGeneralSettings,
-        loadUserProfile,
-        toolRegistry,
-        skillRegistry,
-        getSceneEmbeddingIndex: () => services.embedding.getSceneEmbeddingIndex(),
-        getStickerEmbeddingIndex: () => services.embedding.getStickerEmbeddingIndex(),
-        getEmbeddingProvider,
-        getSceneEmbeddingProvider,
-        broadcastRuntimeStateChanged: () => {
-          broadcastToAuxWindows(IPC.RUNTIME_STATE_CHANGED, services.runtimeState.getState());
-        },
-        citaService: services.cita,
-        socialContextScheduler: services.social.scheduler,
-        chatsStore,
-        socialAtomStore: services.social.store,
-        buildPluginPromptContext: (input) => pluginPromptRegistry.build(input),
-        publishPluginHostEvent: (event, payload) => pluginManager
-          ? pluginManager.publishHostEvent(event, payload)
-          : Promise.resolve(),
-        publishToolFinished: (event) => lifecyclePublisher.publishToolFinished(event),
-      }),
+      createRuntime: (services) => {
+        const transcriptCompactor = getTranscriptCompactor();
+        return createAgentRuntime({
+          runtimeStateService: services.runtimeState,
+          llmClient: services.llm,
+          enqueueLLMTask,
+          loadModelSettings,
+          loadGeneralSettings,
+          loadUserProfile,
+          toolRegistry,
+          skillRegistry,
+          getStickerEmbeddingIndex: () => services.embedding.getStickerEmbeddingIndex(),
+          getEmbeddingProvider,
+          broadcastRuntimeStateChanged: () => {
+            broadcastToAuxWindows(IPC.RUNTIME_STATE_CHANGED, services.runtimeState.getState());
+          },
+          citaService: services.cita,
+          socialContextScheduler: services.social.scheduler,
+          chatsStore,
+          socialAtomStore: services.social.store,
+          buildPluginPromptContext: (input) => pluginPromptRegistry.build(input),
+          publishPluginHostEvent: (event, payload) => pluginManager
+            ? pluginManager.publishHostEvent(event, payload)
+            : Promise.resolve(),
+          publishToolFinished: (event) => lifecyclePublisher.publishToolFinished(event),
+          transcriptCompactor,
+        });
+      },
 
       createChannels: (runtime, services) => createChannelsSubsystem({
         agentRuntime: runtime,
@@ -530,12 +564,19 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         getReactChatWindow: () => reactChatWindow,
         ipc: shell.ipc,
         publishLifecycle: lifecyclePublisher,
+        // runReader 接入 harness 运行存储：孤儿工具按运行状态归类，避免误判 not_executed
+        conversationJournal: new ConversationJournalService({
+          store: getConversationTranscriptStore(app.getPath("userData")),
+          runReader: getHarnessRunStore(app.getPath("userData")),
+        }),
+        getActiveConversation: () => activeConversationRegistry.getMostRecent(),
         // 插件任务只有在所属插件运行中才允许触发；用户任务不受影响。
         canRunTask: (task) => !task.ownerPluginId
           || (pluginManager?.isRunning(task.ownerPluginId) ?? false),
       }),
 
       registerCoreIpc: ({ ipc, runtime, services }) => {
+        const transcriptCompactor = getTranscriptCompactor();
         // 设置变更反应：窗口/托盘/截图热键/主动服务联动
         onGeneralSettingsChanged((before, after) =>
           handleGeneralSettingsChanged(before, after, {
@@ -572,9 +613,17 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         registerTtsIpc({ ipc, ttsSessionService: services.ttsSession });
 
         // 聊天会话存储 IPC（chats-store.initialize 建好 cyrene-chats 目录并加载 index）
-        registerChatsIpc(ipc);
+        registerChatsIpc(ipc, {
+          llmClient: services.llm,
+          isPrimaryModelBusy: hasActiveConversationRun,
+          transcriptCompactor,
+        });
         registerMomentsIpc(ipc);
         registerCodeGitIpc({ ipc, service: services.git });
+        // 会话工作区只读文件（右侧面板文件树 / 预览）
+        registerWorkspaceFilesIpc(ipc);
+        // 工作区右上角"打开"菜单：本机应用探测 + 打开执行
+        registerOpenInAppIpc(ipc);
         registerWorkbenchIpc({
           ipc,
           checkpoint: services.checkpoint,

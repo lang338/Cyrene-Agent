@@ -30,7 +30,6 @@ import { type ReasoningPreference } from "../../shared/reasoning";
 import { type LoginFlowState } from "../../shared/music-types";
 import { resolveApiEndpoint, type ApiTransport } from "../../shared/api-endpoint";
 import type { ChatAppearanceSettings } from "../../shared/chat-appearance";
-import type { ChatStoreApi } from "../react/features/chat/pages/chat-page-bridge";
 import {
   DEFAULT_CUSTOM_STYLE,
   normalizeCustomStyleConfig,
@@ -71,8 +70,8 @@ import { parsePositiveIntOrThrow, parseCommandLine } from "./shared/parse";
 import { apiState, type SavedProfileLite } from "./api/state";
 import { apiForm, apiRuntimeForm, presetCards, profileList, profileListCount, profileEditorTitle, deleteProfileBtn, presetWebsiteLink, displayNameInput, baseUrlInput, baseUrlResetBtn, modelInput, modelInputSuggestions, contextWindowInput, apiKeyInput, apiKeyLabel, apiKeyHint, testConnectionBtn, transportSelect, transportHint, endpointPreview, customEndpointControls, customEndpointOverrides, customEndpointSummary, customEndpointGuideBtn, workFlowAdaptBtn, apiNoteText, multimodalToggle, embeddingDimensionsInput, toggleEnableThinking, toggleDisableThinking, toggleDisableMaxToken } from "./api/dom";
 import { visionBaseUrlInput, visionApiKeyInput, visionModelInput, visionFieldsWrap, testVisionBtn, visionTestStatus } from "./vision/dom";
-import { appearanceForm, appearanceSaveStatus, runtimeSyncSelect, runtimeSyncNote, windowCornerRadiusInput, windowCornerRadiusVal, petAlwaysOnTopInput, petVisibleInput, petZoomInput, petZoomVal, chatLineHeightInput, chatLineHeightVal, assistantBubbleEnabledInput, chatParaSpacingInput, chatParaSpacingVal, launchAtLoginInput, uiFontCurrent, uiFontImportButton, uiFontResetButton, uiIconSelect, screenshotHotkeyInput, openChromeGpu, disableGpuInput, sidebarVisibleInput, tasksVisibleInput, toastSoundEnabledInput } from "./appearance/dom";
-import { generalForm, generalSaveStatus, languageSelect, defaultChatModeSelect, segmentedOutputSelect, mobileMessageSegmentationSelect, proactiveChatSelect, proactiveDeliveryRow, proactiveDeliverySelect, chatSocialContextEnabledInput, momentsEnabledInput, cyreneMomentsPostingEnabledInput, cyreneMomentsReactionsEnabledInput, momentsCharacterReactionsEnabledInput, momentsLivelinessSelect, momentsPostingRow, momentsReactionsRow, momentsCharacterRow, momentsLivelinessRow, citaEnabledInput, citaEngineSelect, clearChatHistoryBtn, customStyleSamplingBtn, customStylePromptBtn } from "./general/dom";
+import { appearanceForm, appearanceSaveStatus, runtimeSyncSelect, runtimeSyncNote, windowCornerRadiusInput, windowCornerRadiusVal, petAlwaysOnTopInput, petVisibleInput, petZoomInput, petZoomVal, chatLineHeightInput, chatLineHeightVal, chatParaSpacingInput, chatParaSpacingVal, launchAtLoginInput, uiFontCurrent, uiFontImportButton, uiFontResetButton, uiIconSelect, screenshotHotkeyInput, openChromeGpu, disableGpuInput, sidebarVisibleInput, tasksVisibleInput, rememberWindowStateInput, toastSoundEnabledInput } from "./appearance/dom";
+import { generalForm, generalSaveStatus, languageSelect, defaultChatModeSelect, segmentedOutputSelect, mobileMessageSegmentationSelect, proactiveChatSelect, proactiveDeliveryRow, proactiveDeliverySelect, chatSocialContextEnabledInput, momentsEnabledInput, cyreneMomentsPostingEnabledInput, cyreneMomentsReactionsEnabledInput, momentsCharacterReactionsEnabledInput, momentsLivelinessSelect, momentsPostingRow, momentsReactionsRow, momentsCharacterRow, momentsLivelinessRow, citaEnabledInput, citaEngineSelect, customStyleSamplingBtn, customStylePromptBtn } from "./general/dom";
 import { minBtn, closeBtn, preferencesForm, sectionTitle, sectionHint, placeholderPanel, cyrenePanel, disclaimerPanel, pluginsPanel, placeholderIcon, placeholderTitle, placeholderCopy, saveStatus, runtimeSaveStatus, preferencesSaveStatus, cyreneSaveStatus, openStickerManagerBtn, addStickerBtn } from "./shared/shell";
 import { pluginAddBtn, neteaseDetailView, permissionBlocksWrap, permissionNote } from "./plugins/dom";
 import { preferencesState } from "./preferences/state";
@@ -90,7 +89,7 @@ import type {
   UserApi,
 } from "./shared/types";
 import { MODEL_PRESETS } from "./api/presets";
-import { showModal, showHtmlModal, showInputModal } from "./shared/modal";
+import { showConfirm, showHtmlModal, showInputModal } from "./shared/modal";
 import {
   setSaveStatus, setCyreneSaveStatus, setPreferencesSaveStatus, setAppearanceSaveStatus,
   setGeneralSaveStatus, setRuntimeSaveStatus,
@@ -124,7 +123,7 @@ import "./user/panel";  // 副作用导入：执行事件绑定 + 初始加载
 import "./plugins/panel";  // 副作用导入：执行事件绑定 + 初始加载
 import "./plugins/permission";  // 副作用导入：权限档位 UI + 风险确认弹窗
 import "./tts/panel";  // 副作用导入：TTS 配置加载 + 引擎切换 + 测试发音 + 音色复刻
-import "./rag/panel";  // 副作用导入：RAG 模型切换 + Embedding 下载/删除 + Reranker 模式
+import "./rag/panel";  // 副作用导入：RAG 模型切换 + Reranker 模式
 import "./preferences/panel";  // 副作用导入：截图热键捕获 + 表情包列表/添加/删除
 import "./mcp/panel";  // 副作用导入：MCP Server 添加/删除/启停 + 自定义端点接入说明
 import "./tokens/panel";  // 副作用导入：Token 用量图表 + 时间范围切换
@@ -191,7 +190,6 @@ if (!window.settings) {
       petVisible: true,
       petZoom: 1,
       chatLineHeight: 1.75,
-      assistantBubbleEnabled: false,
       chatParaSpacing: 0.5,
       sidebarVisible: true,
       tasksVisible: true,
@@ -216,6 +214,7 @@ if (!window.settings) {
       cyreneMomentsReactionsEnabled: true,
       momentsCharacterReactionsEnabled: true,
       momentsLiveliness: "quiet",
+      rememberWindowState: true,
       screenshotHotkey: "Alt+Shift+S",
     }),
     saveGeneral: (c) => Promise.resolve(c as GeneralSettings),
@@ -224,6 +223,8 @@ if (!window.settings) {
     channelsSaveConfig: () => Promise.resolve({}),
     channelsRestart: () => Promise.resolve({ ok: false }),
     channelsQqTestConnection: () => Promise.resolve({ ok: false, error: "settings api unavailable" }),
+    channelsQqResolveAuthRequirement: () =>
+      Promise.resolve({ ok: false, requiresAccessToken: false, error: "settings api unavailable" }),
     channelsQqBotTestConnection: () => Promise.resolve({ ok: false, error: "settings api unavailable" }),
     channelsLogGet: () => Promise.resolve([]),
     channelsLogClear: () => Promise.resolve({ ok: true }),
@@ -1061,13 +1062,13 @@ async function loadGeneralSettings(): Promise<void> {
     chatLineHeightInput.value = String(cfg.chatLineHeight ?? 1.75);
     chatLineHeightVal.textContent = (cfg.chatLineHeight ?? 1.75).toFixed(2);
     document.documentElement.style.setProperty("--rb-chat-line-height", String(cfg.chatLineHeight ?? 1.75));
-    assistantBubbleEnabledInput.checked = cfg.assistantBubbleEnabled ?? false;
     chatParaSpacingInput.value = String(cfg.chatParaSpacing ?? 0.5);
     chatParaSpacingVal.textContent = (cfg.chatParaSpacing ?? 0.5).toFixed(2) + "em";
     document.documentElement.style.setProperty("--rb-chat-para-spacing", (cfg.chatParaSpacing ?? 0.5) + "em");
     disableGpuInput.checked = cfg.disableGpuElectron ?? false;
     sidebarVisibleInput.checked = cfg.sidebarVisible ?? true;
     tasksVisibleInput.checked = cfg.tasksVisible ?? true;
+    rememberWindowStateInput.checked = cfg.rememberWindowState ?? true;
     launchAtLoginInput.checked = cfg.launchAtLogin;
     renderUiFont(normalizeUiFont(cfg.uiFont));
     renderUiIcon(normalizeUiIcon(cfg.uiIcon));
@@ -1153,6 +1154,10 @@ tasksVisibleInput.addEventListener("change", () => {
   void window.settings?.saveGeneral({ tasksVisible: tasksVisibleInput.checked });
 });
 
+rememberWindowStateInput.addEventListener("change", () => {
+  void window.settings?.saveGeneral({ rememberWindowState: rememberWindowStateInput.checked });
+});
+
 windowCornerRadiusInput.addEventListener("input", () => {
   const radius = applyWindowCornerRadius(windowCornerRadiusInput.value);
   windowCornerRadiusVal.textContent = `${radius}px`;
@@ -1235,9 +1240,6 @@ chatLineHeightInput.addEventListener("input", () => {
 });
 chatLineHeightInput.addEventListener("change", () => {
   void saveAppearancePatch({ chatLineHeight: Number(chatLineHeightInput.value) });
-});
-assistantBubbleEnabledInput.addEventListener("change", () => {
-  void saveAppearancePatch({ assistantBubbleEnabled: assistantBubbleEnabledInput.checked });
 });
 // 段间距滑块
 chatParaSpacingInput.addEventListener("input", () => {
@@ -1797,12 +1799,13 @@ memoryImportedList?.addEventListener("click", async (event) => {
   const importId = deleteBtn.dataset.importId || "";
   const fileName = deleteBtn.dataset.fileName || t("settings.importDoc.unnamed");
 
-  const confirmed = await showModal({
+  // 删除导入文档不可撤销：危险确认，默认聚焦取消
+  const confirmed = await showConfirm({
     title: t("settings.importDoc.deleteTitle"),
     message: t("settings.importDoc.deleteMessage", { fileName }),
-    icon: "⚠️",
     confirmText: t("settings.importDoc.deleteConfirm"),
     cancelText: t("settings.modal.customStyle.cancel"),
+    dangerous: true,
   });
 
   if (!confirmed) return;
@@ -1842,25 +1845,6 @@ musicReturnBtn?.addEventListener("click", () => {
 	});
 
 
-
-// ── 清空聊天历史 ─────────────────────────────────────────────
-clearChatHistoryBtn.addEventListener("click", async () => {
-  if (!window.confirm(t("settings.chatHistory.clearConfirm"))) return;
-  const chatStore = (window as typeof window & { chatStore?: ChatStoreApi }).chatStore;
-  try {
-    const sessions = await chatStore?.list();
-    if (sessions && sessions.length > 0) {
-      // 串行删除（store 不支持批量删除；会话数量不会大，可接受）
-      for (const s of sessions) {
-        await chatStore?.delete(s.id);
-      }
-    }
-    setGeneralSaveStatus(t("settings.chatHistory.clearOk"), "is-ok");
-  } catch (err) {
-    console.warn("[settings] 清空聊天会话失败:", err);
-    setGeneralSaveStatus(t("settings.chatHistory.clearFailed"), "is-error");
-  }
-});
 
 // ── 预设卡：选择厂商 = 开始新建档案草稿 ───────────────────────
 presetCards?.addEventListener("click", (e) => {

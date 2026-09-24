@@ -1,14 +1,15 @@
-// 消息正文里的文件路径 → 可点击打开。
+// 消息正文里的文件路径 → 可点开。
 //
-// 为什么用 context 注入能力：markdown 渲染器拿不到外层组件的 props（同 MessageStreamingContext 的处理方式），
-// 而"点开文件"只有工作台做得到——那里有中栏代码区。主聊天页不提供这个上下文，
-// 路径就还是普通文本，同一份 ChatMessageList 在两处表现不同，但主链路一行都不用改。
-//
-// 两条识别通道共用同一个判定函数，保证"点击行为"和"看起来像链接"永远一致：
+// 两道识别通道共用同一个判定函数，保证"看起来像链接"和"点得开"永远一致：
 //   - 行内代码（`src/a.ts`）：边界明确，允许路径里带空格
 //   - 正文裸文本（我改了 src/a.ts:42）：靠分隔符切分，必须不含空格，否则切不出边界
+//
+// 正文那条由一个 rehype 插件在**解析之后**改写文本节点：代码块天然被排除，
+// 且不去碰 streamdown 自己的元素渲染器（列表缩进、表格节奏、data-streamdown 属性都靠它）。
+// 插件只把路径包成 file:/// 链接，怎么显示、能不能点仍由 StreamdownMessageContent 的
+// anchor 渲染器按"是否在工作区内"决定，与模型主动写的 file:/// 链接走同一条路。
 
-import { Fragment, createContext, createElement, useContext, type ReactNode } from "react";
+import type { Plugin } from "unified";
 
 export interface MessageFileOpenTarget {
   /** 原样的路径文本（工作区相对路径或全盘绝对路径都可能是） */
@@ -17,10 +18,12 @@ export interface MessageFileOpenTarget {
   line?: number;
 }
 
-export type MessageFileOpenHandler = (target: MessageFileOpenTarget) => void;
-
-/** null 表示当前场景没人能打开文件（主聊天页），路径保持纯文本 */
-export const MessageFileLinkContext = createContext<MessageFileOpenHandler | null>(null);
+/** 一段文本里认出的路径：start/end 是**落在原文里的下标**，供改写时精确定位。 */
+export interface MessageFilePathMatch {
+  start: number;
+  end: number;
+  target: MessageFileOpenTarget;
+}
 
 /**
  * 认得的文件扩展名。
@@ -87,52 +90,140 @@ export function parseMessageFilePath(raw: string, options: { allowSpaces?: boole
 }
 
 /**
- * 一行文本 → 节点数组：认得的路径替换成可点击元素，其余原样保留。
- * 只在"整段 token 就是路径"时替换，不做子串替换，避免把句子里的片段切碎。
+ * 一行文本里认得的全部路径。只认"整段 token 就是一个路径"，不做子串替换，
+ * 避免把句子里的片段切碎；下标已剥掉首尾包裹字符，改写时不会吃掉括号和句末标点。
  */
-export function linkifyFilePaths(text: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  let lastIndex = 0;
+export function findMessageFilePaths(text: string): MessageFilePathMatch[] {
+  const matches: MessageFilePathMatch[] = [];
   TOKEN_RE.lastIndex = 0;
   for (const match of text.matchAll(TOKEN_RE)) {
     const token = match[0];
     const target = parseMessageFilePath(token);
     if (!target) continue;
-    const start = match.index ?? 0;
-    if (start > lastIndex) nodes.push(text.slice(lastIndex, start));
-    nodes.push(createElement(FilePathLink, { key: `${start}-${token}`, target, label: token }));
-    lastIndex = start + token.length;
+    const afterLeading = token.replace(LEADING_WRAPPERS, "");
+    const leading = token.length - afterLeading.length;
+    const inner = afterLeading.replace(TRAILING_WRAPPERS, "");
+    const start = (match.index ?? 0) + leading;
+    matches.push({ start, end: start + inner.length, target });
   }
-  if (nodes.length === 0) return [text];
-  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  return matches;
+}
+
+/** hast 节点的最小形状：只用到遍历与改写真正需要的字段。 */
+interface HastNode {
+  type?: string;
+  tagName?: string;
+  value?: string;
+  properties?: Record<string, unknown>;
+  children?: HastNode[];
+}
+
+/** 这些子树里的文本一律不改写：代码、既有链接、脚本样式。 */
+const SKIPPED_SUBTREES = new Set(["pre", "a", "script", "style"]);
+
+/**
+ * 相对路径 → 绝对路径（正斜杠）。已经是绝对路径就原样返回；
+ * 相对路径但不知道工作区根时返回 null（无法定位，保持纯文本）。
+ */
+export function toAbsoluteFilePath(filePath: string, workspaceRoot?: string): string | null {
+  const normalized = filePath.replace(/\\/g, "/");
+  if (/^[A-Za-z]:\//.test(normalized) || normalized.startsWith("/")) return normalized;
+  if (!workspaceRoot) return null;
+  const root = workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!root) return null;
+  return `${root}/${normalized.replace(/^\.\//, "")}`;
+}
+
+/** 绝对路径 → 与 StreamdownAnchor 约定一致的 file 链接（Windows 盘符不加前导斜杠）。 */
+function fileHref(absPath: string, line?: number): string {
+  const body = absPath.startsWith("/") ? `file://${absPath}` : `file:///${absPath}`;
+  return line === undefined ? body : `${body}#L${line}`;
+}
+
+/** 把一个路径文本包成锚点；无法定位为绝对路径时返回 null（调用方保持纯文本）。 */
+function makeFileAnchor(text: string, target: MessageFileOpenTarget, workspaceRoot?: string): HastNode | null {
+  const absPath = toAbsoluteFilePath(target.path, workspaceRoot);
+  if (!absPath) return null;
+  return {
+    type: "element",
+    tagName: "a",
+    properties: { href: fileHref(absPath, target.line) },
+    children: [{ type: "text", value: text }],
+  };
+}
+
+/** 文本节点 → 文本/锚点混合节点；没有可改写的返回 null，调用方保留原节点。 */
+function rewriteTextNode(value: string, workspaceRoot: string): HastNode[] | null {
+  // 路径至少要有个扩展名分隔点，先做一次廉价判断
+  if (!value.includes(".")) return null;
+  const matches = findMessageFilePaths(value);
+  if (matches.length === 0) return null;
+  const nodes: HastNode[] = [];
+  let cursor = 0;
+  for (const match of matches) {
+    const anchor = makeFileAnchor(value.slice(match.start, match.end), match.target, workspaceRoot);
+    if (!anchor) continue;
+    if (match.start > cursor) nodes.push({ type: "text", value: value.slice(cursor, match.start) });
+    nodes.push(anchor);
+    cursor = match.end;
+  }
+  if (nodes.length === 0) return null;
+  if (cursor < value.length) nodes.push({ type: "text", value: value.slice(cursor) });
   return nodes;
 }
 
-/**
- * 递归处理子节点：字符串切分，数组逐个处理，其它 React 元素原样透传。
- * 不透传进元素内部是有意的——那会把代码块、加粗里的内容也改写，成本高且容易出错。
- */
-export function linkifyNode(node: ReactNode): ReactNode {
-  if (typeof node === "string") return linkifyFilePaths(node);
-  // 用 Fragment 而不是 span 包裹：列表项里可能是块级内容（松散列表的 li 内含 p），
-  // 套一层 span 会造出非法嵌套，浏览器纠正 DOM 时会打乱原有结构
-  if (Array.isArray(node)) return node.map((child, index) => createElement(Fragment, { key: index }, linkifyNode(child)));
-  return node;
+/** 行内代码：整段内容就是一个路径时才包成锚点（边界明确，放行空格）。 */
+function rewriteInlineCode(node: HastNode, workspaceRoot: string): void {
+  const children = node.children;
+  if (!children || children.length !== 1) return;
+  const only = children[0];
+  if (only.type !== "text" || typeof only.value !== "string") return;
+  const target = parseMessageFilePath(only.value, { allowSpaces: true });
+  if (!target) return;
+  const anchor = makeFileAnchor(only.value, target, workspaceRoot);
+  if (anchor) node.children = [anchor];
 }
 
-/** 可点击的文件路径。没有上下文提供方时退化成普通文本（主聊天页走这条路） */
-export function FilePathLink({ target, label }: { target: MessageFileOpenTarget; label: string }) {
-  const onOpen = useContext(MessageFileLinkContext);
-  if (!onOpen) return label;
-  return createElement(
-    "button",
-    {
-      type: "button",
-      className: "cy-file-link",
-      // 显示原文（含行号）而不是解析后的 path，避免"点之前和点之后长得不一样"
-      title: label,
-      onClick: () => onOpen(target),
-    },
-    label,
-  );
+function rewriteSubtree(node: HastNode, workspaceRoot: string): void {
+  const tagName = node.tagName ?? "";
+  if (SKIPPED_SUBTREES.has(tagName)) return;
+  if (tagName === "code") {
+    rewriteInlineCode(node, workspaceRoot);
+    return;
+  }
+  const children = node.children;
+  if (children) {
+    let changed = false;
+    const next: HastNode[] = [];
+    for (const child of children) {
+      if (child.type === "text" && typeof child.value === "string") {
+        const rewritten = rewriteTextNode(child.value, workspaceRoot);
+        if (rewritten) {
+          next.push(...rewritten);
+          changed = true;
+          continue;
+        }
+      }
+      next.push(child);
+    }
+    if (changed) node.children = next;
+  }
+  for (const child of node.children ?? []) rewriteSubtree(child, workspaceRoot);
+}
+
+/**
+ * 就地改写一棵 hast 树：正文里裸写的路径包成 file 链接。
+ * 没有工作区根时不做任何事——定位不了目标文件，保持纯文本比给个点不动的链接好。
+ */
+export function rewriteBareFilePaths(tree: unknown, workspaceRoot?: string): void {
+  if (!workspaceRoot) return;
+  rewriteSubtree(tree as HastNode, workspaceRoot);
+}
+
+/** 供 streamdown 使用的插件形态：在 raw 解析之后、sanitize 之前运行。 */
+export function linkifyBareFilePaths(options: { workspaceRoot?: string } = {}): Plugin {
+  const workspaceRoot = options.workspaceRoot;
+  return () => (tree: unknown) => {
+    rewriteBareFilePaths(tree, workspaceRoot);
+  };
 }

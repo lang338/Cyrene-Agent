@@ -1,9 +1,10 @@
 import { app, dialog, safeStorage } from "electron";
 import path from "node:path";
 import { channelManager } from "./channels/manager";
+import type { ChannelAdapter } from "./channels/adapters/base";
 import type { ChannelId } from "./channels/types";
 import * as chatsStore from "./chats/chats-store";
-import { toolRegistry } from "./orchestrator/tools/registry/tool-registry";
+import { toolRegistry, type ToolDefinition } from "./orchestrator/tools/registry/tool-registry";
 import { loadGeneralSettings, saveGeneralSettings } from "./settings/settings-facade";
 import { loadModelSettings, resolveModelSettingsProfile } from "./settings/model-settings";
 import { pluginGenerateText } from "./plugin-llm";
@@ -20,7 +21,7 @@ import { PluginManager } from "../plugins/manager";
 import { pluginPromptRegistry } from "../plugins/prompts";
 import {
   MARKET_REGISTRY_URLS,
-  MARKET_ZIP_URL_PREFIX,
+  MARKET_ZIP_URL_PREFIXES,
   createPluginMarketplaceService,
 } from "./plugin-marketplace";
 import { IPC } from "../shared/ipc-channels";
@@ -70,10 +71,17 @@ export async function startPluginRuntime(deps: PluginRuntimeDeps): Promise<Plugi
     ],
     storageRoot: pluginDataRoot,
     runtime: {
-      toolRegistry,
+      // 宿主工具注册表端口：插件侧传 PluginTool（宽松端口类型），
+      // 在此信任边界处适配进主进程注册表；缺省字段由运行时默认值兜底
+      toolRegistry: {
+        register: (tool) => toolRegistry.register(tool as ToolDefinition),
+        unregister: (id) => toolRegistry.unregister(id),
+        getById: (id) => toolRegistry.getById(id),
+      },
+      // 宿主渠道管理器端口：同样在宿主侧完成 PluginChannelAdapter → ChannelAdapter 的适配
       channelManager: {
         has: (id) => channelManager.has(id as ChannelId),
-        register: (adapter) => channelManager.register(adapter),
+        register: (adapter) => channelManager.register(adapter as unknown as ChannelAdapter),
         unregister: (id) => channelManager.unregister(id as ChannelId),
         startOne: (id) => channelManager.startOne(id as ChannelId),
       },
@@ -145,11 +153,13 @@ export async function startPluginRuntime(deps: PluginRuntimeDeps): Promise<Plugi
   // 插件市场：列表来自官方索引快照，安装下载后走管理器的 ZIP 导入管线（含身份校验与来源记录）
   const market = createPluginMarketplaceService({
     registryUrls: MARKET_REGISTRY_URLS,
-    zipUrlPrefix: MARKET_ZIP_URL_PREFIX,
+    zipUrlPrefixes: MARKET_ZIP_URL_PREFIXES,
     cacheDir: path.join(app.getPath("userData"), "plugin-market-cache"),
     installZip: (zipPath, opts) => manager.installZip(zipPath, opts),
   });
-  deps.ipc.handle(IPC.PLUGINS_MARKET_LIST, () => market.listMarket());
+  deps.ipc.handle(IPC.PLUGINS_MARKET_LIST, (_event, preferred: unknown) =>
+    market.listMarket(typeof preferred === "string" ? preferred : undefined),
+  );
   deps.ipc.handle(IPC.PLUGINS_MARKET_INSTALL, (_event, id: unknown) => {
     if (typeof id !== "string" || !id) {
       return { ok: false, error: "id 必须是非空字符串" };
