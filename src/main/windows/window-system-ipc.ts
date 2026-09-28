@@ -3,9 +3,6 @@ import { IPC } from "../../shared/ipc-channels";
 import { createIpcScope, type IpcScope } from "../application/ipc-scope";
 import { clearUsage, getUsageReport } from "../token-usage-store";
 import {
-  sidebarWindow,
-  tasksWindow,
-  settingsWindow,
   musicPlayerWindow,
 } from "./window-state";
 import type { WindowManager } from "./window-manager";
@@ -58,47 +55,8 @@ export function registerWindowSystemIpc(deps: WindowSystemIpcDependencies): void
   ipc.handle(IPC.WINDOW_CAPTURE_FRAME, async () => deps.windowManager?.capturePetWindowFrame() ?? null);
   ipc.handle(IPC.WINDOW_GET_CURSOR_POSITION, () => deps.windowManager?.getCursorScreenPosition() ?? { x: 0, y: 0 });
 
-  ipc.on(IPC.SIDEBAR_MINIMIZE, () => {
-    sidebarWindow?.minimize();
-  });
-
-  ipc.on(IPC.SIDEBAR_CLOSE, () => {
-    sidebarWindow?.close();
-  });
-
-  // 状态栏窗口置顶 toggle：返回切换后的新状态（true=已置顶）
-  ipc.handle(IPC.SIDEBAR_TOGGLE_ALWAYS_ON_TOP, () => {
-    if (!sidebarWindow) return false;
-    const next = !sidebarWindow.isAlwaysOnTop();
-    sidebarWindow.setAlwaysOnTop(next, next ? "screen-saver" : "normal");
-    return next;
-  });
-
-  ipc.on(IPC.SIDEBAR_OPEN_TASKS, () => {
-    deps.windowManager?.createTasksWindow();
-  });
-
-  ipc.on(IPC.SIDEBAR_OPEN_SETTINGS, (_event, section?: string) => {
-    deps.windowManager?.createSettingsWindow(section);
-  });
-
-  ipc.on(IPC.SIDEBAR_OPEN_CALL, () => {
+  ipc.on(IPC.CALL_OPEN, () => {
     deps.windowManager?.createCallWindow();
-  });
-
-  ipc.on(IPC.TASKS_MINIMIZE, () => {
-    tasksWindow?.minimize();
-  });
-
-  ipc.on(IPC.TASKS_CLOSE, () => {
-    tasksWindow?.close();
-  });
-  ipc.on(IPC.SETTINGS_MINIMIZE, () => {
-    settingsWindow?.minimize();
-  });
-
-  ipc.on(IPC.SETTINGS_CLOSE, () => {
-    settingsWindow?.close();
   });
 
   // 音乐播放器窗口控制
@@ -113,8 +71,12 @@ export function registerWindowSystemIpc(deps: WindowSystemIpcDependencies): void
     return true;
   });
   ipc.handle(IPC.MUSIC_OPEN_SETTINGS, (_event, section?: string) => {
-    deps.windowManager?.createSettingsWindow(section);
-    return true;
+    return deps.windowManager?.openSettings(section ?? "music").then(() => true) ?? false;
+  });
+
+  // 渲染端请求打开设置页指定标签（如头像菜单跳"常规"）：复用主进程统一推送路径
+  ipc.handle(IPC.SETTINGS_REQUEST_SWITCH_SECTION, (_event, section?: string) => {
+    return deps.windowManager?.openSettings(section ?? "appearance").then(() => true) ?? false;
   });
 
   ipc.on(IPC.SETTINGS_OPEN_CHROME_GPU, async () => {
@@ -124,8 +86,9 @@ export function registerWindowSystemIpc(deps: WindowSystemIpcDependencies): void
   });
 
   // Token 用量查询 IPC（临时挂靠，后续归到统计模块）
+  // 上限 366：用量统计页的 52 周热力图需要一整年的按天数据。
   ipc.handle(IPC.TOKEN_USAGE_GET, (_event, days: number) => {
-    return getUsageReport(Math.max(1, Math.min(90, Number(days) || 7)));
+    return getUsageReport(Math.max(1, Math.min(366, Number(days) || 7)));
   });
   ipc.handle(IPC.TOKEN_USAGE_CLEAR, () => {
     clearUsage();

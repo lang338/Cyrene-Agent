@@ -4,15 +4,16 @@ import {
   DEFAULT_WINDOW_CORNER_RADIUS,
   normalizeWindowCornerRadius,
 } from "../../shared/window-corner-radius";
-import { DEFAULT_UI_FONT, normalizeUiFont } from "../../shared/ui-font";
+import { DEFAULT_MESSAGE_TYPOGRAPHY, normalizeMessageTypography } from "../../shared/message-typography";
 import {
   DEFAULT_CUSTOM_STYLE,
   normalizeCustomStyleConfig,
   normalizeStyleId,
 } from "../../shared/style-sampling";
 import { normalizeUiTheme } from "../../shared/ui-theme";
+import { MAX_PARALLEL_TOOL_CALLS } from "../../shared/task-session";
 import { normalizeUiIcon } from "../../shared/ui-icon";
-import { normalizeChatAppearance } from "../../shared/chat-appearance";
+import { normalizeUiLanguage } from "../../shared/ui-language";
 import {
   normalizeChatSocialContextEnabled,
   normalizeDefaultChatMode,
@@ -21,7 +22,6 @@ import {
   normalizeProactiveDeliveryTarget,
   normalizeSegmentedOutputMode,
 } from "../../shared/preferences";
-import { normalizeWindowVisibilitySettings } from "../window-visibility-settings";
 import { normalizeCitaSettings } from "../cita/settings";
 import { getGeneralSettingsPath } from "../settings-store";
 import type { GeneralSettings } from "./general-settings";
@@ -38,6 +38,7 @@ import {
 const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   plugins: {},
   maxParallelToolCalls: 4,
+  taskCharacterPersonaEnabled: true,
   citaEnabled: false,
   citaSemanticEngine: "remote",
   chatSocialContextEnabled: false,
@@ -51,16 +52,14 @@ const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   rememberWindowState: true,
   petVisible: true,
   petZoom: 1,
-  sidebarVisible: true,
-  tasksVisible: true,
   toastSoundEnabled: true,
   launchAtLogin: false,
   language: "zh-CN",
   uiTheme: "pearl-white",
   windowCornerRadius: DEFAULT_WINDOW_CORNER_RADIUS,
   uiThemeRadius: false,
-  uiFont: DEFAULT_UI_FONT,
   uiIcon: "cyrene-sun",
+  messageTypography: DEFAULT_MESSAGE_TYPOGRAPHY,
   defaultChatMode: "chat",
   currentStyleId: "default",
   customStyle: DEFAULT_CUSTOM_STYLE,
@@ -102,6 +101,7 @@ const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   amapKey: "",
   travelEnabled: false,
   playwrightMcpEnabled: false,
+  filesystemMcpEnabled: false,
   searchEngine: "off",
   searchBochaKey: "",
   searchTavilyKey: "",
@@ -118,16 +118,18 @@ const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   asrAliyunAppKey: "",
   asrAliyunAccessKeyId: "",
   asrAliyunAccessKeySecret: "",
+  asrMinimaxKey: "",
   asrLanguage: "zh",
   asrVadSilenceMs: 1000,
   asrVadThreshold: 0.01,
   asrShowTranscript: false,
   screenshotHotkey: "Alt+Shift+S",
-  chatLineHeight: 1.75,
   toolModeOverrides: {},
   chatToolsEnabled: false,
   skillModeOverrides: {},
   lspServerOverrides: [],
+  recentProjects: [],
+  disclaimerAcceptedVersion: "",
 };
 
 function normalizeMosslandTtsModel(value: unknown): string {
@@ -155,7 +157,6 @@ function notifyGeneralSettingsChanged(before: GeneralSettings, after: GeneralSet
 export function normalizeGeneralSettings(
   input: Partial<GeneralSettings> | null | undefined,
 ): GeneralSettings {
-  const windowVisibility = normalizeWindowVisibilitySettings(input);
   const cita = normalizeCitaSettings({
     enabled: input?.citaEnabled,
     semanticEngine: input?.citaSemanticEngine,
@@ -175,7 +176,7 @@ export function normalizeGeneralSettings(
   const normalizeMaxParallelToolCalls = (value: unknown): number => {
     const numberValue = typeof value === "number" ? value : Number(value);
     return Number.isFinite(numberValue)
-      ? Math.max(1, Math.min(8, Math.trunc(numberValue)))
+      ? Math.max(1, Math.min(MAX_PARALLEL_TOOL_CALLS, Math.trunc(numberValue)))
       : DEFAULT_GENERAL_SETTINGS.maxParallelToolCalls;
   };
   return {
@@ -185,6 +186,15 @@ export function normalizeGeneralSettings(
       ),
     ),
     maxParallelToolCalls: normalizeMaxParallelToolCalls(input?.maxParallelToolCalls),
+    taskCharacterPersonaEnabled: input?.taskCharacterPersonaEnabled === undefined
+      ? DEFAULT_GENERAL_SETTINGS.taskCharacterPersonaEnabled
+      : Boolean(input.taskCharacterPersonaEnabled),
+    taskModelProfileId: typeof input?.taskModelProfileId === "string" && input.taskModelProfileId
+      ? input.taskModelProfileId
+      : undefined,
+    taskModel: typeof input?.taskModel === "string" && input.taskModel
+      ? input.taskModel
+      : undefined,
     citaEnabled: cita.enabled,
     citaSemanticEngine: cita.semanticEngine,
     chatSocialContextEnabled: normalizeChatSocialContextEnabled(input?.chatSocialContextEnabled),
@@ -226,18 +236,17 @@ export function normalizeGeneralSettings(
       ? Math.round(input.petWindowY)
       : undefined,
     disableGpuElectron: input?.disableGpuElectron,
-    sidebarVisible: windowVisibility.sidebarVisible,
-    tasksVisible: windowVisibility.tasksVisible,
     toastSoundEnabled: input?.toastSoundEnabled === undefined
       ? DEFAULT_GENERAL_SETTINGS.toastSoundEnabled
       : Boolean(input.toastSoundEnabled),
     launchAtLogin: Boolean(input?.launchAtLogin),
-    language: "zh-CN",
+    // 界面语言只认已翻译完成的语种，非法值（含旧配置的 ja/ko）一律回落中文
+    language: normalizeUiLanguage(input?.language),
     uiTheme: normalizeUiTheme(input?.uiTheme),
     windowCornerRadius: normalizeWindowCornerRadius(input?.windowCornerRadius),
     uiThemeRadius: input?.uiThemeRadius ?? true,
-    uiFont: normalizeUiFont(input?.uiFont),
     uiIcon: normalizeUiIcon(input?.uiIcon),
+    messageTypography: normalizeMessageTypography(input?.messageTypography),
     defaultChatMode: normalizeDefaultChatMode(input?.defaultChatMode),
     currentStyleId: normalizeStyleId(input?.currentStyleId),
     customStyle: normalizeCustomStyleConfig(input?.customStyle),
@@ -277,6 +286,7 @@ export function normalizeGeneralSettings(
     amapKey: typeof input?.amapKey === "string" ? input.amapKey : "",
     travelEnabled: Boolean(input?.travelEnabled),
     playwrightMcpEnabled: Boolean(input?.playwrightMcpEnabled),
+    filesystemMcpEnabled: Boolean(input?.filesystemMcpEnabled),
     searchEngine: ["off", "bocha", "tavily", "minimax", "anySearch"].includes(String(input?.searchEngine))
       ? (input!.searchEngine as "off" | "bocha" | "tavily" | "minimax" | "anySearch")
       : "off",
@@ -293,12 +303,13 @@ export function normalizeGeneralSettings(
     emailSmtpUser: typeof input?.emailSmtpUser === "string" ? input.emailSmtpUser : "",
     emailSmtpPass: typeof input?.emailSmtpPass === "string" ? input.emailSmtpPass : "",
     emailFromName: typeof input?.emailFromName === "string" ? input.emailFromName : "",
-    asrEngine: ["off", "aliyun", "mossland", "local"].includes(String(input?.asrEngine))
-      ? (input!.asrEngine as "off" | "aliyun" | "mossland" | "local")
+    asrEngine: ["off", "aliyun", "mossland", "minimax", "local"].includes(String(input?.asrEngine))
+      ? (input!.asrEngine as "off" | "aliyun" | "mossland" | "minimax" | "local")
       : "off",
     asrAliyunAppKey: typeof input?.asrAliyunAppKey === "string" ? input.asrAliyunAppKey : "",
     asrAliyunAccessKeyId: typeof input?.asrAliyunAccessKeyId === "string" ? input.asrAliyunAccessKeyId : "",
     asrAliyunAccessKeySecret: typeof input?.asrAliyunAccessKeySecret === "string" ? input.asrAliyunAccessKeySecret : "",
+    asrMinimaxKey: typeof input?.asrMinimaxKey === "string" ? input.asrMinimaxKey : "",
     asrLanguage: ["zh", "en", "auto"].includes(String(input?.asrLanguage))
       ? (input!.asrLanguage as "zh" | "en" | "auto")
       : "zh",
@@ -336,12 +347,40 @@ export function normalizeGeneralSettings(
     ttsMosslandModel: normalizeMosslandTtsModel(input?.ttsMosslandModel),
     ttsMosslandTestText: typeof input?.ttsMosslandTestText === "string" ? input.ttsMosslandTestText : DEFAULT_GENERAL_SETTINGS.ttsMosslandTestText,
     ttsMosslandFormat: input?.ttsMosslandFormat === "wav" ? "wav" : "mp3",
-    ...normalizeChatAppearance(input),
     toolModeOverrides: normalizeToolModeOverrides(input?.toolModeOverrides),
     chatToolsEnabled: Boolean(input?.chatToolsEnabled),
     skillModeOverrides: normalizeSkillModeOverrides(input?.skillModeOverrides),
     lspServerOverrides: normalizeLspServerOverrides(input?.lspServerOverrides),
+    recentProjects: normalizeRecentProjects(input?.recentProjects),
+    disclaimerAcceptedVersion: typeof input?.disclaimerAcceptedVersion === "string"
+      ? input.disclaimerAcceptedVersion.trim().slice(0, 64)
+      : "",
   };
+}
+
+/** 最近项目列表的保留上限。 */
+export const MAX_RECENT_PROJECTS = 10;
+
+/** 规范化最近项目列表：只保留非空字符串、去重，并截断到上限。 */
+function normalizeRecentProjects(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const unique: string[] = [];
+  for (const item of input) {
+    if (typeof item === "string" && item && !unique.includes(item)) {
+      unique.push(item);
+    }
+  }
+  return unique.slice(0, MAX_RECENT_PROJECTS);
+}
+
+/** 记录最近绑定的项目文件夹：新路径置顶、去重、截断到上限后落盘。
+ *  顺序无变化时跳过写盘，避免重复绑定同一项目产生无意义 IO。 */
+export function recordRecentProject(workspaceRoot: string): void {
+  const before = loadGeneralSettings().recentProjects;
+  const next = [workspaceRoot, ...before.filter((p) => p !== workspaceRoot)]
+    .slice(0, MAX_RECENT_PROJECTS);
+  if (next.length === before.length && next.every((p, i) => p === before[i])) return;
+  saveGeneralSettings({ recentProjects: next });
 }
 
 /** 规范化工具-模式覆盖层：仅保留合法的 { toolId: { mode: boolean } } 结构。

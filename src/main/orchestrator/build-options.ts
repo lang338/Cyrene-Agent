@@ -67,6 +67,7 @@ import type { UncertainEffect } from "./harness/types";
 import { DEFAULT_HARNESS_CONFIG } from "./harness/types";
 import { estimateMessageTokens } from "./context-manager";
 import { createTranscriptCompactionRequiredError } from "./conversation-transcript-compactor";
+import { MAX_PARALLEL_TOOL_CALLS } from "../../shared/task-session";
 
 /** index.ts 模块级符号的最小可注入子集。
  *  类型故意用宽签名（unknown / 任意 shape）—— 因为 build-options 是纯消费者，
@@ -223,6 +224,7 @@ export interface ModelSettingsLite {
   explicitTransport?: "openai" | "anthropic" | "responses" | "auto";
   /** 顶层 reasoning 镜像（来自 perProvider[currentProvider].reasoning）。adapter 直接读。 */
   reasoning?: import("../../shared/reasoning").ReasoningPreference;
+  manualReasoning?: import("../../shared/manual-reasoning").ManualReasoningConfig;
   runtimeSync?: string;
   stickerEnabled?: boolean;
   stickerSimilarityThreshold?: number;
@@ -464,6 +466,11 @@ function resolveRunStyleId(input: AguiRunInput, saved: StyleSettingsLite): Style
   return normalizeStyleId(undefined);
 }
 
+/** 采样完全走模型默认的风格：native 连风格提示词都不注入，default 仅跳过采样。 */
+function usesModelDefaultSampling(styleId: StyleId): boolean {
+  return styleId === "native" || styleId === "default";
+}
+
 /**
  * 读取工作区静态元数据（项目名 + 是否 git 仓库）。
  * 刻意只提供这两项稳定事实，不注入 branch 等动态状态——branch 会随
@@ -521,7 +528,11 @@ export async function buildAgentRunOptions(
   input: BuildOptionsInput,
   deps: BuildOptionsDeps,
 ): Promise<{ options: CyreneRunOptions; latestUserText: string }> {
-  const settings = deps.loadModelSettings(input.modelProfileId);
+  // 会话级模型配置（consumer #4 的 request assembly boundary）：
+  // 桌面 bridge 已按会话解析好（含 effective model），直接消费；
+  // 只有非桌面入口（渠道等）才按 modelProfileId 解析——同一输入二选一，
+  // 不允许 downstream 再解析一遍把会话模型覆盖回档案默认。
+  const settings = input.sessionModelSettings ?? deps.loadModelSettings(input.modelProfileId);
   const styleSettings = deps.loadGeneralSettings();
   if (!settings.baseUrl) {
     throw new Error("还没有填写 API URL，请先在设置里保存 API 配置。");
@@ -743,12 +754,12 @@ export async function buildAgentRunOptions(
   const styleId = resolveRunStyleId(input, styleSettings);
   const isTaskMode = resolvedMode === "work" || resolvedMode === "code";
   // work/code 完全不受 style 影响：不注入风格 prompt，采样走厂商默认。
-  // chat/learn + default 也走厂商默认采样（不自己设 0.65）；
-  // 只有显式选了非 default 的具体 style 才用预设采样。
+  // chat/learn 下 native/default 也走厂商默认采样（不自己设 0.65）；
+  // 只有显式选了带预设采样的具体 style 才用预设采样。
   const stylePromptBlock = isTaskMode
     ? ""
     : buildStylePromptBlock(deps.readStylePrompt(styleId));
-  const soulSampling = (!isTaskMode && styleId !== "default")
+  const soulSampling = (!isTaskMode && !usesModelDefaultSampling(styleId))
     ? deps.resolveSoulSampling({
       styleId,
       settings,
@@ -968,10 +979,11 @@ export async function buildAgentRunOptions(
         apiKey: settings.apiKey,
         explicitTransport: settings.explicitTransport,
         reasoning: settings.reasoning,
+        manualReasoning: settings.manualReasoning,
         contextWindowTokens: settings.contextWindowTokens ?? 256000,
       },
       maxParallelToolCalls: typeof generalSettings.maxParallelToolCalls === "number"
-        ? Math.max(1, Math.min(8, Math.trunc(generalSettings.maxParallelToolCalls)))
+        ? Math.max(1, Math.min(MAX_PARALLEL_TOOL_CALLS, Math.trunc(generalSettings.maxParallelToolCalls)))
         : 4,
       messages: fcMessages,
       cleanMessages: cleanFcMessages,

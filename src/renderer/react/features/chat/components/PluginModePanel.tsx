@@ -1,7 +1,9 @@
 import { AppstoreOutlined, LoadingOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Modal } from "antd";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   MarketPluginEntry,
+  MarketPluginDetails,
   MarketSourceStatus,
   PluginListEntry,
   PluginManagementApi,
@@ -10,6 +12,7 @@ import type {
 } from "../../../../../shared/plugin-management";
 import { isNewerVersion } from "../../../../../shared/version";
 import { useTranslation } from "../../../i18n";
+import { Card } from "../../../components/ui/Card";
 import { useFeedback } from "../../../components/feedback/FeedbackProvider";
 import pluginIconUrl from "../../../assets/plugin.png?url";
 import "./PluginModePanel.css";
@@ -41,6 +44,12 @@ interface MarketState {
   error?: string;
   /** 各索引源的实时死活（含拉取失败时的全死状态），用于头部徽章展示 */
   sources?: MarketSourceStatus[];
+}
+
+interface MarketDetailsState {
+  phase: "idle" | "loading" | "ready" | "error";
+  details?: MarketPluginDetails;
+  error?: string;
 }
 
 const STATUS_ORDER: Record<PluginRuntimeStatus, number> = {
@@ -101,6 +110,9 @@ export function PluginModePanel({ api: providedApi }: PluginModePanelProps) {
   const [installingId, setInstallingId] = useState<string | null>(null);
   const [marketError, setMarketError] = useState<string | null>(null);
   const [marketNotice, setMarketNotice] = useState<string | null>(null);
+  const [detailsPlugin, setDetailsPlugin] = useState<MarketPluginEntry | null>(null);
+  const [detailsState, setDetailsState] = useState<MarketDetailsState>({ phase: "idle" });
+  const detailsRequestSeq = useRef(0);
 
   const reload = useCallback(async () => {
     if (!api) throw new Error(t("pluginPanel.apiUnavailable"));
@@ -215,6 +227,32 @@ export function PluginModePanel({ api: providedApi }: PluginModePanelProps) {
     }
   }, [api, reload, t]);
 
+  const openMarketDetails = useCallback(async (entry: MarketPluginEntry) => {
+    if (!api) return;
+    const requestSeq = ++detailsRequestSeq.current;
+    setDetailsPlugin(entry);
+    setDetailsState({ phase: "loading" });
+    try {
+      const preferred = market.sources?.find((source) => source.used)?.url;
+      const result = await api.marketDetails(entry.id, preferred);
+      if (requestSeq !== detailsRequestSeq.current) return;
+      if (result.ok) setDetailsState({ phase: "ready", details: result.details });
+      else setDetailsState({ phase: "error", error: result.error });
+    } catch (cause) {
+      if (requestSeq !== detailsRequestSeq.current) return;
+      setDetailsState({
+        phase: "error",
+        error: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
+  }, [api, market.sources]);
+
+  const closeMarketDetails = useCallback(() => {
+    detailsRequestSeq.current += 1;
+    setDetailsPlugin(null);
+    setDetailsState({ phase: "idle" });
+  }, []);
+
   const openPlugin = useCallback(async (plugin: PluginListEntry) => {
     if (!api) return;
     const action = `${plugin.id}:open`;
@@ -304,13 +342,14 @@ export function PluginModePanel({ api: providedApi }: PluginModePanelProps) {
         <div className="plugin-panel__header-actions">
           <button
             type="button"
-            className={`plugin-panel__icon-button${inMarket ? " is-accent" : ""}`}
+            className={`plugin-panel__icon-button plugin-panel__market-toggle${inMarket ? " is-accent" : ""}`}
             onClick={() => setView(inMarket ? "installed" : "market")}
             disabled={!api}
             aria-label={marketToggleLabel}
             title={marketToggleLabel}
           >
             <img className="plugin-panel__market-icon" src={pluginIconUrl} alt="" />
+            <span className="plugin-panel__market-toggle-label">{marketToggleLabel}</span>
           </button>
           <button
             type="button"
@@ -420,7 +459,7 @@ export function PluginModePanel({ api: providedApi }: PluginModePanelProps) {
                     break;
                 }
                 return (
-                  <article className="plugin-card-ui" key={entry.id}>
+                  <Card as="article" className="plugin-card-ui" key={entry.id}>
                     <div className="plugin-card-ui__main">
                       <span className="plugin-card-ui__icon" aria-hidden="true">
                         <img src={pluginIconUrl} alt="" />
@@ -443,6 +482,14 @@ export function PluginModePanel({ api: providedApi }: PluginModePanelProps) {
                     <div className="plugin-card-ui__actions">
                       <button
                         type="button"
+                        className="plugin-card-ui__button"
+                        onClick={() => void openMarketDetails(entry)}
+                        disabled={!api}
+                      >
+                        {t("pluginPanel.market.details")}
+                      </button>
+                      <button
+                        type="button"
                         className={`plugin-card-ui__button${primary ? " is-enabled" : ""}`}
                         onClick={() => void installFromMarket(entry)}
                         disabled={disabled || installBlocked}
@@ -452,11 +499,106 @@ export function PluginModePanel({ api: providedApi }: PluginModePanelProps) {
                         {installingThis ? ` ${t("pluginPanel.market.installing")}` : label}
                       </button>
                     </div>
-                  </article>
+                  </Card>
                 );
               })}
             </div>
           )}
+          <Modal
+            open={detailsPlugin !== null}
+            onCancel={closeMarketDetails}
+            footer={null}
+            width={680}
+            className="plugin-market-details-modal"
+            destroyOnHidden
+            title={detailsPlugin?.name ?? t("pluginPanel.market.details")}
+          >
+            {detailsPlugin && (() => {
+              const installed = overview.plugins.find((plugin) => plugin.id === detailsPlugin.id);
+              const action = resolveMarketAction(detailsPlugin, installed);
+              const actionLabel = action.kind === "update"
+                ? t("pluginPanel.market.update")
+                : action.kind === "replace"
+                  ? t("pluginPanel.market.replaceInstall")
+                  : action.kind === "installed"
+                    ? t("pluginPanel.market.installed", { version: action.version })
+                    : action.kind === "installedLocalNewer"
+                      ? t("pluginPanel.market.installedLocalNewer", { version: action.version })
+                      : t("pluginPanel.market.install");
+              const actionDisabled = action.kind === "installed"
+                || action.kind === "installedLocalNewer"
+                || installingId !== null;
+              const details = detailsState.details;
+              const sections = [
+                { key: "features", title: t("pluginPanel.market.detailsFeatures"), items: details?.features ?? [] },
+                { key: "requirements", title: t("pluginPanel.market.detailsRequirements"), items: details?.requirements ?? [] },
+                { key: "setup", title: t("pluginPanel.market.detailsSetup"), items: details?.setup ?? [] },
+                { key: "dataHandling", title: t("pluginPanel.market.detailsData"), items: details?.dataHandling ?? [] },
+              ];
+              const documentationUrl = details?.documentationUrl ?? detailsPlugin.homepage;
+              return (
+                <>
+                  <div className="plugin-market-details__header">
+                    <span className="plugin-market-details__icon"><img src={pluginIconUrl} alt="" /></span>
+                    <div className="plugin-market-details__heading">
+                      <div className="plugin-market-details__name-row">
+                        <span className="plugin-card-ui__version">v{detailsPlugin.version}</span>
+                      </div>
+                      <p>{t("pluginPanel.developer", { author: detailsPlugin.author.trim() || t("pluginPanel.unknownDeveloper") })}</p>
+                    </div>
+                  </div>
+                  <p className="plugin-market-details__summary">{detailsPlugin.description}</p>
+                  <div className="plugin-market-details__meta">
+                    <span>{t("pluginPanel.market.downloads", { downloads: detailsPlugin.downloads })}</span>
+                  </div>
+
+                  {detailsState.phase === "loading" ? (
+                    <div className="plugin-market-details__loading"><LoadingOutlined spin /> {t("pluginPanel.market.detailsLoading")}</div>
+                  ) : detailsState.phase === "error" ? (
+                    <div className="plugin-market-details__fallback" role="status">
+                      {t("pluginPanel.market.detailsUnavailable")}
+                      <button type="button" onClick={() => void openMarketDetails(detailsPlugin)}>
+                        {t("pluginPanel.market.detailsRetry")}
+                      </button>
+                    </div>
+                  ) : detailsState.phase === "ready" ? (
+                    <div className="plugin-market-details__sections">
+                      {sections.map((section) => section.items.length > 0 && (
+                        <section className="plugin-market-details__section" key={section.key}>
+                          <h3>{section.title}</h3>
+                          <ul>{section.items.map((item, index) => <li key={`${section.key}-${index}`}>{item}</li>)}</ul>
+                        </section>
+                      ))}
+                      {sections.every((section) => section.items.length === 0) && (
+                        <p className="plugin-market-details__empty">{t("pluginPanel.market.detailsEmpty")}</p>
+                      )}
+                    </div>
+                  ) : null}
+
+                  {documentationUrl && (
+                    <a className="plugin-market-details__link" href={documentationUrl} target="_blank" rel="noreferrer">
+                      {t("pluginPanel.market.detailsDocumentation")}
+                      <span aria-hidden="true">↗</span>
+                    </a>
+                  )}
+                  <div className="plugin-market-details__actions">
+                    <button type="button" className="plugin-card-ui__button" onClick={closeMarketDetails}>
+                      {t("common.cancel")}
+                    </button>
+                    <button
+                      type="button"
+                      className="plugin-card-ui__button is-enabled"
+                      onClick={() => void installFromMarket(detailsPlugin)}
+                      disabled={actionDisabled}
+                    >
+                      {installingId === detailsPlugin.id && <LoadingOutlined spin />}
+                      {installingId === detailsPlugin.id ? t("pluginPanel.market.installing") : actionLabel}
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
+          </Modal>
         </>
       ) : (
         <>
@@ -486,7 +628,7 @@ export function PluginModePanel({ api: providedApi }: PluginModePanelProps) {
                     ? t("pluginPanel.disable")
                     : t("pluginPanel.enable");
                 return (
-                  <article className={`plugin-card-ui is-${plugin.status}`} key={plugin.id}>
+                  <Card as="article" className={`plugin-card-ui is-${plugin.status}`} key={plugin.id}>
                     <div className="plugin-card-ui__main">
                       <span className="plugin-card-ui__icon" aria-hidden="true">
                         {plugin.icon
@@ -538,7 +680,7 @@ export function PluginModePanel({ api: providedApi }: PluginModePanelProps) {
                         {t("pluginPanel.delete")}
                       </button>
                     </div>
-                  </article>
+                  </Card>
                 );
               })}
               {overview.plugins.length > 0 && visiblePlugins.length === 0 && (

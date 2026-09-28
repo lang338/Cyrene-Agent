@@ -44,11 +44,8 @@ export interface PluginRuntimeDeps {
   schedulerStore: PluginRuntimeSchedulerStore;
   /** 插件启停后回调：宿主让调度引擎重排计时器（不补跑）。 */
   onPluginRunningStateChange?: (pluginId: string, running: boolean) => void;
-  /**
-   * 面板宿主窗口查询（首版=设置窗口）：主进程对 PLUGINS_PANEL_INVOKE 做
-   * sender 校验的依据；未提供时面板转发一律拒绝（fail-closed）。
-   */
-  getPanelHostWebContents?: () => Electron.WebContents | null;
+  /** 面板宿主窗口查询；未提供或无匹配窗口时转发一律拒绝（fail-closed）。 */
+  getPanelHostWebContents?: () => readonly Electron.WebContents[];
 }
 
 export async function startPluginRuntime(deps: PluginRuntimeDeps): Promise<PluginManager> {
@@ -160,6 +157,12 @@ export async function startPluginRuntime(deps: PluginRuntimeDeps): Promise<Plugi
   deps.ipc.handle(IPC.PLUGINS_MARKET_LIST, (_event, preferred: unknown) =>
     market.listMarket(typeof preferred === "string" ? preferred : undefined),
   );
+  deps.ipc.handle(IPC.PLUGINS_MARKET_DETAILS, (_event, id: unknown, preferred: unknown) => {
+    if (typeof id !== "string" || !id) {
+      return { ok: false, error: "id 必须是非空字符串" };
+    }
+    return market.getMarketDetails(id, typeof preferred === "string" ? preferred : undefined);
+  });
   deps.ipc.handle(IPC.PLUGINS_MARKET_INSTALL, (_event, id: unknown) => {
     if (typeof id !== "string" || !id) {
       return { ok: false, error: "id 必须是非空字符串" };
@@ -169,16 +172,16 @@ export async function startPluginRuntime(deps: PluginRuntimeDeps): Promise<Plugi
   if (deps.onPluginRunningStateChange) {
     manager.onRunningStateChange(deps.onPluginRunningStateChange);
   }
-  // 设置面板统一转发通道：主进程强制 sender 必须是面板宿主窗口（首版=设置
-  // 窗口）；pluginId 语法与通道归属由路由器校验，面板无法构造跨插件通道
+  // 设置面板统一转发通道：主进程强制 sender 必须是已登记的面板宿主窗口；
+  // pluginId 语法与通道归属由路由器校验，面板无法构造跨插件通道。
   deps.ipc.handle(
     IPC.PLUGINS_PANEL_INVOKE,
     (event: Electron.IpcMainInvokeEvent, pluginId: unknown, channel: unknown, args: unknown) => {
       if (typeof pluginId !== "string" || typeof channel !== "string" || !Array.isArray(args)) {
         return { ok: false, error: "面板调用参数格式非法" };
       }
-      const host = deps.getPanelHostWebContents?.() ?? null;
-      if (!host || event.sender !== host) {
+      const hosts = deps.getPanelHostWebContents?.() ?? [];
+      if (!hosts.includes(event.sender)) {
         return { ok: false, error: "面板调用来源窗口不受信任" };
       }
       return router.dispatch({ pluginId, channel, args, caller: "panel" });

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { AskUserPanel, PermissionPanel, PopQuizPanel } from "./InteractionPanel";
+import { AskUserPanel, PermissionPanel, PlanApprovalPanel, PopQuizPanel } from "./InteractionPanel";
 import { resolveComposerSlot, type ComposerInteraction } from "./run-presentation";
 import type { PopQuizGradedQuestion, PopQuizSubmission } from "../../../../../shared/pop-quiz";
 import "./RunExperience.css";
@@ -38,12 +38,20 @@ export function ComposerInteractionPanel({
   return (
     <div className="cy-composer-slot__interaction">
       {interaction.kind === "ask" && (
-        <AskUserPanel
-          interaction={interaction}
-          disabled={interactionBusy}
-          onAnswer={(answer) => callbacks.onAnswer?.(interaction.id, answer)}
-          onIgnore={() => callbacks.onIgnore?.(interaction.id)}
-        />
+        interaction.cardMode === "plan_approval" ? (
+          <PlanApprovalPanel
+            interaction={interaction}
+            disabled={interactionBusy}
+            onAnswer={(answer) => callbacks.onAnswer?.(interaction.id, answer)}
+          />
+        ) : (
+          <AskUserPanel
+            interaction={interaction}
+            disabled={interactionBusy}
+            onAnswer={(answer) => callbacks.onAnswer?.(interaction.id, answer)}
+            onIgnore={() => callbacks.onIgnore?.(interaction.id)}
+          />
+        )
       )}
       {interaction.kind === "permission" && (
         <PermissionPanel

@@ -69,10 +69,8 @@ function createFakeStore() {
 /** 记录型宿主：全部端口为 vi.fn，Todo 状态按函数式更新真实维护。 */
 function createRecordingHost() {
   let todoState: TodoStateBySession = {};
-  const earlyTtsQueue = { append: vi.fn(), cancel: vi.fn() } as unknown as EarlyTtsPlaybackQueue;
-  // 记录型宿主：AgentRunHost 的具名函数类型会压过 Record 索引签名，
-  // 测试要读 requestTakeover.mock.calls，故单独把它显式声明为 Mock。
-  const host = {
+  const earlyTtsQueue = { append: vi.fn(), cancel: vi.fn(), dropPending: vi.fn() } as unknown as EarlyTtsPlaybackQueue;
+  const host: AgentRunHost & Record<string, ReturnType<typeof vi.fn>> = {
     patchMessage: vi.fn(),
     setInteraction: vi.fn(),
     clearInteraction: vi.fn(),
@@ -81,7 +79,7 @@ function createRecordingHost() {
       todoState = updater(todoState);
     }),
     updateContextUsage: vi.fn(),
-    setCompressingContext: vi.fn(),
+    updatePlanReview: vi.fn(),
     setModeBusy: vi.fn(),
     requestTakeover: vi.fn(),
     clearTakeover: vi.fn(),
@@ -191,6 +189,34 @@ afterEach(() => {
 });
 
 describe("AgentRunController", () => {
+  it("keeps shell output with its own tool across the final result and checkpoint", async () => {
+    const api = createFakeApi({ success: true, runId: "run-1" });
+    const store = createFakeStore();
+    const { host } = createRecordingHost();
+    const { promise } = launch(createInput(), { api, store, host, registries: createRegistries() });
+    await flush();
+
+    api.emit(RUN_STARTED_EVENT);
+    api.emit({ type: "TOOL_CALL_START", runId: "run-1", toolCallId: "shell-a", toolCallName: "run_shell" });
+    api.emit({ type: "TOOL_CALL_START", runId: "run-1", toolCallId: "other-b", toolCallName: "read_file" });
+    api.emit({ type: "CUSTOM", name: "cyrene.tool_output", runId: "run-1", value: {
+      toolCallId: "shell-a", action: "append", text: "第一行\n",
+    } });
+    api.emit({ type: "CUSTOM", name: "cyrene.tool_output", runId: "run-1", value: {
+      toolCallId: "other-b", action: "append", text: "不应显示",
+    } });
+    api.emit({ type: "TOOL_CALL_RESULT", runId: "run-1", toolCallId: "shell-a", content: "结果预览", status: "success" });
+    api.emit({ type: "CUSTOM", name: "cyrene.tool_output", runId: "run-1", value: {
+      toolCallId: "shell-a", action: "append", text: "迟到输出",
+    } });
+    api.emit({ type: "RUN_FINISHED", runId: "run-1", result: { status: "cancelled" } });
+    await promise;
+
+    const final = store.upsert.mock.calls.at(-1)?.[1] as { toolExecutions?: Array<{ id: string; terminalOutput?: string }> };
+    expect(final.toolExecutions?.find((tool) => tool.id === "shell-a")?.terminalOutput).toBe("第一行\n");
+    expect(final.toolExecutions?.find((tool) => tool.id === "other-b")?.terminalOutput).toBeUndefined();
+  });
+
   it("awaits the presentation checkpoint before reporting run persistence", async () => {
     const api = createFakeApi({ success: true, runId: "run-1" });
     const store = createFakeStore();
@@ -566,7 +592,7 @@ describe("AgentRunController", () => {
     expect(host.onRunFinished).toHaveBeenCalledWith({ mode: "chat", sessionId: "session-1", queuePaused: false });
   });
 
-  it("候选正文首组立即显示，后续积压按小组继续显示，且不进检查点或早播语音", async () => {
+  it("候选正文首组立即显示，后续积压按小组继续显示，且流式进早播语音、不进检查点", async () => {
     const { flushFrames } = installManualAnimationFrame();
     const api = createFakeApi({ success: true, runId: "run-1" });
     const store = createFakeStore();
@@ -592,7 +618,10 @@ describe("AgentRunController", () => {
       .filter((patch) => patch.transientText);
     expect(candidatePatches.map((patch) => patch.transientText)).toEqual(["你好，", "你好，世界"]);
     expect(store.upsert.mock.calls.slice(0, -1).every((call) => call[1].content === "")).toBe(true);
-    expect(earlyTtsQueue.append).not.toHaveBeenCalled();
+    // 候选正文流式喂早播队列：每个 delta 到达即 append，不等 run 结束
+    expect(earlyTtsQueue.append).toHaveBeenCalledTimes(2);
+    expect(earlyTtsQueue.append).toHaveBeenNthCalledWith(1, "你好，");
+    expect(earlyTtsQueue.append).toHaveBeenNthCalledWith(2, "世界");
   });
 
   it("跨绘制帧到达的候选正文会按小组平滑追加到界面", async () => {
@@ -718,8 +747,37 @@ describe("AgentRunController", () => {
       responseStarted: true,
       streaming: false,
     }));
-    expect(earlyTtsQueue.append).not.toHaveBeenCalled();
+    // 候选预览流式喂早播；权威全文 delta 到达时已有候选在流，不再重复 append
+    expect(earlyTtsQueue.append).toHaveBeenCalledTimes(1);
+    expect(earlyTtsQueue.append).toHaveBeenCalledWith("预览草稿");
     expect(host.earlyTts.finish).toHaveBeenCalledWith(earlyTtsQueue, "权威最终答案");
+  });
+
+  it("候选正文降级为过程消息时清掉早播队列未播句子，队列继续可用", async () => {
+    const { flushAllFrames } = installManualAnimationFrame();
+    const api = createFakeApi({ success: true, runId: "run-1" });
+    const store = createFakeStore();
+    const { host, earlyTtsQueue } = createRecordingHost();
+    const { promise } = launch(createInput(), { api, store, host, registries: createRegistries() });
+    await flush();
+
+    api.emit(RUN_STARTED_EVENT);
+    api.emit({ type: "CUSTOM", name: "cyrene.round", runId: "run-1", value: { action: "start", roundId: "round-0" } });
+    api.emit({ type: "CUSTOM", name: "cyrene.candidate_text", runId: "run-1", value: { action: "delta", roundId: "round-0", delta: "我先确认结构。" } });
+    // discard 降级：已切未播的句子被丢弃，队列不被 cancel
+    api.emit({ type: "CUSTOM", name: "cyrene.candidate_text", runId: "run-1", value: { action: "discard", roundId: "round-0" } });
+    expect(earlyTtsQueue.dropPending).toHaveBeenCalledTimes(1);
+    expect(earlyTtsQueue.cancel).not.toHaveBeenCalled();
+
+    // 工具轮后的权威过程文本替换候选：同样清未播句子
+    api.emit({ type: "CUSTOM", name: "cyrene.round", runId: "run-1", value: { action: "start", roundId: "round-1" } });
+    api.emit({ type: "CUSTOM", name: "cyrene.candidate_text", runId: "run-1", value: { action: "delta", roundId: "round-1", delta: "继续分析。" } });
+    api.emit({ type: "CUSTOM", name: "cyrene.process_text", runId: "run-1", value: { content: "权威过程文本" } });
+    expect(earlyTtsQueue.dropPending).toHaveBeenCalledTimes(2);
+    expect(earlyTtsQueue.cancel).not.toHaveBeenCalled();
+
+    api.emit({ type: "RUN_FINISHED", runId: "run-1", result: { status: "cancelled" } });
+    await promise;
   });
 
   it("忽略旧轮次候选；discard 仅闭合当前轮，正文保留为过程消息（ask_user 不丢字）", async () => {

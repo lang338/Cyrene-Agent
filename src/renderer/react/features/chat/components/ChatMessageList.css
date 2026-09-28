@@ -11,6 +11,20 @@
   min-height: 100%;
 }
 
+/* 消息内容永远不参与原生窗口拖动区域计算，包括嵌套卡片、按钮与伪元素。
+   no-drag 的滚动矩形可能越过裁剪边界，扣掉上方标题栏；显式 none 在当前
+   Chromium 中也会变成 no-drag。initial 才恢复不提交区域的初始值。
+   important 保证消息内组件自己的区域声明也无法重新污染窗口标题栏。 */
+.cy-message-list,
+.cy-message-list *,
+.cy-message-list::before,
+.cy-message-list::after,
+.cy-message-list *::before,
+.cy-message-list *::after {
+  app-region: initial !important;
+  -webkit-app-region: initial !important;
+}
+
 .cy-message-list__channel-context {
   position: sticky;
   z-index: 2;
@@ -22,11 +36,11 @@
   gap: 8px;
   margin: 0 auto 16px;
   padding: 6px 12px;
-  border: 1px solid var(--cy-border);
+  border: 1px solid var(--rb-border-default);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--cy-bg-workspace) 88%, transparent);
+  background: color-mix(in srgb, var(--rb-surface-workspace) 88%, transparent);
   box-shadow: 0 4px 16px rgb(43 33 54 / 8%);
-  color: var(--cy-text-secondary);
+  color: var(--rb-text-secondary);
   font-size: 12px;
   line-height: 1.4;
   backdrop-filter: blur(12px);
@@ -43,7 +57,7 @@
   height: 6px;
   flex: 0 0 6px;
   border-radius: 50%;
-  background: var(--cy-accent);
+  background: var(--rb-accent);
 }
 
 .cy-message {
@@ -76,6 +90,12 @@
   animation: cyrene-avatar-float 3s ease-in-out infinite;
 }
 
+.cy-message-avatar__image--sprite {
+  border: 0;
+  border-radius: 0;
+  object-fit: contain;
+}
+
 @keyframes cyrene-avatar-float {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-3px); }
@@ -86,14 +106,14 @@
     radial-gradient(circle at 30% 28%, rgb(61 174 255 / 42%) 0%, transparent 55%),
     radial-gradient(circle at 70% 75%, rgb(236 72 153 / 46%) 0%, transparent 60%),
     rgb(255 255 255 / 80%);
-  border: 1px solid var(--cy-border);
+  border: 1px solid var(--rb-border-default);
 }
 
 .cy-message--user .ant-bubble-content {
   border-radius: 16px 16px 4px;
-  background: var(--cy-accent);
+  background: var(--rb-accent);
   color: #fff;
-  box-shadow: var(--cy-shadow-bubble-accent);
+  box-shadow: var(--rb-shadow-bubble-accent);
 }
 
 .cy-message--user:has(.cy-message__sticker:only-child) .ant-bubble-content {
@@ -123,7 +143,7 @@
 }
 
 .cy-message--assistant .cy-message__channel-source {
-  color: var(--cy-text-secondary);
+  color: var(--rb-text-secondary);
 }
 
 .cy-message__attachments {
@@ -187,7 +207,7 @@
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: var(--cy-text);
+  color: var(--rb-text-primary);
   box-shadow: none;
 }
 
@@ -307,7 +327,7 @@
   padding: 3px 2px;
   border: 0;
   background: transparent;
-  color: var(--cy-text);
+  color: var(--rb-text-primary);
   font: 600 13px/1.4 var(--rb-font-sans, sans-serif);
   text-align: start;
   cursor: pointer;
@@ -405,7 +425,7 @@
   padding: 5px 2px;
   border: 0;
   background: transparent;
-  color: var(--cy-text);
+  color: var(--rb-text-primary);
   font: 600 12px/1.4 var(--rb-font-sans, sans-serif);
   text-align: left;
   cursor: pointer;
@@ -449,7 +469,7 @@
 
 /* 完成态标题后的文件改动提示：项目主粉高亮 */
 .cy-agent-round__files {
-  color: var(--cy-accent, #ff5b8a);
+  color: var(--rb-accent, #ff5b8a);
   font-weight: 600;
 }
 
@@ -473,13 +493,20 @@
 .cy-run-activity__process {
   padding: 7px 9px;
   border-left: 2px solid rgb(209 144 173 / 45%);
-  color: var(--cy-text-secondary);
+  color: var(--rb-text-secondary);
   font-size: 12px;
+}
+
+/* 运行时间线过程正文：显式声明排版，不再依赖消息正文的基础字号 */
+.cy-run-activity__process .cy-message-markdown {
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.68;
 }
 
 .cy-run-activity__process-label {
   margin-bottom: 4px;
-  color: var(--cy-text-muted);
+  color: var(--rb-text-secondary);
   font-size: 11px;
   font-weight: 600;
 }
@@ -491,7 +518,7 @@
 
 .cy-run-activity__empty {
   padding: 6px 2px;
-  color: var(--cy-text-muted);
+  color: var(--rb-text-secondary);
   font: 500 12px/1.45 var(--rb-font-sans, sans-serif);
 }
 
@@ -500,7 +527,7 @@
   align-items: center;
   gap: 8px;
   min-height: 52px;
-  color: var(--cy-text-muted);
+  color: var(--rb-text-secondary);
   font: 500 13px/1.4 var(--rb-font-sans, sans-serif);
 }
 
@@ -584,6 +611,8 @@
 
 .cy-tool-executions__description {
   display: flex;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
   align-items: center;
   gap: 7px;
@@ -594,7 +623,10 @@
 }
 
 .cy-tool-executions__detail {
+  flex: 0 1 56ch;
   min-width: 0;
+  width: min(56ch, 48vw);
+  max-width: min(56ch, 48vw);
   overflow: hidden;
   padding: 2px 6px;
   border: 1px solid rgb(31 35 48 / 8%);
@@ -613,7 +645,7 @@
   padding: 8px;
   border-radius: 8px;
   background: #f4f4f5;
-  color: var(--cy-text-muted);
+  color: var(--rb-text-secondary);
   font: 12px/1.55 var(--rb-font-mono, monospace);
   white-space: pre-wrap;
 }
@@ -638,20 +670,20 @@
 }
 
 .cy-ask-user-qa__question {
-  color: var(--cy-text-muted);
+  color: var(--rb-text-secondary);
   font-size: 12px;
   line-height: 1.5;
 }
 
 .cy-ask-user-qa__answer {
-  color: var(--cy-text);
+  color: var(--rb-text-primary);
   font-size: 12.5px;
   line-height: 1.5;
   font-weight: 500;
 }
 
 .cy-message-reasoning {
-  color: var(--cy-text-muted);
+  color: var(--rb-text-secondary);
 }
 
 .cy-message-reasoning .ant-think-status-icon {
@@ -694,8 +726,10 @@
 }
 
 .cy-message-reasoning .cy-message-markdown {
-  color: var(--cy-text-muted);
+  color: var(--rb-text-secondary);
+  font-weight: 400;
   font-size: 13px;
+  line-height: 1.68;
 }
 
 .cy-message--assistant:has(.cy-message__sticker:only-child) .ant-bubble-content {
@@ -744,22 +778,78 @@
 }
 
 .cy-message--system {
-  color: var(--cy-text-muted);
+  color: var(--rb-text-secondary);
 }
 
+/* 压缩分隔条：不跟随消息列的阅读宽度，而是横贯整个消息区，
+   左右只保留容器等距留白，配合 content 的居中即为「工作区居中」的观感。
+   padding-inline 必须清零：placement 为 start 时 antd 会给气泡加
+   padding-inline-end: 15%（给右侧气泡让位），不清掉右侧就会空出一块、居中随之偏左。
+   必须显式隐藏 avatar 列并让 body 撑满，否则内容会从头像右侧起算、宽度被挤短。 */
+.cy-message--compaction {
+  width: 100%;
+  max-width: none;
+  margin: 10px 0;
+  padding-inline: 0 !important;
+}
+
+.cy-message--compaction .ant-bubble-avatar {
+  display: none;
+}
+
+.cy-message--compaction .ant-bubble-body {
+  width: 100%;
+  max-width: none;
+}
+
+.cy-message--compaction .ant-bubble-content {
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.cy-message__compaction {
+  width: 100%;
+}
+
+/* 进行中：呼吸占位条（手动压缩摘要期间），完成后由静态 marker 接管 */
+.cy-message__compaction--running {
+  animation: cy-compaction-breath 1.6s ease-in-out infinite;
+}
+
+@keyframes cy-compaction-breath {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+/* 基础规则只保留跨场景共享的布局与全局字体；字号/行高/字重由各使用场景自己声明，
+   调整聊天消息排版时不再波及文件预览、运行时间线、交互面板等复用 MarkdownContent 的区域。 */
 .cy-message-markdown {
   min-width: 0;
   color: inherit;
-  font-weight: 400;
-  font-size: 14px;
-  line-height: var(--cy-chat-line-height, 1.75);
   font-family: var(--rb-font-sans, sans-serif);
   user-select: text;
 }
 
-/* 正式回答采用较紧凑的阅读节奏，避免 Markdown 默认标题压过正文。 */
-.cy-message--assistant .cy-message-markdown {
-  line-height: 1.68;
+/* 聊天消息正文（气泡内）的排版：用户消息与会话行高一致，
+   正式回答采用较紧凑的阅读节奏，避免 Markdown 默认标题压过正文。 */
+.cy-message__user-body .cy-message-markdown {
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+/* 排版数值由设置页"昔涟消息字体"控制：写入根节点 CSS 变量，未设置时回落这里的默认值 */
+.cy-message__assistant-body .cy-message-markdown {
+  font-weight: var(--cy-msg-weight, 400);
+  font-size: var(--cy-msg-size, 15px);
+  line-height: var(--cy-msg-line-height, 1.85);
+  letter-spacing: var(--cy-msg-spacing, 0.8px);
 }
 
 .cy-message--assistant .cy-message-markdown h1 {
@@ -804,7 +894,7 @@
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: var(--cy-accent);
+  color: var(--rb-accent);
   font-family: inherit;
   font-size: 0.96em;
   font-weight: 600;
@@ -817,12 +907,14 @@
 }
 
 .cy-file-link:hover {
-  color: color-mix(in srgb, var(--cy-accent) 82%, #8f3657);
+  color: color-mix(in srgb, var(--rb-accent) 82%, #8f3657);
   text-decoration: underline;
 }
 
 .cy-file-link__icon {
   flex-shrink: 0;
+  width: 12px;
+  height: 12px;
   opacity: 0.65;
 }
 
@@ -832,6 +924,63 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 260px;
+}
+
+/* 网站链接：淡底色 pill（favicon + 文本 + 域名），比文件链接突出半档但不打断正文 */
+.cy-web-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 1px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--rb-accent) 9%, transparent);
+  color: var(--rb-accent);
+  font-family: inherit;
+  font-size: 0.94em;
+  font-weight: 600;
+  line-height: 1.45;
+  vertical-align: baseline;
+  text-decoration: none;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.cy-web-link:hover {
+  background: color-mix(in srgb, var(--rb-accent) 16%, transparent);
+  color: color-mix(in srgb, var(--rb-accent) 82%, #8f3657);
+}
+
+.cy-web-link__favicon {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+}
+
+.cy-web-link__icon {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  opacity: 0.65;
+}
+
+.cy-web-link__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+
+.cy-web-link__domain {
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+  color: color-mix(in srgb, currentColor 52%, transparent);
+  font-weight: 400;
+  font-size: 0.86em;
 }
 
 .cy-file-link.is-plain {
@@ -908,7 +1057,7 @@
   padding: 10px 12px;
   border-radius: 8px;
   background: #f7f2f4;
-  color: var(--cy-text);
+  color: var(--rb-text-primary);
   font: 12px/1.6 Consolas, "Cascadia Code", monospace;
   white-space: pre-wrap;
   word-break: break-word;
@@ -948,7 +1097,7 @@
   padding: 10px 12px;
   border-radius: 8px;
   background: #f7f2f4;
-  color: var(--cy-text);
+  color: var(--rb-text-primary);
   font: 12px/1.6 Consolas, "Cascadia Code", monospace;
   white-space: pre-wrap;
   word-break: break-word;
@@ -963,7 +1112,7 @@
   border: 1px solid rgb(31 35 48 / 10%);
   border-radius: 10px;
   background: #f2f2f3;
-  color: var(--cy-text);
+  color: var(--rb-text-primary);
   font: 12px/1.6 Consolas, "Cascadia Code", monospace;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1021,8 +1170,8 @@
 }
 
 .cy-message-markdown input[type="checkbox"]:checked {
-  border-color: var(--cy-accent);
-  background: var(--cy-accent);
+  border-color: var(--rb-accent);
+  background: var(--rb-accent);
 }
 
 .cy-message-markdown input[type="checkbox"]:checked::after {
@@ -1046,7 +1195,7 @@
 }
 
 .cy-message-markdown a {
-  color: var(--cy-accent);
+  color: var(--rb-accent);
 }
 
 .cy-message-markdown blockquote {
@@ -1081,9 +1230,9 @@
   margin: 16px 0;
   gap: 0;
   padding: 0;
-  border: 1px solid #eadde3;
+  border: 1px solid var(--rb-border-default);
   border-radius: 10px;
-  background: #fffdfd;
+  background: var(--rb-bg-2);
   overflow: hidden;
 }
 
@@ -1092,7 +1241,9 @@
   border-radius: 0;
   background: transparent;
   overflow-x: auto;
-  overflow-y: hidden;
+  /* streamdown 给这层 div 挂了内联 max-height（tableMaxHeight 默认 300px），
+     纵向必须保持可滚，否则超出的行会被硬裁掉且没有滚动条 */
+  overflow-y: auto;
 }
 
 .cy-message-markdown [data-streamdown="table"] {
@@ -1106,25 +1257,25 @@
 .cy-message-markdown [data-streamdown="table"] td {
   padding: 8px 12px;
   border: 0;
-  color: var(--cy-text);
+  color: var(--rb-text-primary);
   font-size: 13px;
   vertical-align: top;
 }
 
 .cy-message-markdown [data-streamdown="table"] th {
-  background: #fff5f8;
-  color: #5f4b54;
+  background: var(--rb-surface-hover);
+  color: var(--rb-text-primary);
   font-size: 12.5px;
   font-weight: 600;
   line-height: 1.45;
 }
 
 .cy-message-markdown [data-streamdown="table"] :is(th, td):not(:last-child) {
-  border-right: 1px solid #eee3e7;
+  border-right: 1px solid var(--rb-border-default);
 }
 
 .cy-message-markdown [data-streamdown="table"] tbody tr + tr > td {
-  border-top: 1px solid #f0e7ea;
+  border-top: 1px solid var(--rb-border-default);
 }
 
 .cy-message-markdown hr[data-streamdown="horizontal-rule"] {
@@ -1152,6 +1303,18 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* 回复时间：复制按钮右侧的轻提示，与动作按钮同高对齐；随动作条一起悬浮淡入 */
+.cy-message-time {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: #8e8e93;
+  white-space: nowrap;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 0.2s ease;
 }
 
 .cy-tts-button {
@@ -1184,7 +1347,7 @@
 }
 
 .cy-last-turn-action:hover {
-  color: var(--cy-accent);
+  color: var(--rb-accent);
   transform: scale(1.08);
 }
 
@@ -1249,7 +1412,7 @@
 .cy-last-message-editor__actions button.is-primary {
   border-color: #fff;
   background: #fff;
-  color: var(--cy-accent);
+  color: var(--rb-accent);
   font-weight: 600;
 }
 
@@ -1259,7 +1422,7 @@
 }
 
 .cy-tts-button:hover {
-  color: var(--cy-accent) !important;
+  color: var(--rb-accent) !important;
   transform: scale(1.08);
 }
 
@@ -1277,7 +1440,7 @@
 }
 
 .cy-tts-button.is-playing {
-  color: var(--cy-accent) !important;
+  color: var(--rb-accent) !important;
 }
 
 .cy-tts-button__wave {
@@ -1316,9 +1479,11 @@
 .cy-message:hover .cy-copy-button,
 .cy-message:hover .cy-tts-button,
 .cy-message:hover .cy-last-turn-action,
+.cy-message:hover .cy-message-time,
 .cy-message:focus-within .cy-copy-button,
 .cy-message:focus-within .cy-tts-button,
-.cy-message:focus-within .cy-last-turn-action {
+.cy-message:focus-within .cy-last-turn-action,
+.cy-message:focus-within .cy-message-time {
   opacity: 1;
 }
 

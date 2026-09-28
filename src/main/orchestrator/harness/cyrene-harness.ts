@@ -294,10 +294,14 @@ function createRun(input: HarnessInput): HarnessRun {
     ...getHarnessBuiltinToolSpecs({
       includeInteractive: input.includeInteractiveTools,
       includeTask: Boolean(input.taskExecutor),
+      includeCloseTask: Boolean(input.closeTaskExecutor),
+      openTaskCompanions: input.openTaskCompanions,
       planState: input.planState,
     }),
   ];
 
+  // 排他轮（ask_user / submit_plan）分发上下文：submit_plan 交卷需要会话身份
+  // （conversationId / runId）驱动状态机与注意力提醒，因此 toolContext 必须在此就位
   const askDispatchContext: ToolDispatchContext = {
     state,
     tools: input.tools,
@@ -305,6 +309,7 @@ function createRun(input: HarnessInput): HarnessRun {
     requestUserClarification: input.requestUserClarification,
     includeInteractiveTools: input.includeInteractiveTools,
     toolOutputStore: input.toolOutputStore,
+    toolContext: input.toolContext,
   };
 
   return {
@@ -327,6 +332,7 @@ function createRun(input: HarnessInput): HarnessRun {
       // 改动账本：启动时配置的进程级实例（未配置则为 undefined，完全不记账）
       changeLedger: input.changeLedger ?? getConfiguredChangeLedger(),
       taskExecutor: input.taskExecutor,
+      closeTaskExecutor: input.closeTaskExecutor,
       deferOutputPersistence: true,
     },
     toolCallStartedAt: new Map(),

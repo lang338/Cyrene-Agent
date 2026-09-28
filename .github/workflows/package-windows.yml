@@ -79,6 +79,7 @@ jobs:
           name: cyrene-windows-installer
           path: |
             release/Cyrene-Setup-*.exe
+            release/Cyrene-Setup-*.exe.blockmap
             release/latest.yml
           if-no-files-found: error
           # 安装器数百 MB，缩短留存时间避免占满产物配额

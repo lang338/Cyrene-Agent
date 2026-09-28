@@ -9,6 +9,8 @@ import type { WindowActivationBroker } from "./window-activation";
 export interface PreReadyDependencies {
   configureDocumentIndex(): void;
   installSingleInstance(onSecondInstance: () => void): boolean;
+  /** 旧 userData 目录（live2d-cyrene）数据迁移到当前目录（Cyrene）。 */
+  migrateLegacyUserData(): void;
   registerPrivilegedSchemes(): void;
   configureGpuSwitches(): void;
   ensureGpuSandboxAcl(): void;
@@ -29,6 +31,10 @@ export function prepareBeforeReady(deps: PreReadyDependencies): PreReadyResult {
   if (!isPrimary) {
     return { isPrimaryProcess: false };
   }
+
+  // 数据迁移必须在单实例锁之后（防并发搬运）、
+  // 下方 GPU 开关读取设置之前（那是 userData 的第一处读取点）
+  deps.migrateLegacyUserData();
 
   deps.registerPrivilegedSchemes();
   deps.configureGpuSwitches();

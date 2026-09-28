@@ -40,6 +40,9 @@ export interface ToolExecutionRecord {
   displayName?: string;
   status: "running" | "success" | "error";
   result?: string;
+  /** 运行中收到、并随聊天记录保存的命令输出尾窗。 */
+  terminalOutput?: string;
+  terminalOutputTruncated?: boolean;
   argsText?: string;
   roundId?: string;
   /** 结构化文件变更证据（Diff Review 卡片）；由 tool_end 事件独立携带，不依赖被截断的 result 文本。 */
@@ -125,10 +128,21 @@ export interface ChatMessageChannelSource {
   senderName?: string;
 }
 
+/**
+ * 上下文压缩标记消息：由轨迹投影层从 compaction_checkpoint 条目生成，
+ * 只存在于 UI 消息流（含投影缓存快照），不进入模型上下文与会话存储。
+ */
+export interface ChatMessageCompactionMark {
+  /** automatic = 发送前预算触发的自动压缩；manual = 环形图手动压缩。 */
+  trigger: "automatic" | "manual";
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
+  /** 存在即表示本条是压缩分隔标记（见 ChatMessageCompactionMark），正文恒为空。 */
+  compaction?: ChatMessageCompactionMark;
   /** 模型公开返回的推理过程；不包含隐藏或加密思考。 */
   reasoning?: string;
   reasoningBlocks?: ReasoningBlock[];
@@ -234,8 +248,6 @@ export interface PendingChatMessage {
   attachments?: PendingChatAttachment[];
   /** 用户表情包 ID（内置或自定义）。 */
   userSticker?: string;
-  /** 恢复指定旧 run（中断任务续跑）：随条目入队，认领派发时透传给模型运行。 */
-  resumeFromRunId?: string;
   /**
    * 入队那一刻冻结的本轮临时文本上下文（工作台当前打开的文件等）。
    * 必须在入队时固化：等真正发出时用户可能已经切走了文件。
@@ -313,11 +325,23 @@ export interface ChatSession {
   /** 当前会话选择的已保存模型；缺失时使用默认模型。 */
   modelProfileId?: string;
   /**
+   * 本对话固定的当前模型（从属于 modelProfileId 绑定，Invariant B）。
+   * 缺省 = 旧会话：继续跟随绑定档案默认模型的动态解析（兼容性例外，不回填）。
+   * 创建对话时快照档案默认模型；切档案时原子重置；手动切模型时写选中值。
+   */
+  model?: string;
+  /**
    * 会话级最新上下文容量快照：上下文环形图的唯一读取点（消息级 contextUsage 仅作历史兜底）。
    * 手动压缩等「不产生新 assistant 消息但改变上下文构成」的操作写这里，
    * 避免 UI 显示过期数据（known-issues 问题 3）。
    */
   currentContextUsage?: ContextUsageSnapshot;
+  /**
+   * 派生字段（不落盘）：按当前模型配置实时解析出的上下文容量。
+   * 快照里的 contextWindowTokens 是生成那一刻的口径，模型绑定或模型设置变更后会过期，
+   * 主进程在读出口覆盖此值，渲染端用它替换环形图分母，避免展示陈旧容量。
+   */
+  contextWindowTokens?: number;
   /** 会话级待发队列：旧会话无此字段视为空队列（向后兼容）。 */
   pendingMessages?: PendingChatMessage[];
   /** 待发派发状态：认领后 run 确认接受前存在；残留即恢复入口（向后兼容缺省为无）。 */
@@ -334,6 +358,14 @@ export interface ChatSessionRecordV2 extends Omit<ChatSession, "messages" | "sch
 }
 
 export type ChatSessionRecord = ChatSession | ChatSessionRecordV2;
+
+/**
+ * 会话级模型切换 IPC（CHATS_SET_SESSION_MODEL）的返回。
+ * 失败原因机器可读：渲染层据此回滚 UI，不假装成功。
+ */
+export type ChatsSetSessionModelResult =
+  | { ok: true; session: ChatSession }
+  | { ok: false; error: "invalid-payload" | "session-not-found" | "no-profile" | "invalid-model" };
 
 // index.json 里的轻量元数据（列表渲染用）。
 export interface ChatSessionMeta {

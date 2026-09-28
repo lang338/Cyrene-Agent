@@ -458,7 +458,7 @@ function isUsableProjection(
   if (!candidate.state || !Array.isArray(candidate.state.nodes)) return false;
   if (!candidate.state.nodes.every((node) => (
     !!node &&
-    (node.kind === "user" || node.kind === "assistant") &&
+    (node.kind === "user" || node.kind === "assistant" || node.kind === "compaction") &&
     typeof node.entryId === "string" &&
     typeof node.messageId === "string"
   ))) return false;

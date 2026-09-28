@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { createThinkFilter } from "../../../chat/think-filter";
 import { AgentRuntimeError } from "../../agent-runtime-error";
+import { classifyModelFailure } from "../model-error-classifier";
 import type { ChatRequest, ChatResponse, ChatVendorAdapter, VendorConfig } from "../types";
 import { CyreneStreamAccumulator } from "./accumulator";
 import { AnthropicEventNormalizer, reconcileAnthropicTerminal } from "./anthropic-normalizer";
@@ -293,11 +294,19 @@ export async function streamChatWithSdk(
       });
     }
     if (timedOut) {
-      throw new AgentRuntimeError("E_MODEL_REQUEST_TIMEOUT", "模型响应超时，请稍后重试。", { cause: error });
+      throw new AgentRuntimeError("E_MODEL_REQUEST_TIMEOUT", "模型响应超时，请稍后重试。", {
+        cause: error,
+        modelFailure: { ...classifyModelFailure({ provider: input.adapter.id, model: input.request.model }), category: "TIMEOUT" },
+      });
     }
     if (input.signal?.aborted) throw cancellationError(input.signal);
-    if (error instanceof ProviderProtocolError || error instanceof AgentRuntimeError) throw error;
-    throw new AgentRuntimeError("E_MODEL_REQUEST_FAILED", "模型服务请求失败。", { cause: error });
+    if (error instanceof AgentRuntimeError && error.modelFailure) throw error;
+    const modelFailure = classifyModelFailure({ provider: input.adapter.id, model: input.request.model, error });
+    throw new AgentRuntimeError(
+      error instanceof AgentRuntimeError ? error.code : "E_MODEL_REQUEST_FAILED",
+      "模型服务请求失败。",
+      { cause: error, modelFailure },
+    );
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     input.signal?.removeEventListener("abort", abortFromCaller);

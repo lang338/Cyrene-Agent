@@ -7,8 +7,15 @@ import {
   type ControlsConfig,
 } from "streamdown";
 import type { PluggableList } from "unified";
-import React, { isValidElement, useContext, useMemo, type ReactNode } from "react";
-import { FileLinkContext, MessageStreamingContext } from "./ChatMessageList";
+import React, { isValidElement, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { useTranslation } from "../../../i18n";
+import { MessageStreamingContext } from "./ChatMessageList";
+import { chatStore } from "../pages/chat-page-bridge";
+import { copyTextToClipboard } from "./CopyButton";
+import { FileContextMenu, clampMenuPosition, type FileContextMenuItem } from "./FileContextMenu";
+import { FileLinkContext } from "./FileLinkContext";
+import { FileIcon, hasFileIconMapping } from "./file-icon";
+import { DEMO_FILE_PREVIEW_REL_PATH } from "./demoFilePreview";
 import { MermaidBlock } from "./MermaidBlock";
 import { SvgCardBlock } from "./SvgCardBlock";
 import { parseFileLinkHref, relativePathInsideWorkspace } from "./file-link";
@@ -51,40 +58,256 @@ function StreamdownPre({ children }: { children?: ReactNode }) {
   if (info.lang === "mermaid") return <MermaidBlock code={info.code} streaming={streaming} />;
   if (info.lang === "svg") return <SvgCardBlock code={info.code} streaming={streaming} />;
   return (
-    <CodeHighlighter lang={info.lang || "text"} prismLightMode={false}>
+    <CodeHighlighter
+      className="cy-message-code-block"
+      lang={info.lang || "text"}
+      prismLightMode={false}
+      styles={{
+        root: {
+          color: "var(--rb-text-primary)",
+          background: "var(--rb-code-bg)",
+        },
+        header: {
+          color: "var(--rb-text-primary)",
+          background: "var(--rb-bg-2)",
+        },
+        code: {
+          color: "var(--rb-text-primary)",
+          background: "transparent",
+          borderColor: "var(--rb-border-default)",
+        },
+      }}
+    >
       {info.code}
     </CodeHighlighter>
   );
 }
 
-function StreamdownAnchor({ href, children }: { href?: string; children?: ReactNode }) {
-  const { workspaceRoot, openFile } = useContext(FileLinkContext);
-  const fileHref = href ? decodeStreamdownFileHref(href) : null;
-  const target = fileHref ? parseFileLinkHref(fileHref) : null;
-  if (target) {
-    const relPath = workspaceRoot ? relativePathInsideWorkspace(target.absPath, workspaceRoot) : null;
-    if (relPath && openFile) {
-      return (
+/** 演示会话中的文件名代码片段：复用项目后缀映射，仅展示图标，不改变交互。 */
+function StreamdownInlineCode({
+  children,
+  className,
+  ...props
+}: React.ComponentProps<"code">) {
+  const { sessionId, openFile } = useContext(FileLinkContext);
+  const fileName = typeof children === "string" ? children : "";
+  const isDemoFileName =
+    sessionId === "preview-code" &&
+    !className &&
+    /^[\w.-]+\.[a-z\d]{1,10}$/i.test(fileName) &&
+    hasFileIconMapping(fileName);
+
+  if (!isDemoFileName || !openFile) return <code className={className} {...props}>{children}</code>;
+
+  return (
+    <code className="cy-demo-file-code" {...props}>
+      <button
+        type="button"
+        className="cy-demo-file-action"
+        title={`预览 ${fileName}`}
+        aria-label={`预览文件 ${fileName}`}
+        onClick={() => openFile(DEMO_FILE_PREVIEW_REL_PATH)}
+      >
+        <FileIcon fileName={fileName} className="cy-demo-file-code__icon" />
+        {children}
+      </button>
+    </code>
+  );
+}
+
+/** 表格与列表中的普通文本也按文件名匹配；只在演示会话中添加装饰图标。 */
+function renderDemoFileNames(node: ReactNode, openFile?: (relPath: string) => void): ReactNode {
+  if (typeof node === "string") {
+    const parts: ReactNode[] = [];
+    const pattern = /[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,10}/g;
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = pattern.exec(node)) !== null) {
+      const fileName = match[0];
+      const start = match.index;
+      const end = start + fileName.length;
+      const hasFilenameBoundary =
+        (start === 0 || !/[A-Za-z0-9_./\\-]/.test(node[start - 1])) &&
+        (end === node.length || !/[A-Za-z0-9_./\\-]/.test(node[end]));
+      if (!hasFilenameBoundary || !hasFileIconMapping(fileName)) continue;
+
+      parts.push(node.slice(cursor, start));
+      parts.push(
         <button
           type="button"
-          className="cy-file-link"
-          title={target.absPath}
-          onClick={() => openFile(relPath, target.lineStart)}
+          className="cy-demo-file-name"
+          key={`file-${start}`}
+          title={`预览 ${fileName}`}
+          aria-label={`预览文件 ${fileName}`}
+          onClick={openFile ? () => openFile(DEMO_FILE_PREVIEW_REL_PATH) : undefined}
+          disabled={!openFile}
         >
-          <svg className="cy-file-link__icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-            <path
-              d="M4 1.5h5L12.5 5v9a.5.5 0 0 1-.5.5H4a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5Z"
-              fill="none"
-              stroke="currentColor"
-              strokeLinejoin="round"
-            />
-            <path d="M9 1.5V5h3.5" fill="none" stroke="currentColor" strokeLinejoin="round" />
-          </svg>
-          <span className="cy-file-link__text">{children}</span>
-        </button>
+          <FileIcon fileName={fileName} className="cy-demo-file-name__icon" />
+          {fileName}
+        </button>,
+      );
+      cursor = end;
+    }
+
+    if (cursor === 0) return node;
+    parts.push(node.slice(cursor));
+    return <>{parts}</>;
+  }
+
+  if (Array.isArray(node)) return node.map((child) => renderDemoFileNames(child, openFile));
+  if (!isValidElement<{ children?: ReactNode }>(node)) return node;
+  if (
+    node.type === "code" ||
+    node.type === "a" ||
+    node.type === StreamdownInlineCode ||
+    (typeof node.type !== "string" && node.type !== React.Fragment)
+  ) {
+    return node;
+  }
+  if (node.props.children === undefined) return node;
+  return React.cloneElement(node, {}, renderDemoFileNames(node.props.children, openFile));
+}
+
+function DemoFileNameListItem(props: React.ComponentProps<"li">) {
+  const { sessionId, openFile } = useContext(FileLinkContext);
+  return (
+    <li {...props}>
+      {sessionId === "preview-code" ? renderDemoFileNames(props.children, openFile) : props.children}
+    </li>
+  );
+}
+
+function DemoFileNameTableCell(props: React.ComponentProps<"td">) {
+  const { sessionId, openFile } = useContext(FileLinkContext);
+  return (
+    <td {...props}>
+      {sessionId === "preview-code" ? renderDemoFileNames(props.children, openFile) : props.children}
+    </td>
+  );
+}
+
+function DemoFileNameTableHeader(props: React.ComponentProps<"th">) {
+  const { sessionId, openFile } = useContext(FileLinkContext);
+  return (
+    <th {...props}>
+      {sessionId === "preview-code" ? renderDemoFileNames(props.children, openFile) : props.children}
+    </th>
+  );
+}
+
+/** 网站链接（http/https）行内卡片：favicon + 文本 + 域名，favicon 失败降级地球图标 */
+function WebLinkAnchor({ href, children }: { href: string; children?: ReactNode }) {
+  const [iconFailed, setIconFailed] = useState(false);
+  let domain = "";
+  try {
+    domain = new URL(href).hostname.replace(/^www\./, "");
+  } catch {
+    domain = "";
+  }
+  return (
+    <a className="cy-web-link" href={href} target="_blank" rel="noreferrer" title={href}>
+      {iconFailed || !domain ? (
+        <svg className="cy-web-link__icon" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" strokeWidth="1.2" />
+          <path d="M1.8 8h12.4M8 1.8c2.6 2.6 2.6 7.8 0 12.4M8 1.8c-2.6 2.6-2.6 7.8 0 12.4" fill="none" stroke="currentColor" strokeWidth="1.2" />
+        </svg>
+      ) : (
+        <img
+          className="cy-web-link__favicon"
+          src={`https://${domain}/favicon.ico`}
+          alt=""
+          loading="lazy"
+          onError={() => setIconFailed(true)}
+        />
+      )}
+      <span className="cy-web-link__text">{children}</span>
+      {domain && <span className="cy-web-link__domain">{domain}</span>}
+    </a>
+  );
+}
+
+/** 链接里的正斜杠绝对路径 → 复制用显示格式（Windows 反斜杠，其他平台原样） */
+function toDisplayAbsPath(absPath: string): string {
+  return navigator.userAgent.includes("Windows") ? absPath.replaceAll("/", "\\") : absPath;
+}
+
+function StreamdownAnchor({ href, children }: { href?: string; children?: ReactNode }) {
+  const { t } = useTranslation();
+  const { sessionId, workspaceRoot, openFile } = useContext(FileLinkContext);
+  const [menu, setMenu] = useState<{ absPath: string; relPath: string | null; x: number; y: number } | null>(null);
+  const fileHref = href ? decodeStreamdownFileHref(href) : null;
+  const target = fileHref ? parseFileLinkHref(fileHref) : null;
+
+  const openLinkMenu = useCallback((event: React.MouseEvent, absPath: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const relPath = workspaceRoot ? relativePathInsideWorkspace(absPath, workspaceRoot) : null;
+    const { x, y } = clampMenuPosition(event.clientX, event.clientY);
+    setMenu({ absPath, relPath, x, y });
+  }, [workspaceRoot]);
+
+  // 打开/定位直接传绝对路径（主进程 realpath 校验，支持工作区外的桌面文件等场景）
+  const runMenuAction = useCallback(
+    async (action: "open" | "reveal" | "copyRel" | "copyAbs", target: { absPath: string; relPath: string | null }) => {
+      setMenu(null);
+      if (action === "open" || action === "reveal") {
+        if (!sessionId) return;
+        const result = await chatStore()?.shellFile(sessionId, target.absPath, action);
+        if (result && !result.ok) console.warn("[StreamdownAnchor] shellFile 失败:", result.error);
+        return;
+      }
+      if (action === "copyRel") {
+        if (target.relPath) await copyTextToClipboard(target.relPath);
+        return;
+      }
+      await copyTextToClipboard(toDisplayAbsPath(target.absPath));
+    },
+    [sessionId],
+  );
+
+  if (target) {
+    const relPath = workspaceRoot ? relativePathInsideWorkspace(target.absPath, workspaceRoot) : null;
+    const menuItems: FileContextMenuItem[] = menu ? [
+      ...(sessionId ? [
+        { key: "open", label: t("fileChange.menuOpen"), run: () => runMenuAction("open", menu) },
+        { key: "reveal", label: t("fileChange.menuReveal"), run: () => runMenuAction("reveal", menu) },
+      ] : []),
+      ...(menu.relPath ? [
+        { key: "copyRel", label: t("fileChange.menuCopyRelPath"), run: () => runMenuAction("copyRel", menu) },
+      ] : []),
+      { key: "copyAbs", label: t("fileChange.menuCopyAbsPath"), run: () => runMenuAction("copyAbs", menu) },
+    ] : [];
+    if (relPath && openFile) {
+      return (
+        <>
+          <button
+            type="button"
+            className="cy-file-link"
+            title={target.absPath}
+            onClick={() => openFile(relPath, target.lineStart)}
+            onContextMenu={(event) => openLinkMenu(event, target.absPath)}
+          >
+            <FileIcon fileName={target.absPath} className="cy-file-link__icon" />
+            <span className="cy-file-link__text">{children}</span>
+          </button>
+          {menu && <FileContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />}
+        </>
       );
     }
-    return <span className="cy-file-link is-plain">{children}</span>;
+    return (
+      <>
+        <span className="cy-file-link is-plain" onContextMenu={(event) => openLinkMenu(event, target.absPath)}>
+          <FileIcon fileName={target.absPath} className="cy-file-link__icon" />
+          {children}
+        </span>
+        {menu && <FileContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />}
+      </>
+    );
+  }
+  // 网站链接渲染成行内卡片；其他协议（mailto:、obsidian:// 等）保持普通链接
+  if (href && /^https?:\/\//i.test(href)) {
+    return <WebLinkAnchor href={href}>{children}</WebLinkAnchor>;
   }
   return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
 }
@@ -94,7 +317,11 @@ const messagePlugins = { math: mathPlugin };
 const chatControls: ControlsConfig = { table: false };
 const messageComponents: Components = {
   a: (props) => <StreamdownAnchor {...props} />,
+  code: (props) => <StreamdownInlineCode {...props} />,
+  li: (props) => <DemoFileNameListItem {...props} />,
   pre: (props) => <StreamdownPre {...props} />,
+  td: (props) => <DemoFileNameTableCell {...props} />,
+  th: (props) => <DemoFileNameTableHeader {...props} />,
 };
 
 /**

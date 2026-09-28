@@ -158,12 +158,6 @@ export function TodoPanel({ state, mode }: TodoPanelProps) {
             <span className="cy-todo__progress-text">{progress}%</span>
           </div>
 
-          {mode === "work" && (
-            <div className="cy-todo__extension-slot" data-testid="todo-extension-slot">
-              <span className="cy-todo__extension-label">{t("todo.projectStatus")}</span>
-              <span className="cy-todo__extension-hint">{t("todo.gitComingSoon")}</span>
-            </div>
-          )}
         </div>
       </div>
     </div>

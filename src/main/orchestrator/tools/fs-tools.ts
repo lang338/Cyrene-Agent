@@ -58,7 +58,7 @@ async function executeReadFile(args: Record<string, unknown>): Promise<string> {
     return JSON.stringify({
       success: false,
       errorCode: "FILE_NOT_FOUND",
-      error: "文件不存在或无法访问: " + filePath + "。不要重复读取相同路径，请先用 search_text 或 list_dir 重新定位文件。",
+      error: "文件不存在或无法访问: " + filePath + "。不要重复读取相同路径，请先用 Grep 或 Glob 重新定位文件。",
       retryable: true,
     });
   }
@@ -83,7 +83,7 @@ async function executeReadFile(args: Record<string, unknown>): Promise<string> {
     return JSON.stringify({
       success: false,
       errorCode: "FILE_TOO_LARGE",
-      error: `文件超过 ${humanBytes(READ_MAX_BYTES)}（当前 ${humanBytes(stat.size)}），read_file 暂不支持读取。可用 search_text 直接获取匹配行的上下文。`,
+      error: `文件超过 ${humanBytes(READ_MAX_BYTES)}（当前 ${humanBytes(stat.size)}），Read 暂不支持读取。可用 Grep 获取匹配行的上下文。`,
       path: filePath,
       size: humanBytes(stat.size),
       retryable: false,
@@ -98,7 +98,7 @@ async function executeReadFile(args: Record<string, unknown>): Promise<string> {
     return JSON.stringify({
       success: false,
       errorCode: "BINARY_FILE",
-      error: "这看起来是二进制文件，read_file 只支持文本。如果是图片，请改用 read_image。",
+      error: "这看起来是二进制文件，Read 只支持文本和图片。如果是图片，请直接用 Read 读取。",
       path: filePath,
       size: humanBytes(stat.size),
       retryable: false,

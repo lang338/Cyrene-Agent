@@ -26,6 +26,7 @@ import {
 } from "./conversation-transcript-types";
 import type { ChatMessage as CanonicalChatMessage } from "./vendors/types";
 import { isContextUsageSnapshot } from "../../shared/context-usage";
+import { SHELL_VISIBLE_OUTPUT_LIMIT } from "../../shared/shell-output";
 import { normalizeMusicCardData } from "../../shared/music-card";
 
 const ROOT_DIR_NAME = "transcripts";
@@ -743,7 +744,7 @@ function isValidTranscriptPayload(entry: Partial<TranscriptEntry>): boolean {
         isValidCanonicalChatMessage(entry.payload.message, "tool") &&
         (entry.payload.fullRef === undefined || typeof entry.payload.fullRef === "string");
     case "interruption":
-      return ["user_cancel", "runtime_error"].includes(entry.payload.reason);
+      return ["user_cancel", "runtime_error", "crashed"].includes(entry.payload.reason);
     case "turn_rewind":
       return typeof entry.payload.anchorUserTurnId === "string" &&
         ["keep_user", "replace_user"].includes(entry.payload.disposition as string) &&
@@ -856,7 +857,9 @@ function isValidPresentationPatch(value: unknown): boolean {
         typeof item.assetFileName === "string" && ["running", "completed", "failed", "cancelled"].includes(item.status as string))) return false;
       if (key === "toolExecutions" && !field.every((item) => isRecord(item) && typeof item.id === "string" && typeof item.name === "string" &&
         ["running", "success", "error"].includes(item.status as string) &&
-        (item.result === undefined || typeof item.result === "string") && (item.argsText === undefined || typeof item.argsText === "string"))) return false;
+        (item.result === undefined || typeof item.result === "string") && (item.argsText === undefined || typeof item.argsText === "string") &&
+        (item.terminalOutput === undefined || (typeof item.terminalOutput === "string" && item.terminalOutput.length <= SHELL_VISIBLE_OUTPUT_LIMIT)) &&
+        (item.terminalOutputTruncated === undefined || typeof item.terminalOutputTruncated === "boolean"))) return false;
     } else if (key === "runActivity") {
       if (!isRecord(field) || typeof field.startedAt !== "number" || typeof field.reasoningMs !== "number" ||
         !validOptionalNumber(field.completedAt) || !validOptionalNumber(field.activeReasoningStartedAt) ||

@@ -14,6 +14,12 @@ vi.mock("@ant-design/x", async () => {
 });
 vi.mock("../../../../../shared/renderer-base", () => ({ resolveAsset: (path: string) => path }));
 vi.mock("./StreamdownMessageContent.css", () => ({}));
+// svg 资产 import 在 node 测试环境不可加载，mock 掉只测正文渲染逻辑
+vi.mock("./file-icon-assets", () => ({
+  FILE_ICON_URLS: { default: "default-url" },
+  FILE_NAME_MAP: {},
+  FILE_EXT_MAP: {},
+}));
 vi.mock("./MermaidBlock", () => ({
   MermaidBlock: ({ streaming }: { streaming?: boolean }) => React.createElement("div", { className: streaming ? "cy-mermaid--pending" : "cy-mermaid" }),
 }));
@@ -21,7 +27,8 @@ vi.mock("./SvgCardBlock", () => ({
   SvgCardBlock: () => React.createElement("div", { className: "cy-svg-card" }),
 }));
 
-import { FileLinkContext, MessageStreamingContext } from "./ChatMessageList";
+import { MessageStreamingContext } from "./ChatMessageList";
+import { FileLinkContext } from "./FileLinkContext";
 import { StreamdownMessageContent } from "./StreamdownMessageContent";
 
 function render(content: string, streaming: boolean, workspaceRoot?: string): string {

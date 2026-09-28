@@ -164,12 +164,14 @@ export type HarnessEvent =
   | { type: "reasoning_delta"; messageId: string; delta: string }
   | { type: "reasoning_end"; messageId: string }
   | { type: "tool_start"; toolCallId: string; toolName: string; args: Record<string, unknown>; displayName?: string }
+  | ({ type: "tool_output"; toolCallId: string } & import("../tools/registry/tool-context").ShellOutputUpdate)
   | { type: "tool_end"; toolCallId: string; outcome: ToolCallOutcome; preview: string; changes?: ToolFileChange[] }
   | { type: "todo_update"; items: TodoItem[] }
   | { type: "context_usage"; snapshot: ContextUsageSnapshot }
   | { type: "ask_user"; card: unknown }
   | { type: "plan_mode_changed"; state: import("../plan-mode").PlanStateName }
   | { type: "plan_written"; planPath: string }
+  | { type: "plan_submitted"; conversationId: string; planPath: string; planContent: string }
   | { type: "runtime_feedback"; message: string }
   | { type: "error"; message: string };
 
@@ -316,6 +318,10 @@ export interface HarnessInput {
   transcriptSink?: import("../transcript-sink").TranscriptSink;
   /** 父会话注入的前台子任务执行器；子 Harness 不会继续注入它。 */
   taskExecutor?: (request: import("../task-runtime").TaskExecuteRequest) => Promise<import("../task-runtime").TaskExecuteResult>;
+  /** 父会话注入的子代理关闭器；子 Harness 不会继续注入它。 */
+  closeTaskExecutor?: (request: import("../task-runtime").TaskCloseRequest) => import("../task-runtime").TaskCloseResult | Promise<import("../task-runtime").TaskCloseResult>;
+  /** 当前父会话仍开启上下文的黄金裔子代理；只用于主 Agent 的 task 工具提示。 */
+  openTaskCompanions?: string[];
 }
 
 export interface HarnessResult {

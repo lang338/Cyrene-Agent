@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   userDataDir: "",
   handlers: new Map<string, (...args: any[]) => unknown>(),
   openPath: vi.fn(async () => ""),
+  showItemInFolder: vi.fn(),
+  windows: [] as Array<{ isDestroyed: () => boolean; webContents: { send: (channel: string, payload: unknown) => void } }>,
 }));
 
 vi.mock("electron", () => ({
@@ -16,9 +18,10 @@ vi.mock("electron", () => ({
   },
   shell: {
     openPath: mocks.openPath,
+    showItemInFolder: mocks.showItemInFolder,
   },
   BrowserWindow: {
-    getAllWindows: () => [],
+    getAllWindows: () => mocks.windows,
   },
   ipcMain: {
     handle: vi.fn((channel: string, handler: (...args: any[]) => unknown) => {
@@ -35,7 +38,24 @@ describe("chats IPC mode filtering", () => {
     vi.resetModules();
     mocks.handlers.clear();
     mocks.openPath.mockClear();
+    mocks.showItemInFolder.mockClear();
+    mocks.windows = [];
     mocks.userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-chats-ipc-"));
+  });
+
+  it("broadcastCompactionPhase 只向存活窗口推送压缩阶段", async () => {
+    const { broadcastCompactionPhase } = await import("./chats-ipc");
+    const send = vi.fn();
+    const destroyedSend = vi.fn();
+    mocks.windows = [
+      { isDestroyed: () => false, webContents: { send } },
+      { isDestroyed: () => true, webContents: { send: destroyedSend } },
+    ];
+
+    broadcastCompactionPhase("c1", "running");
+
+    expect(send).toHaveBeenCalledWith(IPC.CHATS_COMPACTION_PHASE, { sessionId: "c1", phase: "running" });
+    expect(destroyedSend).not.toHaveBeenCalled();
   });
 
   it("returns only Code sessions for CHATS_LIST({ mode: \"code\" })", async () => {
@@ -119,6 +139,72 @@ describe("chats IPC mode filtering", () => {
       expect.objectContaining({ kind: "compaction_checkpoint" }),
     ]));
     expect(session.messages).toEqual([]);
+
+    // 压缩完成后：session 级 usage 快照落盘（环形图重载即显示压缩后占用）
+    const { getSessionView } = await import("./chats-store");
+    const afterCompact = getSessionView(session.id);
+    expect(afterCompact?.currentContextUsage?.phase).toBe("preRequest");
+    expect(afterCompact?.currentContextUsage?.totalTokens).toBeGreaterThan(0);
+  });
+
+  it("preserves the latest message usage breakdown after manual compaction", async () => {
+    const { registerChatsIpc } = await import("./chats-ipc");
+    const { getConversationTranscriptStore } = await import("../orchestrator/conversation-transcript-store");
+    const { ConversationJournalService } = await import("../orchestrator/conversation-journal-service");
+    const { ConversationTranscriptCompactor } = await import("../orchestrator/conversation-transcript-compactor");
+    const store = getConversationTranscriptStore(mocks.userDataDir);
+    const journal = new ConversationJournalService(store);
+    registerChatsIpc(undefined, {
+      transcriptCompactor: new ConversationTranscriptCompactor({ store, summarize: async () => "简短摘要" }),
+    });
+    const create = mocks.handlers.get(IPC.CHATS_CREATE);
+    const compact = mocks.handlers.get(IPC.CHATS_COMPACT);
+    const get = mocks.handlers.get(IPC.CHATS_GET);
+    if (!create || !compact || !get) throw new Error("compaction IPC handlers were not registered");
+    const event = { sender: {} };
+    const session = await create(event, { mode: "chat" }) as { id: string };
+    await store.append(session.id, {
+      id: "usage-u1", at: 1, kind: "user", turnId: "u1", revision: 1,
+      payload: { text: "之前的长对话".repeat(30) },
+    });
+    await store.append(session.id, {
+      id: "usage-a1", at: 2, kind: "assistant", turnId: "a1",
+      payload: { role: "assistant", content: "之前的回复" },
+    });
+    await journal.appendPresentationNext(session.id, "usage-a1", "usage:terminal", {
+      contextUsage: {
+        phase: "terminal", contextWindowTokens: 256000, totalTokens: 25100,
+        messageCount: 2, updatedAt: 100,
+        categories: [
+          { key: "systemPrompt", tokens: 5900 },
+          { key: "tools", tokens: 13500 },
+          { key: "skills", tokens: 4000 },
+          { key: "runtimeAndToolLogs", tokens: 1400 },
+          { key: "conversation", tokens: 300 },
+          { key: "other", tokens: 0 },
+        ],
+      },
+    });
+    await store.append(session.id, {
+      id: "usage-u2", at: 3, kind: "user", turnId: "u2", revision: 1,
+      payload: { text: "最新问题" },
+    });
+    const { setSessionContextUsage } = await import("./chats-store");
+    setSessionContextUsage(session.id, {
+      phase: "preRequest", contextWindowTokens: 256000, totalTokens: 1,
+      messageCount: 0, updatedAt: 1,
+      categories: [{ key: "systemPrompt", tokens: 1 }],
+    });
+
+    expect((await journal.readProjection(session.id)).messages.some((message) => message.contextUsage?.phase === "terminal")).toBe(true);
+    await expect(compact(event, { sessionId: session.id, retainTokens: 1 })).resolves.toEqual(
+      expect.objectContaining({ ok: true }),
+    );
+
+    const usage = (await get(event, session.id) as { currentContextUsage?: { categories: Array<{ key: string; tokens: number }> } } | null)?.currentContextUsage;
+    expect(Object.fromEntries(usage?.categories.map(({ key, tokens }) => [key, tokens]) ?? [])).toEqual(
+      expect.objectContaining({ systemPrompt: 5900, tools: 13500, skills: 4000 }),
+    );
   });
 
   it("normalizes a manual summarizer failure to TRANSCRIPT_COMPACTION_REQUIRED", async () => {
@@ -131,6 +217,34 @@ describe("chats IPC mode filtering", () => {
     await expect(compact({ sender: {} }, { sessionId: "c1" })).resolves.toEqual({
       ok: false, error: "TRANSCRIPT_COMPACTION_REQUIRED",
     });
+  });
+
+  it("dev 演示入口生成独立会话并走真实自动压缩链路", async () => {
+    const { registerChatsIpc } = await import("./chats-ipc");
+    registerChatsIpc(undefined, {
+      // demo 入口内部自建假摘要 compactor，不走全局注入
+      transcriptCompactor: { compact: vi.fn() } as any,
+    });
+    const demo = mocks.handlers.get(IPC.CHATS_SEED_COMPACTION_DEMO);
+    if (!demo) throw new Error("demo IPC handler was not registered");
+    const result = await demo({ sender: {} }) as { ok: boolean; sessionId?: string };
+    expect(result.ok).toBe(true);
+    expect(result.sessionId).toBeTruthy();
+
+    // 投影：假历史（含工具轮合并）+ 自动压缩 marker + 压缩后新消息。
+    // 旧历史压缩后已进归档区，必须走 journal 的 readProjection 合成视图。
+    const { getConversationTranscriptStore } = await import("../orchestrator/conversation-transcript-store");
+    const { ConversationJournalService } = await import("../orchestrator/conversation-journal-service");
+    const journal = new ConversationJournalService(getConversationTranscriptStore(mocks.userDataDir));
+    const messages = (await journal.readProjection(result.sessionId!))?.messages ?? [];
+    const marker = messages.find((item) => item.compaction);
+    expect(marker?.compaction).toEqual({ trigger: "automatic" });
+    expect(messages.some((item) => item.content.includes("TODO 注释整理成清单"))).toBe(true);
+    expect(messages.some((item) => item.content.includes("按优先级排一下"))).toBe(true);
+
+    // session 级 usage 快照已写入（环形图数据源）
+    const { getSessionView } = await import("./chats-store");
+    expect(getSessionView(result.sessionId!)?.currentContextUsage?.totalTokens).toBeGreaterThan(0);
   });
 
   it("runs the controller through the real bridge handler before api.run and fails closed for a deep patch", async () => {
@@ -468,5 +582,322 @@ describe("chats IPC mode filtering", () => {
     expect(await openWorkspace(event, workspaceRoot)).toEqual({ ok: true });
     expect(mocks.openPath).toHaveBeenCalledOnce();
     expect(mocks.openPath).toHaveBeenCalledWith(fs.realpathSync(workspaceRoot));
+  });
+
+  it("CHATS_SET_WORKSPACE：最近项目记录的目录已不存在时绑定被拒绝且不落库", async () => {
+    const { registerChatsIpc } = await import("./chats-ipc");
+    registerChatsIpc();
+
+    const create = mocks.handlers.get(IPC.CHATS_CREATE);
+    const setWorkspace = mocks.handlers.get(IPC.CHATS_SET_WORKSPACE);
+    const getWorkspace = mocks.handlers.get(IPC.CHATS_GET_WORKSPACE);
+    if (!create || !setWorkspace || !getWorkspace) {
+      throw new Error("workspace IPC handlers were not registered");
+    }
+
+    const event = { sender: {} };
+    const session = await create(event, { mode: "code" }) as { id: string };
+    // 场景：最近项目下拉选了历史路径，但该目录已被移动/删除/外接盘断开
+    const goneRoot = path.join(
+      os.tmpdir(),
+      `cyrene-gone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    );
+
+    // 绑定必须失败并带出可读错误，而不是静默丢掉
+    const result = await setWorkspace(event, { sessionId: session.id, workspaceRoot: goneRoot });
+    expect(result).toEqual({ ok: false, error: expect.stringContaining("目录不存在") });
+    // 绑定未写入：后续派发会被 AGUI_RUN 的"需先绑定工作区"守卫拒绝
+    expect(await getWorkspace(event, session.id)).toBeNull();
+  });
+
+  it("CHATS_SET_WORKSPACE：组合读取迁移成 v2 的会话仍可绑定（session not found 回归）", async () => {
+    const { registerChatsIpc } = await import("./chats-ipc");
+    registerChatsIpc();
+
+    const create = mocks.handlers.get(IPC.CHATS_CREATE);
+    const getSession = mocks.handlers.get(IPC.CHATS_GET);
+    const setWorkspace = mocks.handlers.get(IPC.CHATS_SET_WORKSPACE);
+    const getWorkspace = mocks.handlers.get(IPC.CHATS_GET_WORKSPACE);
+    if (!create || !getSession || !setWorkspace || !getWorkspace) {
+      throw new Error("workspace IPC handlers were not registered");
+    }
+
+    const event = { sender: {} };
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-ws-v2-"));
+    const session = await create(event, { mode: "code" }) as { id: string };
+
+    // 复现真实时序：ensureSession → selectSession 先用 store.get（组合读取）把
+    // 刚创建的 v1 会话迁移成 v2 落盘，随后 sendMessage 的 setWorkspace 才到达。
+    // 只认 v1 的 getSession 会把该会话误判成 "session not found"，绑定静默失败，
+    // 消息照发后被派发守卫拒绝——即"选了工作区却提示未绑定"的原始 bug
+    expect(await getSession(event, session.id)).not.toBeNull();
+    const { getSessionRecord } = await import("./chats-store");
+    expect(getSessionRecord(session.id)?.schemaVersion).toBe(2);
+
+    // v2 会话绑定必须成功且落库
+    const result = await setWorkspace(event, { sessionId: session.id, workspaceRoot });
+    expect(result).toEqual(expect.objectContaining({ ok: true }));
+    expect(await getWorkspace(event, session.id)).toEqual(
+      expect.objectContaining({ workspaceRoot: fs.realpathSync(workspaceRoot) }),
+    );
+  });
+
+  it("CHATS_VALIDATE_WORKSPACE：目录存在返回规范化路径，失效目录带出可读错误", async () => {
+    const { registerChatsIpc } = await import("./chats-ipc");
+    registerChatsIpc();
+
+    const validate = mocks.handlers.get(IPC.CHATS_VALIDATE_WORKSPACE);
+    if (!validate) throw new Error("workspace validation IPC handler was not registered");
+
+    const event = { sender: {} };
+    // 可用目录：通过并返回真实绝对路径（realpath 解析）
+    const goodRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-valid-ws-"));
+    const good = await validate(event, goodRoot);
+    expect(good).toEqual({ ok: true, path: fs.realpathSync(goodRoot) });
+
+    // 失效目录（最近项目快照过期/外接盘断开）：明确失败而不是放行
+    const goneRoot = path.join(
+      os.tmpdir(),
+      `cyrene-gone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    );
+    const gone = await validate(event, goneRoot);
+    expect(gone).toEqual({ ok: false, error: expect.stringContaining("目录不存在") });
+
+    // 非法入参直接拒绝
+    expect(await validate(event, "")).toEqual({ ok: false, error: "missing workspaceRoot" });
+  });
+
+  it("CHATS_SHELL_FILE：打开/定位工作区内文件；未绑定、非法参数、越界、缺失文件各自拒绝", async () => {
+    const { registerChatsIpc } = await import("./chats-ipc");
+    registerChatsIpc();
+
+    const create = mocks.handlers.get(IPC.CHATS_CREATE);
+    const setWorkspace = mocks.handlers.get(IPC.CHATS_SET_WORKSPACE);
+    const shellFile = mocks.handlers.get(IPC.CHATS_SHELL_FILE);
+    if (!create || !setWorkspace || !shellFile) {
+      throw new Error("shell file IPC handlers were not registered");
+    }
+
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-workspace-"));
+    fs.writeFileSync(path.join(workspaceRoot, "a.txt"), "hello");
+    const event = { sender: {} };
+    const session = await create(event, { mode: "work" }) as { id: string };
+    await setWorkspace(event, { sessionId: session.id, workspaceRoot });
+    // realpathSync.native 与主进程 fs.promises.realpath 同为 native 实现：
+    // 会把 Windows 8.3 短路径（CI runner 的 RUNNER~1）展开成长路径，断言两边才一致
+    const absFile = path.join(fs.realpathSync.native(workspaceRoot), "a.txt");
+
+    // 未绑定工作区的会话 → NO_WORKSPACE，不碰 shell
+    const plain = await create(event, { mode: "chat" }) as { id: string };
+    await expect(shellFile(event, { sessionId: plain.id, relPath: "a.txt", action: "open" }))
+      .resolves.toEqual({ ok: false, error: "NO_WORKSPACE" });
+
+    // 非法 action / 空 relPath → invalid-payload
+    await expect(shellFile(event, { sessionId: session.id, relPath: "a.txt", action: "exec" }))
+      .resolves.toEqual({ ok: false, error: "invalid-payload" });
+    await expect(shellFile(event, { sessionId: session.id, relPath: "", action: "open" }))
+      .resolves.toEqual({ ok: false, error: "invalid-payload" });
+
+    // 工作区内文件：open → shell.openPath(真实绝对路径)
+    expect(await shellFile(event, { sessionId: session.id, relPath: "a.txt", action: "open" })).toEqual({ ok: true });
+    expect(mocks.openPath).toHaveBeenCalledWith(absFile);
+
+    // reveal → shell.showItemInFolder(真实绝对路径)
+    expect(await shellFile(event, { sessionId: session.id, relPath: "a.txt", action: "reveal" })).toEqual({ ok: true });
+    expect(mocks.showItemInFolder).toHaveBeenCalledWith(absFile);
+
+    // ".." 逃逸到工作区外 → OUT_OF_ROOT
+    await expect(shellFile(event, { sessionId: session.id, relPath: "..", action: "open" }))
+      .resolves.toEqual({ ok: false, error: "OUT_OF_ROOT" });
+    expect(mocks.openPath).toHaveBeenCalledTimes(1);
+
+    // 已删除文件 → NOT_FOUND（FileChangeCard 里 kind=deleted 的预期路径）
+    await expect(shellFile(event, { sessionId: session.id, relPath: "missing.txt", action: "open" }))
+      .resolves.toEqual({ ok: false, error: "NOT_FOUND" });
+  });
+
+  it("CHATS_SHELL_FILE：绝对路径模式（正文文件链接）支持工作区外文件，不存在则拒绝", async () => {
+    const { registerChatsIpc } = await import("./chats-ipc");
+    registerChatsIpc();
+
+    const create = mocks.handlers.get(IPC.CHATS_CREATE);
+    const shellFile = mocks.handlers.get(IPC.CHATS_SHELL_FILE);
+    if (!create || !shellFile) {
+      throw new Error("shell file IPC handlers were not registered");
+    }
+
+    // 工作区外的真实文件（临时目录模拟"桌面文件"场景）
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-outside-"));
+    const outsideFile = path.join(outsideDir, "nop-60s.cmd");
+    fs.writeFileSync(outsideFile, "echo hi");
+
+    const event = { sender: {} };
+    const session = await create(event, { mode: "work" }) as { id: string };
+
+    // 工作区外的绝对路径也能 open/reveal（realpath 归一后交给 shell）
+    expect(await shellFile(event, { sessionId: session.id, relPath: outsideFile, action: "open" })).toEqual({ ok: true });
+    expect(mocks.openPath).toHaveBeenCalledWith(fs.realpathSync.native(outsideFile));
+    expect(await shellFile(event, { sessionId: session.id, relPath: outsideFile, action: "reveal" })).toEqual({ ok: true });
+    expect(mocks.showItemInFolder).toHaveBeenCalledWith(fs.realpathSync.native(outsideFile));
+
+    // 正斜杠形式的绝对路径（file:/// 链接解析出的形态）同样支持
+    expect(await shellFile(event, { sessionId: session.id, relPath: outsideFile.replaceAll("\\", "/"), action: "open" }))
+      .toEqual({ ok: true });
+
+    // 不存在的绝对路径 → NOT_FOUND
+    await expect(shellFile(event, { sessionId: session.id, relPath: path.join(outsideDir, "missing.cmd"), action: "open" }))
+      .resolves.toEqual({ ok: false, error: "NOT_FOUND" });
+  });
+
+  // ── 会话级模型状态（Invariant B/D 的 IPC 层）──────────────────
+  // 预置带 A/B 两个档案的 model-settings.json，让真实 loadModelSettings 读到。
+  function writeModelSettings(profiles: unknown[], defaultId: string) {
+    fs.writeFileSync(path.join(mocks.userDataDir, "model-settings.json"), JSON.stringify({
+      schemaVersion: 2,
+      mode: "auto",
+      provider: "GLM（智谱）",
+      baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+      model: "glm-5.3",
+      apiKey: "sk-test",
+      explicitTransport: "openai",
+      perProvider: {},
+      modelProfiles: profiles,
+      defaultModelProfileId: defaultId,
+      runtimeSync: "off",
+      stickerEnabled: true,
+      stickerSize: "standard",
+      stickerSimilarityThreshold: 0.55,
+      chatRequestTimeoutSec: 300,
+      citaRepairBudgetSec: 8,
+      rerankerMode: "standard",
+      embeddingModel: "bgem3",
+      multimodal: true,
+      contextWindowTokens: 256000,
+    }));
+  }
+
+  // A 多模型（默认 glm-x + 子模型 glm-a2）；B 默认 glm-b1，清单里带同名 glm-x
+  const PROFILE_A = {
+    id: "p-a", provider: "GLM（智谱）", baseUrl: "https://a.example", apiKey: "sk-a",
+    model: "glm-x", models: ["glm-x", "glm-a2"],
+  };
+  const PROFILE_B = {
+    id: "p-b", provider: "GLM（智谱）", baseUrl: "https://b.example", apiKey: "sk-b",
+    model: "glm-b1", models: ["glm-b1", "glm-x"],
+  };
+
+  it("#16 CHATS_CREATE 创建即快照默认模型；CHATS_SET_MODEL_PROFILE 原子重置为新档案默认", async () => {
+    writeModelSettings([PROFILE_A, PROFILE_B], "p-a");
+    const { registerChatsIpc } = await import("./chats-ipc");
+    registerChatsIpc();
+    const create = mocks.handlers.get(IPC.CHATS_CREATE);
+    const setSessionModel = mocks.handlers.get(IPC.CHATS_SET_SESSION_MODEL);
+    const setProfile = mocks.handlers.get(IPC.CHATS_SET_MODEL_PROFILE);
+    if (!create || !setSessionModel || !setProfile) {
+      throw new Error("model state IPC handlers were not registered");
+    }
+    const event = { sender: {} };
+
+    // 创建即快照：绑定 + 模型 = 默认档案（p-a）的默认模型
+    const session = await create(event, { mode: "chat" }) as {
+      id: string; modelProfileId?: string; model?: string;
+    };
+    expect(session).toMatchObject({ modelProfileId: "p-a", model: "glm-x" });
+
+    // 会话切到 A 的子模型，再切档案 B → 模型原子重置为 B 默认（不继承子模型选择）
+    await expect(setSessionModel(event, { id: session.id, model: "glm-a2" })).resolves.toEqual(
+      expect.objectContaining({ ok: true }),
+    );
+    const switched = await setProfile(event, { id: session.id, modelProfileId: "p-b" }) as {
+      modelProfileId?: string;
+      model?: string;
+    };
+    expect(switched).toMatchObject({ modelProfileId: "p-b", model: "glm-b1" });
+  });
+
+  it("#17 A 与 B 清单含同名模型：切 B 仍取 B 默认，同名不继承", async () => {
+    writeModelSettings([PROFILE_A, PROFILE_B], "p-a");
+    const { registerChatsIpc } = await import("./chats-ipc");
+    registerChatsIpc();
+    const create = mocks.handlers.get(IPC.CHATS_CREATE);
+    const setProfile = mocks.handlers.get(IPC.CHATS_SET_MODEL_PROFILE);
+    if (!create || !setProfile) throw new Error("model state IPC handlers were not registered");
+    const event = { sender: {} };
+
+    // 创建即快照 A 默认 glm-x；glm-x 同时也在 B 清单里——切档案必须取 B 默认
+    const session = await create(event, { mode: "chat" }) as { id: string; model?: string };
+    expect(session.model).toBe("glm-x");
+    const switched = await setProfile(event, { id: session.id, modelProfileId: "p-b" }) as {
+      model?: string;
+    };
+    expect(switched.model).toBe("glm-b1");
+  });
+
+  it("#24 stale 绑定下主动选择 → 原子修复为回退档案 + 选中模型", async () => {
+    writeModelSettings([PROFILE_A, PROFILE_B], "p-a");
+    const { registerChatsIpc } = await import("./chats-ipc");
+    const chatsStore = await import("./chats-store");
+    registerChatsIpc();
+    chatsStore.initialize();
+    const setSessionModel = mocks.handlers.get(IPC.CHATS_SET_SESSION_MODEL);
+    if (!setSessionModel) throw new Error("session model IPC handler was not registered");
+    const event = { sender: {} };
+
+    // 直建绑定失效的会话（绑定的档案不存在）；主动选择 = 确认接受回退档案 p-a
+    const session = chatsStore.createSession({ modelProfileId: "p-deleted", model: "glm-a2" });
+    await expect(setSessionModel(event, { id: session.id, model: "glm-a2" })).resolves.toEqual({
+      ok: true,
+      session: expect.objectContaining({ modelProfileId: "p-a", model: "glm-a2" }),
+    });
+    expect(chatsStore.getSessionRecord(session.id)).toMatchObject({
+      modelProfileId: "p-a",
+      model: "glm-a2",
+    });
+  });
+
+  it("validator 无旁门：回退档案清单之外的模型一律拒绝，会话保持原状", async () => {
+    writeModelSettings([PROFILE_A, PROFILE_B], "p-a");
+    const { registerChatsIpc } = await import("./chats-ipc");
+    const chatsStore = await import("./chats-store");
+    registerChatsIpc();
+    chatsStore.initialize();
+    const setSessionModel = mocks.handlers.get(IPC.CHATS_SET_SESSION_MODEL);
+    if (!setSessionModel) throw new Error("session model IPC handler was not registered");
+    const event = { sender: {} };
+
+    const session = chatsStore.createSession({ modelProfileId: "p-deleted", model: "glm-a2" });
+    // glm-b1 只存在于非回退档案 B → 拒绝（窄 IPC 不留 free-form 旁门）
+    await expect(setSessionModel(event, { id: session.id, model: "glm-b1" })).resolves.toEqual({
+      ok: false,
+      error: "invalid-model",
+    });
+    expect(chatsStore.getSessionRecord(session.id)).toMatchObject({
+      modelProfileId: "p-deleted",
+      model: "glm-a2",
+    });
+  });
+
+  it("CHATS_SET_SESSION_MODEL 入参校验：空模型 → invalid-payload；会话不存在 → session-not-found", async () => {
+    writeModelSettings([PROFILE_A], "p-a");
+    const { registerChatsIpc } = await import("./chats-ipc");
+    registerChatsIpc();
+    const setSessionModel = mocks.handlers.get(IPC.CHATS_SET_SESSION_MODEL);
+    const create = mocks.handlers.get(IPC.CHATS_CREATE);
+    if (!setSessionModel || !create) throw new Error("session model IPC handlers were not registered");
+    const event = { sender: {} };
+
+    const session = await create(event, { mode: "chat" }) as { id: string };
+    await expect(setSessionModel(event, { id: session.id, model: "" })).resolves.toEqual({
+      ok: false,
+      error: "invalid-payload",
+    });
+    await expect(setSessionModel(event, { model: "glm-x" })).resolves.toEqual({
+      ok: false,
+      error: "invalid-payload",
+    });
+    await expect(setSessionModel(event, { id: "missing", model: "glm-x" })).resolves.toEqual({
+      ok: false,
+      error: "session-not-found",
+    });
   });
 });

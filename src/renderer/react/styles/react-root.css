@@ -1,32 +1,8 @@
-/* ===== 设计变量 ===== */
+/* 组件专属胶囊配色；各主题通过同名语义变量覆盖。 */
 :root {
-  /* 背景 */
-  --cy-bg-page: #FAF4F8;
-  --cy-bg-workspace: #FFFBFC;
-  --cy-bg-hover: #fff1f6;
-  --cy-bg-active: #fde0ed;
-  
-  /* 边框 */
-  --cy-border: #F2F2F2;
-  
-  /* 文字 */
-  --cy-text: #1d1d1f;
-  --cy-text-muted: #8e8e93;
-  
-  /* 强调色 */
-  --cy-accent: #FF5B8A;
-  
-  /* 胶囊组件 */
-  --cy-pill-bg: #fff9fb;
-  --cy-pill-border: #ff9fbd;
-  --cy-pill-status: #7d3557;
-
-  /* 投影 */
-  --cy-shadow-workspace: inset 0 2px 8px rgba(31, 35, 48, 0.04), inset 0 0 2px rgba(31, 35, 48, 0.03);
-  --cy-shadow-bubble-neutral: 2px 2px 3px rgba(31, 35, 48, 0.06), 3px 5px 16px rgba(31, 35, 48, 0.055);
-  --cy-shadow-bubble-accent: 2px 2px 4px rgba(255, 91, 138, 0.12), 3px 7px 16px rgba(255, 91, 138, 0.16);
-  --cy-shadow-control-hover: 2px 2px 5px rgba(31, 35, 48, 0.075), 3px 8px 18px rgba(31, 35, 48, 0.065);
-  --cy-shadow-control-focus: 0 0 0 3px rgba(255, 91, 138, 0.10), 2px 6px 16px rgba(31, 35, 48, 0.08);
+  --cy-pill-bg: var(--rb-surface-elevated);
+  --cy-pill-border: var(--rb-border-focus);
+  --cy-pill-status: var(--rb-text-primary);
 }
 
 html, body {
@@ -36,35 +12,68 @@ html, body {
   overflow: hidden;
 }
 
+/* @mantine/core/styles.css 会给 body 铺一层不透明底色（--mantine-color-body）。
+   本窗口的实色来自 .cy-page，body 若被铺实，圆角之外就会露出一圈方块底、
+   看起来像"底下还有一层"。这里用 html 前缀提高权重，避免 Mantine 的样式
+   在运行时后注入而盖掉本规则。 */
+html body {
+  background-color: transparent;
+}
+
 #cyrene-react-root {
   width: 100%;
   height: 100%;
 }
 
+/* 侧栏让位改由 padding-left 承担：收起/展开时一次性瞬变（一次重排），
+   不做 padding 过渡——layout 属性动画每帧强制整窗 reflow，大会话下连点会卡 */
 .cy-page {
   height: 100vh;
   width: 100vw;
-  background: var(--cy-bg-page);
+  background: var(--rb-surface-page);
   box-sizing: border-box;
-  padding: 50px 10px 10px 10px;
+  padding: 50px 10px 10px 262px;
   position: relative;
   display: flex;
   gap: 10px;
-  transition: padding 0.25s ease;
-  border: 1px solid var(--cy-border);
+  /* 不给 padding 加过渡：layout 属性动画每帧强制整窗 reflow，连点侧栏开关时主线程饱和、鼠标事件排队 */
+  border: 1px solid var(--rb-border-default);
   border-radius: var(--cy-window-radius, 24px);
   overflow: hidden;
-  user-select: none;
   app-region: drag;
+  -webkit-app-region: drag;
 }
 
-.cy-page button,
-.cy-page a,
-.cy-page input,
-.cy-page select,
-.cy-page textarea,
+/* 聊天页把标题栏作为独立的固定区域，消息滚动内容不再处于可拖动区域的祖先链上。 */
+.cy-page--chat {
+  padding-top: 50px;
+  app-region: initial;
+  -webkit-app-region: initial;
+}
+
+.cy-page-titlebar {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 48px;
+  z-index: 50;
+  app-region: drag;
+  -webkit-app-region: drag;
+}
+
+/* 只给边界固定的一级容器标记 no-drag。不要对 .cy-page 下的全部控件逐个标记：
+   对话滚动时，消息里的按钮/链接矩形可能越过视口并错误挖掉顶部拖动区。 */
+.cy-page-sidebar,
 .cy-workspace {
   app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
+
+/* 清除固定容器子节点继承的区域。必须用 initial：当前 Chromium 把显式 none
+   解析成 no-drag，只有初始值才不提交区域；滚动消息另在 ChatMessageList.css 隔离。 */
+.cy-page-sidebar > *,
+.cy-workspace > * {
+  app-region: initial;
+  -webkit-app-region: initial;
 }
 
 .cy-file-drop-overlay {
@@ -73,10 +82,10 @@ html, body {
   inset: 10px;
   display: grid;
   place-items: center;
-  border: 2px dashed var(--cy-accent);
+  border: 2px dashed var(--rb-accent);
   border-radius: max(8px, calc(var(--cy-window-radius, 12px) - 2px));
   background: rgb(255 255 255 / 88%);
-  color: var(--cy-accent);
+  color: var(--rb-accent);
   font: 600 15px/1.4 var(--rb-font-sans, sans-serif);
   pointer-events: none;
   backdrop-filter: blur(3px);
@@ -97,41 +106,71 @@ html, body {
   position: absolute;
   top: 10px;
   left: 8px;
+  z-index: 51;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
 }
 
 .cy-page-top-center {
   position: absolute;
   top: 7px;
   left: 50%;
-  transform: translateX(-50%);
+  z-index: 51;
   display: flex;
   align-items: center;
   gap: 12px;
-  transition: left 0.25s ease;
+  transform: translateX(-50%);
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
 }
 
 .cy-page-windows {
   position: absolute;
   top: 10px;
   right: 20px;
+  z-index: 51;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
 }
 
 /* 用户头像与设置按钮已移入 .cy-page-sidebar-bottom */
 
-/* 侧边栏父容器：宽度固定、内部纵向 flex，主区占剩余空间，随窗口缩放 */
+/* 侧边栏基础（聊天/设置页共用）：宽度与纵向 flex */
 .cy-page-sidebar {
   display: flex;
   flex-direction: column;
-  width: 192px;
-  flex-shrink: 0;
+  width: 252px;
   min-height: 0;
-  transition: width 0.25s ease, opacity 0.2s ease;
+}
+
+/* 聊天页专属：抽屉式侧栏——让位靠 .cy-page 的 padding-left 瞬变（一次重排），
+   本体只做 transform 滑动（合成器动画，全程零重排），滑出窗外由 .cy-page 的 overflow 裁掉 */
+.cy-page .cy-page-sidebar {
+  position: absolute;
+  left: 10px;
+  top: 50px;
+  bottom: 10px;
+  background: transparent;
+  border-radius: 0;
+  transition: transform 0.25s ease, opacity 0.2s ease;
+}
+
+@media (max-width: 900px) {
+  .cy-page-sidebar {
+    width: 172px;
+  }
+
+  .cy-page {
+    padding-left: 182px;
+  }
 }
 
 .cy-page.is-collapsed .cy-page-sidebar {
-  width: 0;
+  transform: translateX(-100%);
   opacity: 0;
-  overflow: hidden;
   pointer-events: none;
 }
 
@@ -152,6 +191,8 @@ html, body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
 }
 
 /* "打开"按钮与面板开关之间的竖分割线 */
@@ -159,7 +200,7 @@ html, body {
   width: 1px;
   height: 16px;
   flex-shrink: 0;
-  background: var(--cy-border, #f0ebee);
+  background: var(--rb-border-default, #f0ebee);
 }
 
 /* 全局文字选中：用应用粉色强调色替代浏览器默认蓝 */
@@ -209,7 +250,7 @@ html, body {
 
 .cy-dock-separator:hover::after,
 .cy-dock-separator:active::after {
-  background: var(--cy-accent, #ff5b8a);
+  background: var(--rb-accent, #ff5b8a);
 }
 
 .cy-page-newtask {
@@ -237,23 +278,57 @@ html, body {
   flex-shrink: 0;
 }
 
-/* 收起状态：组件向左移 */
-.cy-page.is-collapsed .cy-page-top-center {
-  left: calc(50% - 85px);
-}
-
 .cy-workspace {
   width: 100%;
   height: 100%;
-  background: var(--cy-bg-workspace);
+  background: var(--rb-surface-workspace);
   border-radius: 10px;
-  border: 1px solid var(--cy-border);
-  box-shadow: var(--cy-shadow-workspace);
+  border: 1px solid var(--rb-border-default);
+  box-shadow: var(--rb-shadow-workspace);
   position: relative;
   display: flex;
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* 工作区标题栏固定在会话滚动区上方；空白处可拖动，模式切换保留独立点击区。 */
+.cy-workspace-titlebar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex: 0 0 48px;
+  align-items: center;
+  justify-content: flex-start;
+  box-sizing: border-box;
+  height: 48px;
+  gap: 8px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--rb-border-default);
+  background: var(--rb-surface-workspace);
+  app-region: drag;
+  -webkit-app-region: drag;
+}
+
+.cy-workspace-titlebar__icon {
+  flex: 0 0 auto;
+  color: var(--rb-accent);
+}
+
+.cy-workspace-titlebar__title {
+  max-width: calc(100% - 140px);
+  overflow: hidden;
+  color: var(--rb-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* 侧栏收起时，给左上角控件留出空间。 */
+.cy-page.is-collapsed .cy-page-top-center {
+  left: calc(50% - 85px);
 }
 
 .cy-workspace::before {
@@ -275,6 +350,11 @@ html, body {
 
 @media (prefers-reduced-motion: reduce) {
   .cy-workspace::before {
+    transition: none;
+  }
+
+  /* 减少动画偏好下侧栏不做滑动，直接瞬切 */
+  .cy-page .cy-page-sidebar {
     transition: none;
   }
 }
@@ -303,8 +383,8 @@ html, body {
   padding: 0;
   border: none;
   border-radius: 50%;
-  background: var(--cy-surface, rgba(255, 255, 255, 0.92));
-  color: var(--cy-text-primary, #4c3762);
+  background: var(--rb-surface-elevated, rgba(255, 255, 255, 0.92));
+  color: var(--rb-text-primary, #4c3762);
   box-shadow: 0 4px 14px rgba(76, 55, 98, 0.18);
   cursor: pointer;
   transition: transform 0.2s ease, opacity 0.2s ease;
@@ -332,39 +412,3 @@ html, body {
 .cy-workspace.has-messages .cy-workspace-composer {
   padding: 22px 24px;
 }
-
-.cy-compressing-context {
-  position: absolute;
-  right: 24px;
-  bottom: 120px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
-  color: var(--cy-text);
-  font-size: 13px;
-  pointer-events: none;
-  animation: cy-compressing-fade-in 0.25s ease;
-  z-index: 10;
-}
-
-.cy-compressing-context-icon {
-  width: 40px;
-  height: 40px;
-  object-fit: contain;
-  animation: cy-compressing-float 2.4s ease-in-out infinite;
-}
-
-@keyframes cy-compressing-fade-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes cy-compressing-float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-8px); }
-}
-

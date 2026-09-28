@@ -1,14 +1,13 @@
 import { app } from "electron";
 import type { BaseEvent } from "@ag-ui/core";
 import type { ToolDefinition } from "../../tools/registry/tool-registry";
-import { toolRegistry } from "../../tools/registry/tool-registry";
+import { resolveEffectKind, toolRegistry } from "../../tools/registry/tool-registry";
 import { checkPermission, type ToolRiskLevel } from "../../../permission";
-import { policyFor } from "../../../permission-policy";
 import { isPlanReadOnly } from "../../plan-mode";
 import { contextRefRegistry, extractLastUserQuery, type ToolContext } from "../../tools/registry/tool-context";
 import type { HarnessInput } from "../index";
-import { TaskSessionStore } from "../../../tasks/task-session-store";
-import { createTaskExecutor } from "../../task-runtime";
+import { getTaskSessionStore } from "../../../tasks/task-session-store";
+import { createTaskCloser, createTaskExecutor } from "../../task-runtime";
 import { FileToolOutputStore } from "../tool-output/file-tool-output-store";
 import { sendTaskLifecycleAsAgui } from "./event-mapper";
 import type { PreparedHarnessRun } from "./run-preparation";
@@ -23,6 +22,8 @@ export interface PreparedToolRuntime {
   checkPermission: NonNullable<HarnessInput["checkPermission"]>;
   toolOutputStore: FileToolOutputStore;
   taskExecutor: HarnessInput["taskExecutor"];
+  closeTaskExecutor: HarnessInput["closeTaskExecutor"];
+  openTaskCompanions: string[];
 }
 
 export function prepareToolRuntime(input: {
@@ -37,19 +38,24 @@ export function prepareToolRuntime(input: {
     toolId: string,
     args: Record<string, unknown>,
   ): Promise<boolean> => {
-    // allow_all 是显式总开关，会跳过后续权限检查；普通权限模式下才先执行计划只读拦截。
-    if (options.permissionMode === "allow_all") return true;
+    // 计划只读不变量：必须先于 allow_all 判断。
+    // 用户说"先规划不要动"是对本轮对话的契约，任何权限档位都不能越过。
+    // 判断依据从 risk（危险程度）换成 effectKind（是否改变世界），只放行纯读取工具；
+    // 未注册工具也拒绝（fail-closed：MCP/插件工具必须显式声明 effectKind 才能参与计划阶段）。
     if (
       (options.conversationMode === "code" || options.conversationMode === "chat")
       && isPlanReadOnly(threadId)
     ) {
-      const planTool = toolRegistry.getById(toolId) as (ToolDefinition & { risk?: ToolRiskLevel }) | undefined;
-      const planRisk: ToolRiskLevel = planTool?.risk ?? "safe";
-      if (policyFor("read-only", planRisk) !== "allow") {
-        console.log(`[HarnessAdapter] [Plan] read-only enforcement blocked tool=${toolId} risk=${planRisk}`);
+      const planTool = toolRegistry.getById(toolId);
+      if (!planTool) return false;
+      const effect = resolveEffectKind(planTool, args);
+      if (effect !== "read") {
+        console.log(`[HarnessAdapter] [Plan] read-only enforcement blocked tool=${toolId} effect=${effect}`);
         return false;
       }
     }
+    // 契约检查完毕后，allow_all 才生效（只影响执行阶段语义）
+    if (options.permissionMode === "allow_all") return true;
     const tool = toolRegistry.getById(toolId);
     if (!tool) return false;
     const risk: ToolRiskLevel = (tool as ToolDefinition & { risk?: ToolRiskLevel }).risk ?? "safe";
@@ -77,12 +83,17 @@ export function prepareToolRuntime(input: {
   };
   const toolOutputStore = new FileToolOutputStore(app.getPath("userData"));
   // 只有 work/code 模式允许派生任务；chat 模式不创建 TaskSession，避免出现不可见的后台执行。
-  const taskExecutor = options.conversationMode === "work" || options.conversationMode === "code"
+  // taskMode 在收窄的同时保留 "work" | "code" 字面量类型，供下方 executor 的 parent.mode 使用。
+  const taskMode = options.conversationMode === "work" || options.conversationMode === "code"
+    ? options.conversationMode
+    : undefined;
+  const taskStore = taskMode ? getTaskSessionStore(app.getPath("userData")) : undefined;
+  const taskExecutor = taskStore && taskMode
     ? createTaskExecutor({
       parent: {
         parentConversationId: threadId,
         parentRunId: runId,
-        mode: options.conversationMode,
+        mode: taskMode,
         capabilities: options.capabilities,
         systemPrompt,
         vendorConfig,
@@ -94,10 +105,14 @@ export function prepareToolRuntime(input: {
         permissionMode: options.permissionMode,
         toolOutputStore,
       },
-      store: new TaskSessionStore(app.getPath("userData")),
+      store: taskStore,
       onLifecycle: (event) => sendTaskLifecycleAsAgui(event, threadId, runId, input.sendBaseEvent),
     })
     : undefined;
+  const closeTaskExecutor = taskStore
+    ? createTaskCloser({ store: taskStore, parentConversationId: threadId })
+    : undefined;
+  const openTaskCompanions = taskStore?.listOpenCompanions(threadId) ?? [];
 
-  return { toolContext, checkPermission: permissionCheck, toolOutputStore, taskExecutor };
+  return { toolContext, checkPermission: permissionCheck, toolOutputStore, taskExecutor, closeTaskExecutor, openTaskCompanions };
 }

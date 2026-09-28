@@ -17,15 +17,17 @@ import type {
 import { parseToolCallArgs } from "./types";
 import { isAbortError } from "../../abort-utils";
 import { resolveUncertainEffect } from "./uncertain-effect-guard";
-import type { TaskExecuteRequest, TaskExecuteResult } from "../task-runtime";
+import type { TaskCloseRequest, TaskCloseResult, TaskExecuteRequest, TaskExecuteResult } from "../task-runtime";
 import { buildGoldenDescendantsPrompt, getGoldenDescendantNames } from "../../tasks/task-character-pool";
+import { DEFAULT_TASK_MAX_PARALLEL_TOOL_CALLS, MAX_PARALLEL_TOOL_CALLS } from "../../../shared/task-session";
 import { READ_TOOL_RESULT_TOOL_ID, readToolResultToolSpec } from "./tool-output/read-tool-result";
-import { ENTER_PLAN_MODE_TOOL_ID, WRITE_PLAN_TOOL_ID, enterPlanModeToolSpec, writePlanToolSpec } from "./plan-tools";
+import { ENTER_PLAN_MODE_TOOL_ID, WRITE_PLAN_TOOL_ID, SUBMIT_PLAN_TOOL_ID, enterPlanModeToolSpec, writePlanToolSpec, submitPlanToolSpec } from "./plan-tools";
 
 // ── update_todo ──────────────────────────────────────────
 
 export const UPDATE_TODO_TOOL_ID = "update_todo";
 export const TASK_TOOL_ID = "task";
+export const CLOSE_TASK_TOOL_ID = "close_task";
 
 const goldenDescendantNames = getGoldenDescendantNames();
 const hasGoldenDescendants = goldenDescendantNames.length > 0;
@@ -36,19 +38,59 @@ export const taskToolSpec: ToolSpec = {
     "委托一个需要独立上下文、多步执行的前台子任务。",
     "何时用：多个互不依赖的调查方向可以并行；较大目录或多个模块的独立审查；有明确交付物的专项任务。",
     "何时不用：一句话能回答的；只需一次工具调用的。",
+    "访问模式：access_mode=read_only 仅用于完全不修改文件、仓库或外部状态的任务；运行时会移除所有非只读工具。需要任何写入或不确定时必须用 write；只读子任务可并行，write 子任务会排队串行执行。",
+    `子任务工具并发：可选 max_parallel_tool_calls，范围 1–${MAX_PARALLEL_TOOL_CALLS}，默认 ${DEFAULT_TASK_MAX_PARALLEL_TOOL_CALLS}；只影响此子任务内部，不影响主 Agent 或其他子任务。仅在有足够多互不依赖的安全操作时提高。`,
     buildGoldenDescendantsPrompt(),
-    "父任务会等待结果；description 只用于向用户显示委托标签，prompt 是子任务完整指令。可传 task_id 继续同一子任务。子任务不能询问用户或再次委托。",
-  ].filter(Boolean).join(""),
+    "若选择的角色已有开启上下文，task 会自动在该上下文继续，不会新建第二份；继续时必须使用原 subagent_type。只有角色上下文关闭后，才能为该角色创建新上下文或更换类型。description 只用于显示，prompt 是完整指令。子任务不能询问用户或再次委托。",
+  ].filter(Boolean).join("\n"),
   parameters: { type: "object", properties: {
     description: { type: "string", description: "给用户显示的 3-40 字任务标签" },
     prompt: { type: "string", description: "子任务完整执行指令" },
     subagent_type: { type: "string", enum: ["general", "document", "search"] },
+    access_mode: { type: "string", enum: ["read_only", "write"], default: "write", description: "任务权限与并行方式；省略时按 write 串行执行" },
+    max_parallel_tool_calls: { type: "integer", minimum: 1, maximum: MAX_PARALLEL_TOOL_CALLS, default: DEFAULT_TASK_MAX_PARALLEL_TOOL_CALLS, description: `此子任务内部的工具并发上限，默认 ${DEFAULT_TASK_MAX_PARALLEL_TOOL_CALLS}，最高 ${MAX_PARALLEL_TOOL_CALLS}` },
     ...(hasGoldenDescendants ? {
       companion_id: { type: "string", enum: [...goldenDescendantNames], description: "本次委托的黄金裔名字；必须明确选择一位" },
     } : {}),
     task_id: { type: "string", description: "可选：恢复此前同一子任务" },
   }, required: ["description", "prompt", "subagent_type", ...(hasGoldenDescendants ? ["companion_id"] : [])] },
 };
+
+export const closeTaskToolSpec: ToolSpec = {
+  name: CLOSE_TASK_TOOL_ID,
+  description: "关闭一位黄金裔子代理的当前上下文。关闭后该角色可被重新委派，并从全新上下文开始；旧记录保留供查看。不能关闭仍在运行的子代理。",
+  parameters: { type: "object", properties: {
+    companion_id: { type: "string", enum: [...goldenDescendantNames], description: "要关闭上下文的黄金裔名字" },
+  }, required: ["companion_id"] },
+};
+
+export async function executeCloseTask(
+  call: ToolCall,
+  executor: ((request: TaskCloseRequest) => Promise<TaskCloseResult> | TaskCloseResult) | undefined,
+): Promise<ToolObservation> {
+  if (!executor) return { outcome: "failure", category: "runtime_safety", tool: CLOSE_TASK_TOOL_ID, message: "TaskRuntime 未注入，当前运行不能关闭子代理" };
+  const args = parseToolCallArgs(call);
+  const companionId = typeof args.companion_id === "string" ? args.companion_id.trim() : "";
+  if (!companionId || !goldenDescendantNames.includes(companionId)) {
+    return { outcome: "failure", category: "invalid_arguments", tool: CLOSE_TASK_TOOL_ID, message: "close_task 需要选择一位有效的黄金裔角色" };
+  }
+  try {
+    const result = await executor({ companionId });
+    return {
+      outcome: "success",
+      tool: CLOSE_TASK_TOOL_ID,
+      message: `${companionId}的子代理上下文已关闭。`,
+      output: JSON.stringify(result),
+    };
+  } catch (error) {
+    return {
+      outcome: "failure",
+      category: "runtime_safety",
+      tool: CLOSE_TASK_TOOL_ID,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
 
 export async function executeTask(
   call: ToolCall,
@@ -61,12 +103,21 @@ export async function executeTask(
   const subagentType = args.subagent_type;
   const companionId = typeof args.companion_id === "string" ? args.companion_id.trim() : "";
   const taskId = typeof args.task_id === "string" ? args.task_id.trim() || undefined : undefined;
+  const accessMode = args.access_mode === undefined ? "write" : args.access_mode;
+  const maxParallelToolCalls = args.max_parallel_tool_calls === undefined
+    ? DEFAULT_TASK_MAX_PARALLEL_TOOL_CALLS
+    : args.max_parallel_tool_calls;
   if (description.length < 3 || description.length > 40 || !prompt
     || !companionId
+    || (accessMode !== "read_only" && accessMode !== "write")
+    || typeof maxParallelToolCalls !== "number"
+    || !Number.isInteger(maxParallelToolCalls)
+    || maxParallelToolCalls < 1
+    || maxParallelToolCalls > MAX_PARALLEL_TOOL_CALLS
     || (subagentType !== "general" && subagentType !== "document" && subagentType !== "search")) {
-    return { outcome: "failure", category: "invalid_arguments", tool: TASK_TOOL_ID, message: "task 需要 3-40 字 description、非空 prompt、合法 subagent_type 与明确 companion_id" };
+    return { outcome: "failure", category: "invalid_arguments", tool: TASK_TOOL_ID, message: `task 需要 3-40 字 description、非空 prompt、合法 subagent_type、明确 companion_id、有效访问模式及 1–${MAX_PARALLEL_TOOL_CALLS} 的子任务并发数` };
   }
-  const result = await executor({ description, prompt, subagentType, companionId, taskId });
+  const result = await executor({ description, prompt, subagentType, companionId, taskId, accessMode, maxParallelToolCalls });
   return { outcome: result.status === "completed" ? "success" : "failure", tool: TASK_TOOL_ID,
     message: `子任务"${description}"已${result.status === "completed" ? "完成" : result.status}。`,
     output: JSON.stringify({ taskId: result.taskId, status: result.status, text: result.text }) };
@@ -609,12 +660,14 @@ export async function executeConfirmUncertainEffect(
 
 export const HARNESS_BUILTIN_TOOL_IDS = new Set([
   TASK_TOOL_ID,
+  CLOSE_TASK_TOOL_ID,
   UPDATE_TODO_TOOL_ID,
   ASK_USER_TOOL_ID,
   CONFIRM_UNCERTAIN_EFFECT_TOOL_ID,
   READ_TOOL_RESULT_TOOL_ID,
   ENTER_PLAN_MODE_TOOL_ID,
   WRITE_PLAN_TOOL_ID,
+  SUBMIT_PLAN_TOOL_ID,
 ]);
 
 export function isHarnessBuiltin(toolName: string): boolean {
@@ -627,19 +680,19 @@ export function isInteractiveHarnessBuiltin(toolName: string): boolean {
 
 /**
  * 计划工具组按状态注入（可见性即防御）：
- * - NORMAL：enter_plan_mode + write_plan。工具列表是 run 级固定的，模型常在
- *   同一 run 内先调 enter_plan_mode 再调 write_plan，因此两者必须同时注入；
- *   write_plan 自身有状态守卫（非 PLAN_DISCUSSING 调用直接 failure）。
- * - PLAN_DISCUSSING：仅 write_plan（enter_plan_mode 物理隐藏，幂等防御）
- * - PLAN_REVIEW / EXECUTING：全部隐藏（REVIEW 无模型轮；EXECUTING 防执行中再进计划）
+ * - NORMAL：enter_plan_mode + write_plan + submit_plan。工具列表是 run 级固定的，模型常在
+ *   同一 run 内先调 enter_plan_mode 再调 write_plan，讨论收敛后 submit_plan 交卷审批，
+ *   因此三者必须同时注入；write_plan / submit_plan 自身有状态守卫（非合法状态调用直接 failure）。
+ * - PLAN_DISCUSSING：write_plan + submit_plan（enter_plan_mode 物理隐藏，幂等防御）
+ * - PLAN_REVIEW / EXECUTING：全部隐藏（REVIEW 挂在 run 内等待，无模型轮；EXECUTING 防执行中再进计划）
  * - undefined（旧调用方/子任务）：不注入任何计划工具
  */
 function planToolSpecsFor(planState: import("../plan-mode").PlanStateName | undefined): ToolSpec[] {
   switch (planState) {
     case "NORMAL":
-      return [enterPlanModeToolSpec, writePlanToolSpec];
+      return [enterPlanModeToolSpec, writePlanToolSpec, submitPlanToolSpec];
     case "PLAN_DISCUSSING":
-      return [writePlanToolSpec];
+      return [writePlanToolSpec, submitPlanToolSpec];
     default:
       return [];
   }
@@ -648,12 +701,23 @@ function planToolSpecsFor(planState: import("../plan-mode").PlanStateName | unde
 export function getHarnessBuiltinToolSpecs(options?: {
   includeInteractive?: boolean;
   includeTask?: boolean;
+  includeCloseTask?: boolean;
+  openTaskCompanions?: readonly string[];
   planState?: import("../plan-mode").PlanStateName;
 }): ToolSpec[] {
   const interactive = options?.includeInteractive !== false
     ? [askUserToolSpec, confirmUncertainEffectToolSpec]
     : [];
-  const task = options?.includeTask === false ? [] : [taskToolSpec];
+  const openCompanions = options?.openTaskCompanions ?? [];
+  const taskSpec = openCompanions.length > 0
+    ? {
+      ...taskToolSpec,
+      description: `${taskToolSpec.description}\n当前开启的子代理窗口：${openCompanions.join("、")}。委派给这些角色会继续使用原上下文；如果需要释放角色，先调用 close_task。`,
+    }
+    : taskToolSpec;
+  const task = options?.includeTask === false
+    ? []
+    : [taskSpec, ...(options?.includeCloseTask ? [closeTaskToolSpec] : [])];
   const plan = planToolSpecsFor(options?.planState);
   return [updateTodoToolSpec, ...interactive, ...task, readToolResultToolSpec, ...plan];
 }

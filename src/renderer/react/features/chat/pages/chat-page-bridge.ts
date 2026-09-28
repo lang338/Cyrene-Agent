@@ -12,6 +12,9 @@ import type {
   SpeechInputCommitRequest,
   SpeechInputCommitResult,
 } from "../../../../../shared/ipc-channels";
+import type { SidebarOrganizationDraft, SidebarOrganizationResult, SidebarOrganizationSnapshot } from "../../../../../shared/sidebar-organization";
+import type { TaskSession } from "../../../../../shared/task-session";
+import type { ModelFailureInfo } from "../../../../../shared/model-error";
 
 /** 认领队首的返回形状（与主进程 chats-store 的 ClaimPendingResult 对齐）。 */
 export type PendingClaimResult =
@@ -20,7 +23,6 @@ export type PendingClaimResult =
       claimed: true;
       userMessage: ChatMessage;
       visibleContent: string;
-      resumeFromRunId?: string;
       /** 队首冻结的本轮临时上下文（工作台当前打开的文件等）；无则省略。 */
       contextAttachments?: { name: string; text: string }[];
       remainingQueue: PendingChatMessage[];
@@ -42,7 +44,11 @@ import type {
 
 export interface ChatStoreApi {
   list: (options?: { mode?: ConversationMode }) => Promise<ChatSessionMeta[]>;
+  getSidebarOrganization: () => Promise<SidebarOrganizationSnapshot>;
+  applySidebarOrganization: (expectedRevision: number, draft: SidebarOrganizationDraft) => Promise<SidebarOrganizationResult>;
+  onSidebarOrganizationChanged: (callback: () => void) => () => void;
   get: (id: string) => Promise<ChatSession | null>;
+  getTaskSession: (taskId: string, parentConversationId: string) => Promise<TaskSession | null>;
   create: (input: { identityId: null; mode: ConversationMode; title?: string }) => Promise<ChatSession>;
   checkpointPresentation: (
     sessionId: string,
@@ -75,12 +81,31 @@ export interface ChatStoreApi {
   pendingAdjust: (id: string, messageId: string) => Promise<PendingMutationResult>;
   setPinned: (id: string, pinned: boolean) => Promise<ChatSession | null>;
   setModelProfile: (id: string, modelProfileId?: string) => Promise<ChatSession | null>;
+  // 会话级当前模型窄 IPC：只写会话（绑定 + 模型），不碰档案；
+  // 失败返回错误码（invalid-payload / session-not-found / no-profile / invalid-model）
+  setSessionModel: (
+    id: string,
+    model: string,
+  ) => Promise<{ ok: true; session: ChatSession } | { ok: false; error: string }>;
   pickWorkspaceFolder: () => Promise<{ ok: boolean; path?: string; displayName?: string; error?: string }>;
+  listRecentProjects: () => Promise<string[]>;
+  // 验证工作区目录当前是否可用（存在且为目录）：失效路径不得显示为已选上
+  validateWorkspacePath: (workspaceRoot: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
   setWorkspace: (sessionId: string, workspaceRoot: string) => Promise<{ ok: boolean; error?: string; isEmpty?: boolean }>;
   // main → 所有窗口：工作区绑定变更（binding 为 null 表示解绑）
   onWorkspaceChanged: (callback: (payload: { sessionId: string; binding: ConversationWorkspaceBinding | null }) => void) => () => void;
+  // main → 渲染端：上下文压缩阶段。自动压缩在 run 开始前于主进程发生，
+  // 渲染端收不到 AG-UI 事件，靠这条推送显示消息流尾部的呼吸提示。
+  onCompactionPhase: (callback: (payload: { sessionId: string; phase: "running" | "finished" }) => void) => () => void;
   initLearnWorkspace: (sessionId: string) => Promise<{ ok: boolean; error?: string; created?: string[]; skipped?: string[] }>;
   openWorkspace: (workspaceRoot: string) => Promise<{ ok: boolean; error?: string }>;
+  // 聊天文件卡片右键菜单：本机默认方式打开 / 在资源管理器中定位工作区内文件
+  // （主进程校验路径在工作区内；失败静默，不弹错误）
+  shellFile: (
+    sessionId: string,
+    relPath: string,
+    action: "open" | "reveal",
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
   setActiveSession: (sessionId: string | null, mode?: ConversationMode) => Promise<unknown>;
   onChanged: (callback: () => void) => () => void;
   onReactSwitchSession: (callback: (sessionId: string) => void) => () => void;
@@ -116,6 +141,7 @@ export interface AguiEvent {
   stepName?: string;
   status?: string;
   changes?: ToolFileChange[];
+  metadata?: { cyreneModelFailure?: ModelFailureInfo };
 }
 
 /** Harness 正文候选事件：只驱动本次运行的临时预览，不代表正式消息提交。 */
@@ -140,7 +166,6 @@ export interface AguiApi {
     attachments?: Array<{ name: string; text: string }>;
     imageAttachments?: Array<{ name: string; filePath: string; mime?: string }>;
     recoveryContext?: string;
-    resumeFromRunId?: string;
     takeoverFromRunId?: string;
     /** 桌面 edit / regenerate 的轨迹回退锚点（主进程写 turn_rewind；渲染端只传元数据）。 */
     transcriptRewind?: {
@@ -152,7 +177,6 @@ export interface AguiApi {
   cancel: (runId?: string) => Promise<unknown>;
   // 落盘确认（单向通知）：终态消息写入会话存储后上报，供插件轮次事件使用
   reportRunPersisted?: (payload: { runId: string; finalMessageId?: string }) => void;
-  getInterruptedRun?: (sessionId: string) => Promise<{ runId: string; rounds: number; todoCount: number; updatedAt: number } | null>;
 }
 
 export interface ChoiceApi {

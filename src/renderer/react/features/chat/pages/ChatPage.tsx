@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { MessageSquareText } from "lucide-react";
 import { useTranslation } from "../../../i18n";
 import { DownOutlined } from "@ant-design/icons";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { ChatComposer, parseComposerMessage } from "../components/ChatComposer";
+import { collectNewlyUnreadSessionIds } from "../components/session-unread";
 import { ComposerSlot } from "../components/ComposerSlot";
 import { TodoPanel } from "../components/TodoPanel";
 import { CodeGitPanel } from "../components/CodeGitPanel";
 import type { PlanReviewPhase } from "../components/PlanReviewPanel";
 import { ChatPageInspector } from "../components/ChatPageInspector";
 import {
-  normalizeDeferredPlanChoice,
   normalizePopQuizCard,
   shouldDismissAsk,
   type ComposerInteraction,
@@ -20,7 +21,6 @@ import { WorkbenchPage } from "../../workbench/WorkbenchPage";
 import { workbenchApi } from "../../workbench/WorkspaceTree";
 import { bumpWorkbenchRound, shouldTakeCadenceSnapshot } from "../../workbench/snapshot-cadence";
 import {
-  ContextCompressionNotice,
   FileDropOverlay,
   RunRecoveryNotices,
 } from "../components/ChatWorkspaceNotices";
@@ -33,13 +33,16 @@ import type {
   ChatSessionMeta,
   ConversationMode,
   PendingChatMessage,
+  TaskDelegationDisplayRecord,
 } from "../../../../../shared/chat-types";
+import type { SidebarOrganizationDraft, SidebarOrganizationSnapshot } from "../../../../../shared/sidebar-organization";
 import { type ContextUsageSnapshot } from "../../../../../shared/context-usage";
 import type { PopQuizSubmission } from "../../../../../shared/pop-quiz";
+import type { ModelFailureInfo } from "../../../../../shared/model-error";
 import { ChatPagePanelHost } from "../components/ChatPagePanelHost";
 import { useUserCallPreference } from "../../../hooks/useUserNickname";
 import { resolveRevisableLastTurn } from "../components/last-turn-actions";
-import { shouldListenForDeferredPlanEvents } from "./conversation-run-policy";
+import { createSessionModelSwitcher, type SessionModelSwitcher } from "../components/session-model-switch";
 
 import {
   aguiApi,
@@ -94,7 +97,6 @@ import "../../../components/ui/WindowControls.css";
 import "../../../components/ui/SettingsButton.css";
 import "../../../components/ui/UserAvatar.css";
 import "../../../components/ui/NewTaskButton.css";
-import "../../../components/ui/ToolModeButton.css";
 import "../components/ChatComposer.css";
 import "../components/ReasoningControl.css";
 import "../components/StyleControl.css";
@@ -150,17 +152,35 @@ interface NavActions {
   openProject: (workspaceRoot: string) => void;
 }
 
-export function ChatPage() {
+/** 用主进程实时解析出的窗口容量覆盖快照分母。
+ *  快照里的 contextWindowTokens 是生成那一刻（run 前 / 压缩时）的口径，
+ *  切换模型或在设置页改窗口后就会过期；窗口缺失或没变时原样返回以避免多余渲染。 */
+function applyLiveContextWindow(
+  snapshot: ContextUsageSnapshot,
+  liveContextWindow?: number,
+): ContextUsageSnapshot {
+  if (!liveContextWindow || liveContextWindow === snapshot.contextWindowTokens) return snapshot;
+  return { ...snapshot, contextWindowTokens: liveContextWindow };
+}
+
+export function ChatPage({ onOpenSettings, scheduledTasksNavigation = 0 }: { onOpenSettings?: () => void; scheduledTasksNavigation?: number } = {}) {
   const { t } = useTranslation();
   // 统一反馈入口：错误轻提示 / 需阅读的错误弹窗 / 危险确认
   const feedback = useFeedback();
   const preferredAddress = useUserCallPreference();
-  const [collapsed, setCollapsed] = useState(false);
+  // 侧栏收起不进 React 状态：直接翻转根节点 class，避免整棵页面树为一次点击重渲染
+  // （ZCode 同思路：布局类状态走 DOM，React 只负责内容）
+  const pageRef = useRef<HTMLDivElement>(null);
   const [activePanel, setActivePanel] = useState<ChatPagePanel | null>(null);
+  useEffect(() => {
+    if (scheduledTasksNavigation > 0) setActivePanel("scheduledTasks");
+  }, [scheduledTasksNavigation]);
   /** 右侧面板已打开的 diff 标签，ID 规范 diff:<runId>:<文件路径>，同 ID 只激活不重开 */
   const [diffTabs, setDiffTabs] = useState<
     { id: string; runId: string; fileIndex: number; filePath: string }[]
   >([]);
+  /** 右侧已打开的子任务会话标签，任务详情始终通过子任务会话 ID 读取。 */
+  const [taskTabs, setTaskTabs] = useState<{ id: string; taskId: string; description: string; nickname: string; assetFileName: string }[]>([]);
   /** 右侧面板已打开的文件预览标签，ID 规范 file:<相对路径> */
   const [fileTabs, setFileTabs] = useState<{ id: string; relPath: string; line?: number; lineSeq?: number }[]>([]);
   /** 工作区文件树标签是否打开（ID 固定为 files） */
@@ -183,18 +203,42 @@ export function ChatPage() {
   const [pendingWorkspaceByMode, setPendingWorkspaceByMode] = useState<
     Partial<Record<ConversationMode, { path: string; displayName?: string }>>
   >({});
+  // 最近绑定的项目文件夹：工作文件夹下拉的候选，打开下拉时再懒加载
+  const [recentProjects, setRecentProjects] = useState<string[]>([]);
   // 欢迎页（无会话）暂存的模型选择：ensureSession 建会话后落地（与 pendingWorkspaceByMode 同构）。
   const [pendingModelProfileByMode, setPendingModelProfileByMode] = useState<
     Partial<Record<ConversationMode, string>>
   >({});
   const [sessionsByMode, setSessionsByMode] = useState<Partial<Record<ConversationMode, ChatSessionMeta[]>>>({});
+  const [sidebarSessions, setSidebarSessions] = useState<ChatSessionMeta[]>(EMPTY_SESSIONS);
+  // 会话未读检测：列表刷新时对比新旧 messageCount，非当前查看的会话收到新消息则加入集合
+  const [unreadSessionIds, setUnreadSessionIds] = useState<ReadonlySet<string>>(() => new Set());
+  const prevSidebarSessionsRef = useRef<ChatSessionMeta[] | null>(null);
+  const [sidebarOrganization, setSidebarOrganization] = useState<SidebarOrganizationSnapshot | null>(null);
   const [activeSessionIds, setActiveSessionIds] = useState<Partial<Record<ConversationMode, string>>>({});
 
   const [modelBusyByMode, setModelBusyByMode] = useState<Partial<Record<ConversationMode, boolean>>>({});
-  const [isCompressingContext, setIsCompressingContext] = useState(false);
   const [interactionsBySession, setInteractionsBySession] = useState<SessionInteractionState>({});
   const [lastTurnRevisionStarting, setLastTurnRevisionStarting] = useState(false);
   const [stickerSize, setStickerSize] = useState<"small" | "standard" | "large">("standard");
+  // 手动压缩进行中：消息流尾部渲染「正在触发压缩」呼吸占位条（完成后由投影 marker 接管）。
+  const [manualCompacting, setManualCompacting] = useState(false);
+  const handleCompactPhaseChange = useCallback(
+    (phase: "idle" | "running" | "done" | "error") => setManualCompacting(phase === "running"),
+    [],
+  );
+  // 自动压缩进行中（主进程推送）：与手动压缩共用同一条呼吸占位条。
+  // 自动压缩发生在 run 开始前的主进程侧，渲染端收不到 AG-UI 事件，只能靠这条推送。
+  const [autoCompactingSessionId, setAutoCompactingSessionId] = useState<string | null>(null);
+  useEffect(() => {
+    const store = chatStore();
+    if (!store?.onCompactionPhase) return;
+    return store.onCompactionPhase(({ sessionId, phase }) => {
+      setAutoCompactingSessionId((current) =>
+        phase === "running" ? sessionId : current === sessionId ? null : current,
+      );
+    });
+  }, []);
 
   const [todoStateBySession, setTodoStateBySession] = useState<TodoStateBySession>({});
   // 计划模式（Plan Mode 二期）：会话级计划面板内容与阶段（review → executing → completed）。
@@ -202,7 +246,6 @@ export function ChatPage() {
     Record<string, { content: string; planPath: string; phase: PlanReviewPhase }>
   >({});
   const [planDrawerOpen, setPlanDrawerOpen] = useState(false);
-  const [interruptedRun, setInterruptedRun] = useState<{ runId: string; rounds: number; todoCount: number } | null>(null);
   // 会话守卫冲突（SESSION_RUN_ACTIVE）：主进程拒绝了并发 run，
   // 等用户决定是否终止旧 run 并接管重开本轮。仅 UX 层；正确性由主进程守卫保证。
   const [sessionTakeover, setSessionTakeover] = useState<{
@@ -214,6 +257,7 @@ export function ChatPage() {
   const activeSessionIdsRef = useRef(activeSessionIds);
   const activeScopeRef = useRef(`mode:${mode}`);
   const sessionSelectionGeneration = useRef(0);
+  const sidebarSelectionRequest = useRef(0);
 
   const activeRunsBySession = useRef<Record<string, { assistantId: string; runId?: string; mode: ConversationMode }>>({});
   const runCheckpointBySessionRef = useRef<Record<string, (status: "running" | "waiting_user") => void>>({});
@@ -494,9 +538,43 @@ export function ChatPage() {
   const queueFlow = queueFlowRef.current;
   const sessions = sessionsByMode[mode] ?? EMPTY_SESSIONS;
   const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
+  const activeSessionTitle = sessions.find((session) => session.id === activeSessionId)?.title
+    ?? (activeSession && activeSession.id === activeSessionId ? activeSession.title : "");
+  // 对话级模型切换的竞态防护两件套（barrier + operation token，阶段③）：
+  // 惰性创建一次，闭包捕获的 chatStore/setActiveSession 引用均稳定
+  const modelSwitcherRef = useRef<SessionModelSwitcher | null>(null);
+  if (!modelSwitcherRef.current) {
+    modelSwitcherRef.current = createSessionModelSwitcher<ChatSession>({
+      ipc: {
+        setModelProfile: (sessionId, modelProfileId) => {
+          const store = chatStore();
+          if (!store) return Promise.resolve(null);
+          return store.setModelProfile(sessionId, modelProfileId);
+        },
+        setSessionModel: (sessionId, model) => {
+          const store = chatStore();
+          if (!store) return Promise.resolve({ ok: false as const, error: "store-unavailable" });
+          return store.setSessionModel(sessionId, model);
+        },
+      },
+      onSessionUpdated: (session) => {
+        setActiveSession(session);
+        // 换档案/换模型后返回值带主进程实时解析的容量：本地直接换掉分母，
+        // 否则发起方窗口不回读会话，环形图会停在旧模型的窗口上。
+        setSessionContextUsageBySession((current) => {
+          const snapshot = current[session.id];
+          if (!snapshot) return current;
+          const next = applyLiveContextWindow(snapshot, session.contextWindowTokens);
+          return next === snapshot ? current : { ...current, [session.id]: next };
+        });
+      },
+    });
+  }
+  const modelSwitcher = modelSwitcherRef.current;
   // 会话级最新上下文快照（环形图优先读取点）：run 事件实时写入；
   // 手动压缩后随会话重载从 session.currentContextUsage 初始化（known-issues 问题 3）。
   const [sessionContextUsageBySession, setSessionContextUsageBySession] = useState<Record<string, ContextUsageSnapshot>>({});
+  const [mainModelFailureBySession, setMainModelFailureBySession] = useState<Record<string, ModelFailureInfo>>({});
 
   activeModeRef.current = mode;
   activeSessionIdsRef.current = activeSessionIds;
@@ -522,6 +600,7 @@ export function ChatPage() {
     const store = chatStore();
     if (!store) return;
     const refresh = () => {
+      void refreshSidebarData();
       void refreshSessions(activeModeRef.current, true);
       // 队列投影对账：刷新当前各模式活跃会话与所有仍有投影的会话
       // （其他窗口可能入队/删除/认领；会话已删时 pendingList 返回 null 清除投影）
@@ -532,9 +611,28 @@ export function ChatPage() {
       for (const sessionId of sessionIds) void queueFlow.syncProjection(sessionId);
     };
     const off = store.onChanged(refresh);
-    return off;
+    const offOrganization = store.onSidebarOrganizationChanged(refreshSidebarData);
+    void refreshSidebarData();
+    return () => { off(); offOrganization(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 会话未读检测：列表变化时对比新旧 messageCount，消息数增加且不属于任何模式当前查看的
+  // 会话视为收到新消息，标记未读；首次加载（无前值）不检测，避免启动时全量误标。
+  useEffect(() => {
+    const prev = prevSidebarSessionsRef.current;
+    prevSidebarSessionsRef.current = sidebarSessions;
+    if (!prev || prev === sidebarSessions) return;
+    const viewingIds = new Set(Object.values(activeSessionIdsRef.current).filter(Boolean));
+    const newlyUnread = collectNewlyUnreadSessionIds(prev, sidebarSessions, viewingIds);
+    if (newlyUnread.length === 0) return;
+    setUnreadSessionIds((current) => {
+      if (newlyUnread.every((id) => current.has(id))) return current;
+      const next = new Set(current);
+      for (const id of newlyUnread) next.add(id);
+      return next;
+    });
+  }, [sidebarSessions]);
 
   // 模式 effect：bootstrap 完成后才刷新；bootstrap 自身由下方合并 effect 接管
   useEffect(() => {
@@ -656,87 +754,6 @@ export function ChatPage() {
     }
   }, [activeSessionId, mode]);
 
-  useEffect(() => {
-    const sessionId = activeSessionId;
-    const api = aguiApi();
-    if (!sessionId || !api?.getInterruptedRun || mode === "chat") {
-      setInterruptedRun(null);
-      return;
-    }
-    let active = true;
-    void api.getInterruptedRun(sessionId).then((run) => {
-      if (active) setInterruptedRun(run ? { runId: run.runId, rounds: run.rounds, todoCount: run.todoCount } : null);
-    }).catch(() => { if (active) setInterruptedRun(null); });
-    return () => { active = false; };
-  }, [activeSessionId, mode]);
-
-  // 计划模式事件（Plan Mode）：review/approved/exited 在 run 结束后由主进程发出
-  // （run 订阅已解除），必须持久监听；completed 在 run 内发出，run 订阅无此分支，
-  // 也统一在这里处理。批准后自动发送执行消息（sendMessage 自带 busy 排队机制）。
-  useEffect(() => {
-    const api = aguiApi();
-    if (!api?.onEvent || !shouldListenForDeferredPlanEvents(mode) || !activeSessionId) return;
-    const off = api.onEvent((event) => {
-      if (event.type !== "CUSTOM" || typeof event.name !== "string") return;
-      if (event.name === "cyrene.choice") {
-        const interaction = normalizeDeferredPlanChoice(event.value, activeSessionId);
-        if (interaction) setInteractionForSession(activeSessionId, interaction);
-        return;
-      }
-      if (event.name === "cyrene.choice.dismiss") {
-        // run 事件闸之外的 dismiss（老版选择卡超时 / run 结束后发出的结算）：
-        // 匹配当前 ask 卡时清掉，避免留下点不出结果的僵尸卡。
-        setInteractionsBySession((current) => {
-          const entry = current[activeSessionId];
-          if (!entry || entry.interaction.kind !== "ask" || !shouldDismissAsk(entry.interaction, event.value)) return current;
-          return clearSessionInteraction(current, activeSessionId);
-        });
-        return;
-      }
-      if (!event.name.startsWith("cyrene.plan.")) return;
-      const value = (event.value ?? null) as { sessionId?: string; planPath?: string; planContent?: string; text?: string } | null;
-      if (value?.sessionId && value.sessionId !== activeSessionId) return;
-      switch (event.name) {
-        case "cyrene.plan.review":
-          if (value?.sessionId && typeof value.planContent === "string" && value.planContent.trim()) {
-            setPlanReviewBySession((current) => ({
-              ...current,
-              [value.sessionId!]: {
-                content: value.planContent!,
-                planPath: value.planPath ?? "",
-                phase: "review",
-              },
-            }));
-            setPlanDrawerOpen(true);
-            setActiveTabId(`plan:${value.sessionId}`);
-          }
-          break;
-        case "cyrene.plan.approved":
-          if (value?.sessionId) {
-            setPlanReviewBySession((current) => current[value.sessionId!]
-              ? { ...current, [value.sessionId!]: { ...current[value.sessionId!], phase: "executing" } }
-              : current);
-            void sendMessage(t("chatPage.planApprovedAutoMessage"));
-          }
-          break;
-        case "cyrene.plan.supplement":
-          // 第二段补充卡提交的文本：作为用户消息发给模型修改计划，改完会重新走审批
-          if (value?.sessionId && typeof value.text === "string" && value.text.trim()) {
-            void sendMessage(value.text);
-          }
-          break;
-        case "cyrene.plan.completed":
-          // adapter 发出时不带 sessionId；按当前计划会话处理
-          setPlanReviewBySession((current) => current[activeSessionId]
-            ? { ...current, [activeSessionId]: { ...current[activeSessionId], phase: "completed" } }
-            : current);
-          break;
-      }
-    });
-    return off;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, activeSessionId]);
-
   function setInteractionForSession(sessionId: string, interaction: ComposerInteraction): void {
     setInteractionsBySession((current) => setSessionInteraction(current, sessionId, interaction));
   }
@@ -825,19 +842,30 @@ export function ChatPage() {
     const session = await store.get(sessionId);
     if (!session || generation !== sessionSelectionGeneration.current) return;
     setActiveSession(session);
-    // 环形图快照初始化：session 级（压缩后写入）与消息级（最近 run 留下）取最新。
+    // 环形图快照初始化：session 级（压缩后写入）与消息级（最近 run 留下）取最新；
+    // 分母统一换成主进程实时解析的窗口容量，避免展示陈旧值。
     setSessionContextUsageBySession((current) => {
       const messageLevel = session.messages.findLast((message) => message.contextUsage)?.contextUsage;
       const sessionLevel = session.currentContextUsage;
       const best = sessionLevel && (!messageLevel || sessionLevel.updatedAt >= messageLevel.updatedAt)
         ? sessionLevel
         : messageLevel;
-      if (!best || current[sessionId]?.updatedAt === best.updatedAt) return current;
-      return { ...current, [sessionId]: best };
+      if (!best) return current;
+      const next = applyLiveContextWindow(best, session.contextWindowTokens);
+      if (current[sessionId]?.updatedAt === next.updatedAt
+        && current[sessionId]?.contextWindowTokens === next.contextWindowTokens) return current;
+      return { ...current, [sessionId]: next };
     });
     setActiveSessionIds((current) => {
       const next = { ...current, [targetMode]: sessionId };
       activeSessionIdsRef.current = next;
+      return next;
+    });
+    // 用户切进该会话即视为已读
+    setUnreadSessionIds((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.delete(sessionId);
       return next;
     });
     const uiMessages = toUiMessages(session);
@@ -904,6 +932,7 @@ export function ChatPage() {
     const store = chatStore();
     if (!store) return;
     const listed = await store.list({ mode: targetMode });
+    void refreshSidebarData();
     // 内容未变时返回原引用：React 对同引用 state 会 bailout，导航/侧栏 memo 不再被重复刷新穿透
     setSessionsByMode((current) => {
       const existing = current[targetMode];
@@ -926,6 +955,51 @@ export function ChatPage() {
     setWorkspaceNames((current) => ({ ...current, [targetMode]: undefined }));
     if (targetMode === activeModeRef.current) void store.setActiveSession(null, targetMode);
   }
+
+  async function refreshSidebarData() {
+    const store = chatStore();
+    if (!store) return;
+    try {
+      const [listed, organization] = await Promise.all([
+        store.list(),
+        store.getSidebarOrganization(),
+      ]);
+      const workAndCode = listed.filter((session) => session.mode === "work" || session.mode === "code");
+      setSidebarSessions((current) => sessionMetaListEqual(current, workAndCode) ? current : workAndCode);
+      setSidebarOrganization(organization);
+    } catch (error) {
+      console.error("[ChatPage] Failed to refresh sidebar organization:", error);
+    }
+  }
+
+  const saveSidebarOrganization = useCallback(async (draft: SidebarOrganizationDraft): Promise<boolean> => {
+    const store = chatStore();
+    if (!store) return false;
+    try {
+      const base = sidebarOrganization ?? await store.getSidebarOrganization();
+      const cleanDraft: SidebarOrganizationDraft = {
+        projects: draft.projects,
+        projectOrder: draft.projectOrder,
+        projectCategories: draft.projectCategories,
+        projectCategoryMembers: draft.projectCategoryMembers,
+        groups: draft.groups,
+        topLevelOrder: draft.topLevelOrder,
+        groupMembers: draft.groupMembers,
+      };
+      const result = await store.applySidebarOrganization(base.revision, cleanDraft);
+      setSidebarOrganization(result.snapshot);
+      if (!result.ok) {
+        if (result.reason === "conflict") void refreshSidebarData();
+        feedback.notice({ tone: "error", message: t("sidebar.organizationSaveFailed") });
+        return false;
+      }
+      return true;
+    } catch (error) {
+      console.error("[ChatPage] Failed to save sidebar organization:", error);
+      feedback.notice({ tone: "error", message: t("sidebar.organizationSaveFailed") });
+      return false;
+    }
+  }, [sidebarOrganization, feedback, t]);
 
   // 渲染期间同步安装真实实现，保证 mount effect 不会先观察到默认 no-op。
   refreshSessionsRef.current = refreshSessions;
@@ -954,7 +1028,34 @@ export function ChatPage() {
           ...current,
           [sessionId]: snapshot,
         })),
-        setCompressingContext: (_sessionId, value) => setIsCompressingContext(value),
+        setMainModelFailure: (sessionId, failure) => setMainModelFailureBySession((current) => {
+          if (!failure) {
+            const next = { ...current };
+            delete next[sessionId];
+            return next;
+          }
+          return { ...current, [sessionId]: failure };
+        }),
+        updatePlanReview: (sessionId, update) => {
+          if (update.kind === "submitted") {
+            // submit_plan 交卷：载入计划全文并打开计划面板，供用户在审批等待期间审阅
+            setPlanReviewBySession((current) => ({
+              ...current,
+              [sessionId]: {
+                content: update.planContent,
+                planPath: update.planPath,
+                phase: "review",
+              },
+            }));
+            setPlanDrawerOpen(true);
+            setActiveTabId(`plan:${sessionId}`);
+            return;
+          }
+          // 执行收尾：已有面板条目标记为已完成，无条目不新建
+          setPlanReviewBySession((current) => current[sessionId]
+            ? { ...current, [sessionId]: { ...current[sessionId], phase: "completed" } }
+            : current);
+        },
         setModeBusy: (targetMode, busy) => {
           if (busy) {
             modelBusyByModeRef.current = { ...modelBusyByModeRef.current, [targetMode]: true };
@@ -1199,19 +1300,45 @@ export function ChatPage() {
     }
   }
 
-  async function chooseWorkspace() {
-    const targetMode = mode;
+  // 把选定的工作区落到当前模式：有会话立即绑定，无会话暂存到首条消息一起绑定。
+  // 系统文件夹选择框与"最近项目"下拉共用这条落地路径。
+  async function applyWorkspaceSelection(
+    targetMode: ConversationMode,
+    workspace: { path: string; displayName: string },
+  ) {
     if (targetMode === "chat") return;
     const store = chatStore();
     if (!store) return;
-    const picked = await store.pickWorkspaceFolder();
-    if (!picked.ok || !picked.path) return;
 
-    const workspace = { path: picked.path, displayName: picked.displayName ?? t("chatPage.defaultWorkspaceName") };
+    // 选中即验证：最近项目下拉是打开时的快照，目录可能在选中前已被移走；
+    // 失效路径不得显示为已选上，直接提示重选（发送时的 setWorkspace 会再兜底验证一次）
+    const validated = await store.validateWorkspacePath(workspace.path);
+    if (!validated?.ok) {
+      await feedback.alert({
+        tone: "error",
+        title: t("chatPage.setWorkspaceFailedTitle"),
+        message: t("chatPage.setWorkspaceFailed", {
+          error: validated?.error ?? t("chatPage.unknownError"),
+        }),
+      });
+      return;
+    }
+
     setWorkspaceNames((current) => ({ ...current, [targetMode]: workspace.displayName }));
 
     const activeId = activeSessionIdsRef.current[targetMode];
-    if (activeId) {
+    // 引用可能已过期（例如会话已在侧边栏被删除），绑定前先确认存在；
+    // 已不存在就清掉残留引用，按"无会话"走暂存路径，避免报"session not found"。
+    const activeSession = activeId ? await store.get(activeId) : null;
+    if (activeId && !activeSession) {
+      setActiveSessionIds((current) => {
+        const next = { ...current };
+        delete next[targetMode];
+        activeSessionIdsRef.current = next;
+        return next;
+      });
+    }
+    if (activeSession && activeId) {
       const result = await store.setWorkspace(activeId, workspace.path);
       if (!result.ok) {
         // 长操作失败：错误详情需阅读，用单按钮错误弹窗
@@ -1238,6 +1365,44 @@ export function ChatPage() {
       // 还没有发送第一条消息、未创建 session，先暂存工作区，发消息时一起绑定。
       setPendingWorkspaceByMode((current) => ({ ...current, [targetMode]: workspace }));
     }
+  }
+
+  async function chooseWorkspace() {
+    const targetMode = mode;
+    if (targetMode === "chat") return;
+    const store = chatStore();
+    if (!store) return;
+    const picked = await store.pickWorkspaceFolder();
+    if (!picked.ok || !picked.path) return;
+    await applyWorkspaceSelection(targetMode, {
+      path: picked.path,
+      displayName: picked.displayName ?? t("chatPage.defaultWorkspaceName"),
+    });
+  }
+
+  // 打开工作文件夹下拉时刷新最近项目列表
+  const loadRecentProjects = useCallback(async () => {
+    const store = chatStore();
+    if (!store) return;
+    try {
+      setRecentProjects(await store.listRecentProjects());
+    } catch {
+      // 读不到就维持现有列表，不影响选择流程
+    }
+  }, []);
+
+  // 进入可绑定工作区的模式时预取最近项目：
+  // 列表为空时按钮不渲染下拉，下拉懒加载永远不会被触发，
+  // 必须主动拉一次让主进程完成"存量会话回填"，按钮才有内容可展示。
+  useEffect(() => {
+    if (mode === "chat") return;
+    void loadRecentProjects();
+  }, [mode, loadRecentProjects]);
+
+  // 从"最近项目"下拉直接选定历史项目，跳过系统文件夹选择框
+  async function selectRecentProject(projectPath: string) {
+    const folderName = projectPath.split(/[\\/]/).filter(Boolean).pop() ?? projectPath;
+    await applyWorkspaceSelection(mode, { path: projectPath, displayName: folderName });
   }
 
   async function createNewTask() {
@@ -1313,7 +1478,10 @@ export function ChatPage() {
   }
 
 
-  async function sendMessage(content: string, resumeFromRunId?: string) {
+  async function sendMessage(content: string) {
+    // renderer barrier（决策 10）：等待最近一次模型状态变更提交完成再发送，
+    // 保证"选模型 → 立刻 Enter"时请求读到的是新模型（不赌 IPC handler 执行顺序）
+    await modelSwitcher.barrier();
     const parsedMessage = parseComposerMessage(mode, content);
     const message = parsedMessage.rawContent;
     if (!message) return;
@@ -1336,22 +1504,44 @@ export function ChatPage() {
           targetMode,
           pendingWorkspace.displayName ?? t("chatPage.defaultWorkspaceName"),
         ));
-      }
-      if (workspaceResult?.ok && targetMode === "learn" && workspaceResult.isEmpty) {
-        const confirmed = await feedback.confirm({
-          title: t("chatPage.learnStructureConfirmTitle"),
-          message: t("chatPage.emptyDirLearnStructureConfirm"),
-          confirmText: t("common.confirm"),
-        });
-        if (confirmed) {
-          await initVaultStructure(sessionId, { confirm: false });
+        if (targetMode === "learn" && workspaceResult.isEmpty) {
+          const confirmed = await feedback.confirm({
+            title: t("chatPage.learnStructureConfirmTitle"),
+            message: t("chatPage.emptyDirLearnStructureConfirm"),
+            confirmText: t("common.confirm"),
+          });
+          if (confirmed) {
+            await initVaultStructure(sessionId, { confirm: false });
+          }
         }
+        setPendingWorkspaceByMode((current) => {
+          const next = { ...current };
+          delete next[targetMode];
+          return next;
+        });
+      } else {
+        // 绑定失败（典型：最近项目/继承的目录已被移动或删除）：必须停下提示重选。
+        // 静默继续会被主进程派发守卫拒绝，用户只看到"未绑定工作区"却不知道原因。
+        await feedback.alert({
+          tone: "error",
+          title: t("chatPage.setWorkspaceFailedTitle"),
+          message: t("chatPage.setWorkspaceFailed", {
+            error: workspaceResult?.error ?? t("chatPage.unknownError"),
+          }),
+        });
+        // 撤掉"已选上"的显示并清掉失效暂存，让欢迎页重新出现工作区选择入口
+        setWorkspaceNames((current) => {
+          const next = { ...current };
+          delete next[targetMode];
+          return next;
+        });
+        setPendingWorkspaceByMode((current) => {
+          const next = { ...current };
+          delete next[targetMode];
+          return next;
+        });
+        return;
       }
-      setPendingWorkspaceByMode((current) => {
-        const next = { ...current };
-        delete next[targetMode];
-        return next;
-      });
     }
 
     // 统一走主进程权威队列：只有入队确认成功后才清草稿和附件（失败保留并提示）。
@@ -1364,7 +1554,6 @@ export function ChatPage() {
       visibleContent: visibleMessage,
       attachments: attachmentsForMessage,
       userSticker,
-      ...(resumeFromRunId ? { resumeFromRunId } : {}),
     });
     if (!enqueued) return;
     // 请求期间用户继续输入时不清掉新内容：仅当草稿仍是发送时的文本才清空；
@@ -1519,6 +1708,7 @@ export function ChatPage() {
   // 会话隔离：切换会话时清空工作区相关标签，避免把 A 会话的文件带进 B 会话
   useEffect(() => {
     setDiffTabs([]);
+    setTaskTabs([]);
     setFileTabs([]);
     setFilesTabOpen(false);
     setActiveTabId(null);
@@ -1536,6 +1726,20 @@ export function ChatPage() {
     setActiveTabId(id);
   }, [activeSession?.workspaceBinding]);
 
+  const openTaskInspector = useCallback((delegation: TaskDelegationDisplayRecord) => {
+    const id = `task:${delegation.taskId}`;
+    setTaskTabs((tabs) => tabs.some((tab) => tab.id === id)
+      ? tabs
+      : [...tabs, {
+          id,
+          taskId: delegation.taskId,
+          description: delegation.description,
+          nickname: delegation.nickname,
+          assetFileName: delegation.assetFileName,
+        }]);
+    setActiveTabId(id);
+  }, []);
+
   /** 打开/激活文件树标签 */
   const openFilesTab = () => {
     setFilesTabOpen(true);
@@ -1547,6 +1751,7 @@ export function ChatPage() {
     setFilesTabOpen(false);
     setFileTabs([]);
     setDiffTabs([]);
+    setTaskTabs([]);
     setPlanDrawerOpen(false);
     setActiveTabId(null);
   };
@@ -1583,6 +1788,7 @@ export function ChatPage() {
     ...(filesTabOpen ? ["files"] : []),
     ...fileTabs.map((tab) => tab.id),
     ...diffTabs.map((tab) => tab.id),
+    ...taskTabs.map((tab) => tab.id),
     ...((activePlan !== null && planDrawerOpen) ? [planTabId] : []),
   ];
 
@@ -1592,7 +1798,7 @@ export function ChatPage() {
    * 只剩它一个时恢复可关——关掉即收起整个面板。
    */
   const filesTabPinned = filesTabOpen
-    && (fileTabs.length > 0 || diffTabs.length > 0 || (activePlan !== null && planDrawerOpen));
+    && (fileTabs.length > 0 || diffTabs.length > 0 || taskTabs.length > 0 || (activePlan !== null && planDrawerOpen));
 
   /** 关闭右侧面板标签：活动标签关闭后回退到相邻标签（优先左侧） */
   const closeInspectorTab = (id: string) => {
@@ -1610,6 +1816,8 @@ export function ChatPage() {
       setFileTabs((tabs) => tabs.filter((tab) => tab.id !== id));
     } else if (id.startsWith("plan:")) {
       setPlanDrawerOpen(false);
+    } else if (id.startsWith("task:")) {
+      setTaskTabs((tabs) => tabs.filter((tab) => tab.id !== id));
     } else {
       setDiffTabs((tabs) => tabs.filter((tab) => tab.id !== id));
     }
@@ -1645,7 +1853,9 @@ export function ChatPage() {
     },
   };
 
-  const navToggleCollapsed = useCallback(() => setCollapsed((value) => !value), []);
+  const navToggleCollapsed = useCallback(() => {
+    pageRef.current?.classList.toggle("is-collapsed");
+  }, []);
   const navModeChange = useCallback((nextMode: string) => {
     if (isConversationMode(nextMode)) setMode(nextMode);
   }, []);
@@ -1655,9 +1865,16 @@ export function ChatPage() {
   const navTogglePanel = useCallback((panel: ChatPagePanel) => {
     setActivePanel((current) => current === panel ? null : panel);
   }, []);
-  const navSelectSession = useCallback((sessionId: string) => {
+  const navSelectSession = useCallback((sessionId: string, targetMode?: ConversationMode) => {
     setActivePanel(null);
-    void navActionsRef.current.selectSession(sessionId);
+    if (targetMode && targetMode !== activeModeRef.current) setMode(targetMode);
+    const modeToSelect = targetMode ?? activeModeRef.current;
+    const requestId = ++sidebarSelectionRequest.current;
+    void navActionsRef.current.selectSession(sessionId, modeToSelect).then(() => {
+      if (sidebarSelectionRequest.current === requestId && activeSessionIdsRef.current[modeToSelect] === sessionId) {
+        void chatStore()?.setActiveSession(sessionId, modeToSelect);
+      }
+    });
   }, []);
   const navOpenProject = useCallback((workspaceRoot: string) => {
     navActionsRef.current.openProject(workspaceRoot);
@@ -1674,16 +1891,22 @@ export function ChatPage() {
   const navMinimize = useCallback(() => window.chat?.minimize(), []);
   const navMaximize = useCallback(() => window.chat?.toggleMaximize(), []);
   const navCloseWindow = useCallback(() => window.chat?.close(), []);
-  const navOpenSettings = useCallback(() => sidebarApi()?.openSettings("appearance"), []);
+  const navOpenSettings = useCallback(() => {
+    if (onOpenSettings) onOpenSettings();
+    else sidebarApi()?.openSettings("appearance");
+  }, [onOpenSettings]);
 
   return (
-    <div className={`cy-page ${collapsed ? "is-collapsed" : ""}`}>
+    <div ref={pageRef} className="cy-page cy-page--chat">
       <ChatPageNavigation
-        collapsed={collapsed}
         activePanel={activePanel}
         mode={mode}
         sessions={sessions}
+        sidebarSessions={sidebarSessions}
+        sidebarOrganization={sidebarOrganization}
+        onSaveSidebarOrganization={saveSidebarOrganization}
         activeSessionId={activeSessionId}
+        unreadSessionIds={unreadSessionIds}
         onToggleCollapsed={navToggleCollapsed}
         onModeChange={navModeChange}
         onNewTask={navNewTask}
@@ -1716,8 +1939,18 @@ export function ChatPage() {
         onDrop={dragHandlers.onDrop}
       >
         <FileDropOverlay visible={isDraggingFiles} />
+        <header className="cy-workspace-titlebar">
+          {activeSessionTitle && (
+            <>
+              <MessageSquareText className="cy-workspace-titlebar__icon" size={16} strokeWidth={1.8} aria-hidden="true" />
+              <span className="cy-workspace-titlebar__title" title={activeSessionTitle}>
+                {activeSessionTitle}
+              </span>
+            </>
+          )}
+        </header>
         {/* 白色工作区右上角：打开菜单 + 分割线 + 右侧面板展开/收起开关（左上角 SidebarToggle 的镜像同款动画）。
-            仅在会话对话视图显示：产生过消息、且当前不在插件/工具/技能/模型/动态等面板页时才挂载 */}
+            仅在会话对话视图显示：产生过消息、且当前不在工具/技能/动态等面板页时才挂载 */}
         {(hasMessages && !activePanel && (activeSession?.workspaceBinding || inspectorTabIds.length > 0)) && (
           <span className="cy-inspector-toggle-float">
             {activeSession?.workspaceBinding && activeSessionId && (
@@ -1733,7 +1966,17 @@ export function ChatPage() {
           </span>
         )}
         {activePanel ? (
-          <ChatPagePanelHost panel={activePanel} />
+          <ChatPagePanelHost
+            panel={activePanel}
+            onPickWorkspace={async () => {
+              const store = chatStore();
+              return store ? store.pickWorkspaceFolder() : { ok: false, error: t("scheduler.workspacePickerUnavailable") };
+            }}
+            onOpenSession={(sessionId) => {
+              setActivePanel(null);
+              void openSessionById(sessionId);
+            }}
+          />
         ) : (
         <>
         {(mode === "work" || mode === "learn") && (
@@ -1755,11 +1998,9 @@ export function ChatPage() {
           />
         )}
         <RunRecoveryNotices
-          interruptedRun={interruptedRun}
           sessionTakeover={sessionTakeover}
           activeSessionId={activeSessionId}
           isRunning={isCurrentScopeRunning}
-          onResume={(runId) => void sendMessage(t("chatPage.resumeLastTaskMessage"), runId)}
           onTakeover={() => {
             const takeover = sessionTakeover;
             if (!takeover) return;
@@ -1773,6 +2014,7 @@ export function ChatPage() {
             conversationId={activeSessionId}
             mode={mode}
             preferredAddress={preferredAddress}
+            compacting={manualCompacting || autoCompactingSessionId === activeSessionId}
             stickerSize={stickerSize}
             revisionBusy={Boolean(modelBusyByMode[mode]) || lastTurnRevisionStarting}
             onEditLastUserMessage={mode === "chat" ? editLastChatUserMessage : undefined}
@@ -1781,11 +2023,11 @@ export function ChatPage() {
             onScrollToBottomVisibilityChange={setScrollToBottomVisible}
             onRegisterScrollToBottom={registerScrollToBottom}
             onOpenReviewInspector={openDiffTab}
+            onOpenTaskInspector={openTaskInspector}
             workspaceRoot={activeSession?.workspaceBinding?.workspaceRoot}
             onOpenFileLink={openFileTab}
           />
         )}
-        <ContextCompressionNotice visible={isCompressingContext} />
         <div className="cy-workspace-composer">
           {scrollToBottomVisible && (
             <button
@@ -1809,6 +2051,7 @@ export function ChatPage() {
             attachments={attachments}
             attachmentBusy={attachmentBusy}
             modelBusy={isCurrentScopeRunning}
+            onCompactPhaseChange={handleCompactPhaseChange}
             pendingQueue={currentPendingQueue}
             onChange={(value) => setDrafts((current) => ({ ...current, [scopeKey]: value }))}
             onSubmit={(value) => void sendMessage(value)}
@@ -1823,6 +2066,9 @@ export function ChatPage() {
               : Promise.resolve(false)}
             onChooseWorkspace={() => void chooseWorkspace()}
             onOpenWorkbench={mode === "code" ? () => void openWorkbench() : undefined}
+            recentProjects={recentProjects}
+            onOpenRecentProjects={() => void loadRecentProjects()}
+            onSelectRecentProject={(projectPath) => void selectRecentProject(projectPath)}
             onChooseFiles={(files) => void chooseFiles(files)}
             onRemoveAttachment={removeAttachment}
             onScreenshot={() => void handleScreenshot()}
@@ -1836,16 +2082,22 @@ export function ChatPage() {
                 ? activeSession.modelProfileId
                 : pendingModelProfileByMode[mode]
             }
+            activeSessionModel={activeSession && activeSession.id === activeSessionId ? activeSession.model : undefined}
             contextUsage={latestContextUsage}
+            mainModelFailure={activeSessionId ? mainModelFailureBySession[activeSessionId] : undefined}
+            onSelectSessionModel={(model) => {
+              // 子下拉只在有会话时由 ModelSelector 渲染，这里防御性兜底
+              if (!activeSessionId) return;
+              modelSwitcher.switchModel(activeSessionId, model);
+            }}
             onSelectModelProfile={(modelProfileId) => {
               // 欢迎页（无会话）：暂存选择，ensureSession 建会话后落地；不再静默丢弃。
               if (!activeSessionId) {
                 setPendingModelProfileByMode((current) => ({ ...current, [mode]: modelProfileId }));
                 return;
               }
-              const store = chatStore();
-              if (!store) return;
-              void store.setModelProfile(activeSessionId, modelProfileId).then((session) => setActiveSession(session));
+              // operation token（决策 11）：最新一次切换独占 UI 更新权，迟到回调丢弃
+              modelSwitcher.switchProfile(activeSessionId, modelProfileId);
             }}
             />}
             interaction={composerInteraction}
@@ -1869,6 +2121,7 @@ export function ChatPage() {
                 filesTabPinned={filesTabPinned}
                 fileTabs={fileTabs}
                 diffTabs={diffTabs}
+                taskTabs={taskTabs}
                 activePlan={activePlan}
                 planDrawerOpen={planDrawerOpen}
                 planTabId={planTabId}
@@ -1876,6 +2129,7 @@ export function ChatPage() {
                 onTabChange={setActiveTabId}
                 onCloseTab={closeInspectorTab}
                 onOpenFile={openFileTab}
+                preferredAddress={preferredAddress}
               />
             </Panel>
           </>

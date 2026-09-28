@@ -40,6 +40,20 @@ export function getAvatarPath(): string {
   return path.join(app.getPath("userData"), "avatar.png");
 }
 
+export const CYRENE_AVATAR_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".bmp"] as const;
+
+export function getCyreneAvatarPath(extension: typeof CYRENE_AVATAR_EXTENSIONS[number]): string {
+  return path.join(app.getPath("userData"), `cyrene-avatar${extension}`);
+}
+
+export function findCyreneAvatarPath(): string | null {
+  const candidates = CYRENE_AVATAR_EXTENSIONS
+    .map((extension) => getCyreneAvatarPath(extension))
+    .filter((filePath) => fs.existsSync(filePath));
+  if (candidates.length === 0) return null;
+  return candidates.sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs)[0] ?? null;
+}
+
 export function getRagStorePath(): string {
   return path.join(app.getPath("userData"), "rag-data", "memory-store.json");
 }

@@ -75,6 +75,12 @@ export function CodeGitPanel({ sessionId, projectName, todoState, planPhase, onO
   const completed = todos.filter((todo) => todo.status === "completed").length;
   const branchName = status?.branch?.current ?? (status?.branch?.detached ? "detached HEAD" : t("codeGit.noBranch"));
   const statusCopy = status ? buildGitStatusCopy(status) : t("codeGit.readingStatus");
+  const firstPushAvailable = status?.state === "ready"
+    && Boolean(status.branch?.current)
+    && !status.branch?.tracking
+    && Boolean(status.branch?.current && status.branch.branches.includes(status.branch.current));
+  const canPush = Boolean(status && (status.ahead > 0 || firstPushAvailable));
+  const conflictedCount = status?.summary.conflicted ?? 0;
   const runOperation = async (action: () => Promise<void>, onSuccess?: () => void) => {
     setOperating(true);
     setOperationError(null);
@@ -120,8 +126,8 @@ export function CodeGitPanel({ sessionId, projectName, todoState, planPhase, onO
             <span className="cy-code-git__added">+{status?.lines.insertions ?? 0}</span>
             <span className="cy-code-git__deleted">-{status?.lines.deletions ?? 0}</span>
           </div>
-          <button type="button" disabled={status?.state !== "ready" || (status.files.length === 0 && status.ahead === 0)} onClick={() => setDialog("commit")}>
-            <span>{t("codeGit.commitOrPush")}</span><code>{status?.files.length ? t("codeGit.commitChanges") : status?.ahead ? t("codeGit.pushCommits", { count: status.ahead }) : t("codeGit.noAction")}</code><b>›</b>
+          <button type="button" disabled={status?.state !== "ready" || (status.files.length === 0 && !canPush)} onClick={() => setDialog("commit")}>
+            <span>{t("codeGit.commitOrPush")}</span><code>{status?.files.length ? (conflictedCount ? t("codeGit.resolveConflicts") : t("codeGit.commitChanges")) : canPush ? (firstPushAvailable && !status?.ahead ? t("codeGit.firstPush") : t("codeGit.pushCommits", { count: status?.ahead ?? 0 })) : t("codeGit.noAction")}</code><b>›</b>
           </button>
           {operationError && <p className="cy-code-git__operation-error">{operationError}</p>}
         </div>
@@ -156,12 +162,13 @@ export function CodeGitPanel({ sessionId, projectName, todoState, planPhase, onO
       <Modal open={dialog === "commit"} title={t("codeGit.commitOrPush")} footer={null} onCancel={() => setDialog(null)} className="cy-code-git-modal">
         {status?.files.length ? <section className="cy-code-git-modal__commit-section">
           <p className="cy-code-git-modal__hint">{t("codeGit.commitHint", { count: status.files.length })}</p>
+          {conflictedCount > 0 && <p className="cy-code-git__operation-error" role="alert">{t("codeGit.resolveConflictsHint", { count: conflictedCount })}</p>}
           <Input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder={t("codeGit.commitMessagePlaceholder")} disabled={operating} />
-          <button type="button" disabled={!api || !commitMessage.trim() || operating} onClick={() => api && void runOperation(() => api.commit(sessionId, commitMessage, status.files.map((file) => file.path)), () => { setCommitMessage(""); setDialog(null); })}>{t("codeGit.commitAll")}</button>
+          <button type="button" disabled={!api || !commitMessage.trim() || operating || conflictedCount > 0} onClick={() => api && void runOperation(() => api.commit(sessionId, commitMessage, status.files.map((file) => file.path)), () => { setCommitMessage(""); setDialog(null); })}>{t("codeGit.commitAll")}</button>
         </section> : null}
-        {status?.ahead ? <section className="cy-code-git-modal__commit-section">
-          <p className="cy-code-git-modal__hint">{t("codeGit.pushHint", { count: status.ahead })}</p>
-          <button type="button" disabled={!api || operating} onClick={() => api && void runOperation(() => api.push(sessionId), () => setDialog(null))}>{t("codeGit.pushCommits", { count: status.ahead })}</button>
+        {canPush ? <section className="cy-code-git-modal__commit-section">
+          <p className="cy-code-git-modal__hint">{firstPushAvailable && !status?.ahead ? t("codeGit.firstPushHint") : t("codeGit.pushHint", { count: status?.ahead ?? 0 })}</p>
+          <button type="button" disabled={!api || operating} onClick={() => api && void runOperation(() => api.push(sessionId), () => setDialog(null))}>{firstPushAvailable && !status?.ahead ? t("codeGit.firstPush") : t("codeGit.pushCommits", { count: status?.ahead ?? 0 })}</button>
         </section> : null}
         {operationError && <p className="cy-code-git__operation-error">{operationError}</p>}
       </Modal>

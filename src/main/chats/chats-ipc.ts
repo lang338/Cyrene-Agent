@@ -16,12 +16,20 @@
 import { app, BrowserWindow, type WebContents, dialog, shell } from "electron";
 import { IPC } from "../../shared/ipc-channels";
 import { createIpcScope, type IpcScope } from "../application/ipc-scope";
-import type { ChatMessage, ConversationMode, ConversationWorkspaceBinding } from "../../shared/chat-types";
+import type { ChatMessage, ChatSession, ChatsSetSessionModelResult, ConversationMode, ConversationWorkspaceBinding } from "../../shared/chat-types";
 import * as chatsStore from "./chats-store";
+import * as sidebarOrganizationStore from "./sidebar-organization-store";
+import { resolveSessionWorkspaceFile } from "./workspace-files-ipc";
 import * as fs from "fs";
 import * as path from "path";
 import { ensureVaultStructure, isEmptyDirectory } from "../learn/obsidian/vault-init";
-import { getDefaultModelProfile, loadModelSettings, resolveModelSettingsProfile } from "../settings/model-settings";
+import {
+  getDefaultModelProfile,
+  listSavedModelProfiles,
+  loadModelSettings,
+  resolveSessionModelSettings,
+} from "../settings/model-settings";
+import { planSessionModelUpdate } from "../../shared/session-model";
 import { FileToolOutputStore } from "../orchestrator/harness/tool-output/file-tool-output-store";
 import { getHarnessRunStore } from "../orchestrator/harness/run-store";
 import { getConfiguredChangeLedger } from "../code-git/change-ledger-service";
@@ -33,15 +41,92 @@ import {
   createTranscriptCompactionRequiredError,
   TRANSCRIPT_COMPACTION_REQUIRED,
 } from "../orchestrator/conversation-transcript-compactor";
+import { buildContextUsageSnapshot } from "../orchestrator/context-usage";
+import type { ContextUsageSnapshot } from "../../shared/context-usage";
 import { getRunReviewTracker } from "../orchestrator/review/run-review-tracker";
 import { activeChatTargetRegistry } from "../plugin-host/active-chat-target";
+import { getTaskSessionStore } from "../tasks/task-session-store";
 import type { LlmClient } from "../services/llm/llm-client";
 import { enqueueLLMTask } from "../llm-queue";
 import { assertValidPresentationPatch, type TranscriptPresentationPatch } from "../orchestrator/conversation-transcript-types";
+import type { ChatMessage as VendorChatMessage } from "../orchestrator/vendors/types";
 import {
   createConversationTitleService,
   type ConversationTitleService,
 } from "./conversation-title-service";
+import {
+  loadGeneralSettings,
+  recordRecentProject,
+  saveGeneralSettings,
+  MAX_RECENT_PROJECTS,
+} from "../settings/settings-facade";
+
+function latestContextUsage(session: ChatSession | null): ContextUsageSnapshot | undefined {
+  return session?.messages.reduce<ContextUsageSnapshot | undefined>((latest, message) => {
+    const usage = message.contextUsage;
+    return usage && (!latest || usage.updatedAt > latest.updatedAt) ? usage : latest;
+  }, session.currentContextUsage);
+}
+
+/** 压缩（手动/演示）后重算会话的 session 级 context usage 快照：
+ *  消息侧按压缩后的 compaction 视图重算；persona、工具、技能三类与压缩无关，
+ *  继承旧快照口径，避免环形图出现 systemPrompt 归零的跳变。 */
+function recordCompactionUsage(
+  sessionId: string,
+  compactedMessages: VendorChatMessage[],
+  previous?: ContextUsageSnapshot,
+): void {
+  previous ??= chatsStore.getSessionView(sessionId)?.currentContextUsage;
+  const inheritable = new Map(
+    (previous?.categories ?? [])
+      .filter((category) => category.key === "systemPrompt" || category.key === "tools" || category.key === "skills")
+      .map((category) => [category.key, category.tokens]),
+  );
+  const sessionRecord = chatsStore.getSessionView(sessionId);
+  const contextWindowTokens = (sessionRecord
+    ? resolveSessionModelSettings(loadModelSettings(), sessionRecord).contextWindowTokens
+    : undefined) ?? 256000;
+  const computed = buildContextUsageSnapshot({
+    phase: "preRequest",
+    contextWindowTokens,
+    personaContent: "",
+    messages: compactedMessages,
+  });
+  const categories = computed.categories.map((category) => {
+    const tokens = inheritable.get(category.key);
+    return tokens === undefined ? category : { ...category, tokens };
+  });
+  const usage: ContextUsageSnapshot = {
+    ...computed,
+    categories,
+    totalTokens: categories.reduce((sum, category) => sum + category.tokens, 0),
+  };
+  chatsStore.setSessionContextUsage(sessionId, usage);
+}
+
+/** 读出口覆盖：把会话的上下文容量刷新为「按当前模型配置解析」的值。
+ *  快照里的 contextWindowTokens 是生成那一刻的口径（run 前 / 压缩时），
+ *  切换模型或在设置页改窗口后就会过期，导致环形图分母停在旧值。
+ *  这里返回新对象而不回写磁盘——它是派生字段（见 ChatSession.contextWindowTokens）。 */
+function withLiveContextWindow(session: ChatSession): ChatSession {
+  const contextWindowTokens = resolveSessionModelSettings(loadModelSettings(), session).contextWindowTokens;
+  return contextWindowTokens ? { ...session, contextWindowTokens } : session;
+}
+
+/** 冷启动回填：按会话最近更新顺序收集已绑定的工作区，去重后截断并落盘。
+ *  只在 recentProjects 为空时执行一次；之后由 setWorkspace 绑定继续维护列表。 */
+function backfillRecentProjects(): string[] {
+  const projects: string[] = [];
+  for (const session of chatsStore.listSessions()) {
+    if (!session.workspaceRoot || projects.includes(session.workspaceRoot)) continue;
+    projects.push(session.workspaceRoot);
+    if (projects.length >= MAX_RECENT_PROJECTS) break;
+  }
+  if (projects.length > 0) {
+    saveGeneralSettings({ recentProjects: projects });
+  }
+  return projects;
+}
 
 function broadcastChanged(senderWebContents?: WebContents | null): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -52,6 +137,19 @@ function broadcastChanged(senderWebContents?: WebContents | null): void {
       win.webContents.send(IPC.CHATS_CHANGED);
     } catch {
       // 某些刚创建/未 ready 的窗口 send 可能抛错，忽略即可
+    }
+  }
+}
+
+/** 广播上下文压缩阶段：run 开始前的自动压缩只在主进程发生，
+ *  渲染端靠这条推送在消息流尾部显示「正在触发压缩」的呼吸提示。 */
+export function broadcastCompactionPhase(sessionId: string, phase: "running" | "finished"): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    try {
+      win.webContents.send(IPC.CHATS_COMPACTION_PHASE, { sessionId, phase });
+    } catch {
+      // 窗口可能正在关闭，忽略
     }
   }
 }
@@ -72,9 +170,9 @@ export function registerChatsIpc(
   const ipc = ipcOption ?? createIpcScope();
   const titleService = options.titleService ?? (options.llmClient
     ? createConversationTitleService({
-        getSession: chatsStore.getSession,
-        setGeneratedTitle: chatsStore.setGeneratedTitle,
-        resolveSettings: (session) => resolveModelSettingsProfile(loadModelSettings(), session.modelProfileId),
+      getSession: chatsStore.getSessionView,
+      setGeneratedTitle: chatsStore.setGeneratedTitle,
+        resolveSettings: (session) => resolveSessionModelSettings(loadModelSettings(), session),
         isPrimaryModelBusy: options.isPrimaryModelBusy,
         llmClient: options.llmClient,
         enqueueTask: enqueueLLMTask,
@@ -106,9 +204,27 @@ export function registerChatsIpc(
     (_event, options?: { mode?: ConversationMode }) => chatsStore.listSessions(options),
   );
 
+  ipc.handle(IPC.CHATS_SIDEBAR_ORGANIZATION_GET, () => sidebarOrganizationStore.getSnapshot());
+  ipc.handle(IPC.CHATS_SIDEBAR_ORGANIZATION_APPLY, (event, payload: { expectedRevision: number; draft: Parameters<typeof sidebarOrganizationStore.applyDraft>[1] }) => {
+    const result = sidebarOrganizationStore.applyDraft(payload?.expectedRevision, payload?.draft);
+    if (result.ok) {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed() || win.webContents === event.sender) continue;
+        try { win.webContents.send(IPC.CHATS_SIDEBAR_ORGANIZATION_CHANGED); } catch { /* window may be closing */ }
+      }
+    }
+    return result;
+  });
+
   ipc.handle(IPC.CHATS_GET, async (_event, id: string) => {
     if (!id) return null;
-    return sessionMigration.loadComposedSession(id);
+    const session = await sessionMigration.loadComposedSession(id);
+    return session ? withLiveContextWindow(session) : null;
+  });
+  ipc.handle(IPC.TASK_SESSION_GET, (_event, payload: { taskId?: unknown; parentConversationId?: unknown }) => {
+    if (typeof payload?.taskId !== "string" || typeof payload.parentConversationId !== "string") return null;
+    const task = getTaskSessionStore(app.getPath("userData")).get(payload.taskId);
+    return task?.parentConversationId === payload.parentConversationId ? task : null;
   });
   ipc.handle(IPC.CHATS_GET_PAGE, async (_event, payload: { id: string; before?: number | null; limit?: number }) => {
     if (!payload?.id) return null;
@@ -125,11 +241,14 @@ export function registerChatsIpc(
       event,
       payload?: { title?: string; identityId?: string | null; mode?: ConversationMode },
     ) => {
+      // Invariant B：新会话创建即快照默认档案的默认模型（对话自持起点）
+      const defaultProfile = getDefaultModelProfile();
       const session = chatsStore.createSession({
         title: payload?.title,
         identityId: payload?.identityId ?? null,
         mode: payload?.mode,
-        modelProfileId: getDefaultModelProfile()?.id,
+        modelProfileId: defaultProfile?.id,
+        model: defaultProfile?.model || undefined,
       });
       broadcastChanged(event.sender);
       return session;
@@ -179,6 +298,8 @@ export function registerChatsIpc(
       return { ok: false as const, error: "TRANSCRIPT_COMPACTION_REQUIRED" as const };
     }
     try {
+      // 正常 run 的最新快照写在消息上；压缩前从组合会话取出，避免归档后丢失来源。
+      const previousUsage = latestContextUsage(await sessionMigration.loadComposedSession(payload.sessionId));
       const result = await transcriptCompactor.compact({
         conversationId: payload.sessionId,
         trigger: "manual",
@@ -186,6 +307,12 @@ export function registerChatsIpc(
           ? { retainTokens: payload.retainTokens }
           : {}),
       });
+      // 压缩只改变消息侧 token；三类无关项继承旧快照，见 recordCompactionUsage。
+      recordCompactionUsage(payload.sessionId, result.compactedMessages, previousUsage);
+      // 压缩是主进程侧的 journal 变更：发起方渲染端没有任何本地乐观更新
+      // （且压缩仅在会话空闲时可用，无 transient 思考消息竞态），必须连同发起方
+      // 一起广播，聊天页重载投影后压缩分隔条与环形图快照立即生效。
+      broadcastChanged();
       return { ok: true as const, ...result };
     } catch (error) {
       return {
@@ -196,6 +323,45 @@ export function registerChatsIpc(
       };
     }
   });
+
+  // dev-only 压缩链路演示：新建独立「压缩演示」会话，写入含工具调用的假历史后
+  // 走真实压缩检查点链路（摘要为本地假文本，零 token），用于在聊天页验证
+  // 压缩分隔条、环形图快照与 rewind 失效行为；不注册进正式包。
+  if (!app.isPackaged) {
+    ipc.handle(IPC.CHATS_SEED_COMPACTION_DEMO, async () => {
+      try {
+        const session = chatsStore.createSession({ title: "压缩演示", identityId: null, mode: "chat" });
+        const conversationId = session.id;
+        let at = 1;
+        // 假历史：两轮带工具调用的任务对话（投影会把同一 turn 的
+        // assistant/tool rounds 合并成一条 UI 消息）+ 一轮普通对话。
+        await transcriptStore.append(conversationId, { id: "demo-u1", at: at++, kind: "user", turnId: "demo-1", revision: 1, payload: { text: "帮我把项目里所有 TODO 注释整理成清单" } });
+        await transcriptStore.append(conversationId, { id: "demo-a1", at: at++, kind: "assistant", turnId: "demo-1-a", payload: { role: "assistant", content: "我先扫描一下源码目录。", toolCalls: [{ id: "demo-call-1", name: "shell", arguments: "{\"command\":\"grep -rn TODO src\"}" }] } });
+        await transcriptStore.append(conversationId, { id: "demo-t1", at: at++, kind: "tool_result", payload: { assistantEntryId: "demo-a1", toolCallId: "demo-call-1", outcome: "success", message: { role: "tool", toolCallId: "demo-call-1", name: "shell", content: "src/main/index.ts:12: TODO 优化启动速度\nsrc/renderer/app.tsx:40: TODO 拆分路由\n...（共 17 条）" } } });
+        await transcriptStore.append(conversationId, { id: "demo-a1b", at: at++, kind: "assistant", turnId: "demo-1-a", payload: { role: "assistant", content: "共找到 17 处 TODO，已按模块整理成清单。" } });
+        await transcriptStore.append(conversationId, { id: "demo-u2", at: at++, kind: "user", turnId: "demo-2", revision: 1, payload: { text: "顺便统计一下测试覆盖率" } });
+        await transcriptStore.append(conversationId, { id: "demo-a2", at: at++, kind: "assistant", turnId: "demo-2-a", payload: { role: "assistant", content: "好的，跑一下覆盖率脚本。", toolCalls: [{ id: "demo-call-2", name: "shell", arguments: "{\"command\":\"npm run test:coverage\"}" }] } });
+        await transcriptStore.append(conversationId, { id: "demo-t2", at: at++, kind: "tool_result", payload: { assistantEntryId: "demo-a2", toolCallId: "demo-call-2", outcome: "success", message: { role: "tool", toolCallId: "demo-call-2", name: "shell", content: "Statements: 73.2% | Branches: 68.5% | Functions: 71.0% | Lines: 74.1%\n未覆盖集中在 plugin-host 与 channels 模块。" } } });
+        await transcriptStore.append(conversationId, { id: "demo-a2b", at: at++, kind: "assistant", turnId: "demo-2-a", payload: { role: "assistant", content: "覆盖率 73.2%，未覆盖集中在 plugin-host 与 channels 模块。" } });
+        await transcriptStore.append(conversationId, { id: "demo-u3", at: at++, kind: "user", turnId: "demo-3", revision: 1, payload: { text: "先记下来，晚点再看" } });
+        await transcriptStore.append(conversationId, { id: "demo-a3", at: at++, kind: "assistant", turnId: "demo-3-a", payload: { role: "assistant", content: "好的，已记录。需要时随时叫我。" } });
+        // 走真实压缩链路：trigger = automatic，摘要本地生成，保留最近一轮不压。
+        const demoCompactor = new ConversationTranscriptCompactor({
+          store: transcriptStore,
+          summarize: async () => "演示摘要：用户要求整理项目里的 TODO 注释，工具扫描到 17 处并按模块汇总成清单；随后统计了测试覆盖率（73.2%，未覆盖集中在 plugin-host 与 channels）。此摘要由演示入口本地生成，未调用模型。",
+        });
+        const result = await demoCompactor.compact({ conversationId, trigger: "automatic", retainTokens: 80 });
+        recordCompactionUsage(conversationId, result.compactedMessages);
+        // 压缩后的一轮新对话：用于观察「压旧留新」的分隔条位置。
+        await transcriptStore.append(conversationId, { id: "demo-u4", at: at++, kind: "user", turnId: "demo-4", revision: 1, payload: { text: "现在把刚才的 TODO 清单按优先级排一下" } });
+        await transcriptStore.append(conversationId, { id: "demo-a4", at: at++, kind: "assistant", turnId: "demo-4-a", payload: { role: "assistant", content: "好的，从压缩摘要里恢复清单并按优先级排序如下：……" } });
+        broadcastChanged();
+        return { ok: true as const, sessionId: conversationId };
+      } catch (error) {
+        return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+      }
+    });
+  }
 
   ipc.handle(
     IPC.CHATS_RENAME,
@@ -350,11 +516,41 @@ export function registerChatsIpc(
     },
   );
 
-  ipc.handle(IPC.CHATS_SET_MODEL_PROFILE, (event, payload: { id: string; modelProfileId?: string }) => {
+  // 切档案 = 原子状态转换（Invariant B）：绑定 + 模型重置为新档案默认，串行提交（Invariant D）。
+  // 新档案默认模型在提交时刻解析（不依赖 handler 同步执行的实现细节）。
+  ipc.handle(IPC.CHATS_SET_MODEL_PROFILE, async (event, payload: { id: string; modelProfileId?: string }) => {
     if (!payload || typeof payload.id !== "string") return null;
-    const session = chatsStore.setSessionModelProfile(payload.id, payload.modelProfileId);
+    const session = await chatsStore.enqueueSessionModelMutation(payload.id, () => {
+      const settings = loadModelSettings();
+      const target = payload.modelProfileId
+        ? listSavedModelProfiles(settings).find((profile) => profile.id === payload.modelProfileId)
+        : getDefaultModelProfile(settings);
+      return chatsStore.setSessionModelProfile(payload.id, payload.modelProfileId, target?.model || undefined);
+    });
     if (session) broadcastChanged(event.sender);
-    return session;
+    // 返回值带实时容量：发起方窗口不回读 CHATS_GET（来源隔离跳过了自己），
+    // 靠这个派生字段就能把环形图分母换成新模型的窗口。
+    return session ? withLiveContextWindow(session) : session;
+  });
+
+  // 会话级当前模型窄 IPC：只写会话（绑定 + 模型），不碰档案。
+  // validator 唯一规则 = selectableModels 成员校验（不留 free-form 旁门，决策 P0-2）；
+  // stale binding 时用户主动选择 = 确认接受回退档案，原子修复绑定（决策 13）。
+  ipc.handle(IPC.CHATS_SET_SESSION_MODEL, async (event, payload: { id?: unknown; model?: unknown }) => {
+    const sessionId = typeof payload?.id === "string" ? payload.id : "";
+    const model = typeof payload?.model === "string" ? payload.model.trim() : "";
+    if (!sessionId || !model) return { ok: false as const, error: "invalid-payload" as const };
+    const result = await chatsStore.enqueueSessionModelMutation(sessionId, (): ChatsSetSessionModelResult => {
+      const record = chatsStore.getSessionRecord(sessionId);
+      if (!record) return { ok: false as const, error: "session-not-found" as const };
+      const plan = planSessionModelUpdate(loadModelSettings(), record, model);
+      if (!plan.ok) return { ok: false as const, error: plan.error };
+      const session = chatsStore.setSessionModel(sessionId, plan.modelProfileId, plan.model);
+      if (!session) return { ok: false as const, error: "session-not-found" as const };
+      return { ok: true as const, session: withLiveContextWindow(session) };
+    });
+    if (result.ok) broadcastChanged(event.sender);
+    return result;
   });
 
   ipc.handle(IPC.CHATS_OPEN_FOLDER, async () => {
@@ -381,6 +577,41 @@ export function registerChatsIpc(
     }
   });
 
+  // FileChangeCard 右键菜单：用本机默认方式打开 / 在资源管理器中定位工作区内的文件。
+  // 路径解析复用 workspace-files 的安全校验（realpath 防 symlink 越界）；
+  // 已删除文件解析为 NOT_FOUND 属预期，渲染层静默即可。
+  ipc.handle(
+    IPC.CHATS_SHELL_FILE,
+    async (_event, payload: { sessionId?: unknown; relPath?: unknown; action?: unknown }) => {
+      const sessionId = typeof payload?.sessionId === "string" ? payload.sessionId : "";
+      const relPath = typeof payload?.relPath === "string" ? payload.relPath : "";
+      const action = payload?.action === "reveal" ? "reveal" : payload?.action === "open" ? "open" : null;
+      if (!sessionId || !relPath || !action) {
+        return { ok: false as const, error: "invalid-payload" as const };
+      }
+      // 绝对路径（正文文件链接可能指向工作区外，如桌面的 cmd 脚本）：
+      // 只做 realpath 存在性归一，不做工作区边界限制；相对路径走会话工作区校验
+      let absPath: string;
+      if (path.isAbsolute(relPath)) {
+        try {
+          absPath = await fs.promises.realpath(relPath);
+        } catch {
+          return { ok: false as const, error: "NOT_FOUND" as const };
+        }
+      } else {
+        const resolved = await resolveSessionWorkspaceFile(sessionId, relPath);
+        if (!resolved.ok) return { ok: false as const, error: resolved.code };
+        absPath = resolved.absPath;
+      }
+      if (action === "reveal") {
+        shell.showItemInFolder(absPath);
+        return { ok: true as const };
+      }
+      const error = await shell.openPath(absPath);
+      return error ? { ok: false as const, error } : { ok: true as const };
+    },
+  );
+
   ipc.handle(
     IPC.CHATS_MIGRATE_LEGACY,
     (event, messages: ChatMessage[]) => {
@@ -398,10 +629,21 @@ export function registerChatsIpc(
       if (!payload?.sessionId || !payload?.workspaceRoot) {
         return { ok: false, error: "missing sessionId or workspaceRoot" };
       }
-      // 用 v1/v2 通吃的视图读元数据：CTA 之后会话是 v2，只认 v1 的 getSession 会误报 session not found
-      const existing = chatsStore.getSessionView(payload.sessionId);
-      if (!existing) return { ok: false, error: "session not found" };
+      // v1/v2 双兼容读取：会话一旦被组合读取（CHATS_GET）迁移成 v2 落盘，
+      // 只认 v1 的 getSession 会把它误判成 "session not found"
+      const existing = chatsStore.getSessionRecord(payload.sessionId);
+      if (!existing) {
+        console.warn(
+          "[Workspace] 绑定失败：会话不存在 sessionId=" + String(payload.sessionId).slice(0, 8) + "...",
+          "workspaceRoot=" + payload.workspaceRoot,
+        );
+        return { ok: false, error: "session not found" };
+      }
       if (existing.mode !== "work" && existing.mode !== "code" && existing.mode !== "learn") {
+        console.warn(
+          "[Workspace] 绑定失败：模式不支持 workspace sessionId=" + String(payload.sessionId).slice(0, 8) + "...",
+          "mode=" + String(existing.mode),
+        );
         return { ok: false, error: `${existing.mode ?? "unknown"} mode does not support workspace binding` };
       }
       // 路径验证：目录存在 + realpath 解析
@@ -414,6 +656,8 @@ export function registerChatsIpc(
         };
         const session = chatsStore.setWorkspaceBinding(payload.sessionId, binding);
         if (!session) return { ok: false, error: "session not found" };
+        // 绑定成功即记入最近项目列表，供工作文件夹下拉复选
+        recordRecentProject(resolved);
         console.log("[Workspace] 绑定成功:",
           "sessionId=" + payload.sessionId.slice(0, 8) + "...",
           "workspaceRoot=" + resolved,
@@ -444,8 +688,8 @@ export function registerChatsIpc(
       if (!sessionId) return { ok: false, error: "missing sessionId" };
       const binding = chatsStore.getWorkspaceBinding(sessionId);
       if (!binding) return { ok: false, error: "no workspace binding" };
-      // 同上：v2 会话要用 getSessionView 读 mode，否则 learn 模式会被误判成"不是 learn"
-      const session = chatsStore.getSessionView(sessionId);
+      // 同 CHATS_SET_WORKSPACE：用 v1/v2 双兼容读取，v2 会话不得误判
+      const session = chatsStore.getSessionRecord(sessionId);
       if (!session || session.mode !== "learn") {
         return { ok: false, error: "session is not in learn mode" };
       }
@@ -505,6 +749,30 @@ export function registerChatsIpc(
       }
     },
   );
+
+  // 最近绑定的项目文件夹：工作文件夹下拉的候选列表，只返回仍存在的目录
+  ipc.handle(IPC.CHATS_RECENT_PROJECTS, () => {
+    const stored = loadGeneralSettings().recentProjects;
+    const listed = stored.length > 0
+      ? stored
+      // 列表为空说明是升级后的首次使用，用存量会话绑过的工作区回填
+      : backfillRecentProjects();
+    return listed.filter((dir) => fs.existsSync(dir));
+  });
+
+  // 验证工作区目录当前是否可用：最近项目下拉快照可能过期（选中前目录被移走），
+  // 旧会话继承的工作区也不经过 recentProjects 过滤，选择入口落地前用这里把好关
+  ipc.handle(IPC.CHATS_VALIDATE_WORKSPACE, (_event, workspaceRoot: string) => {
+    if (!workspaceRoot || typeof workspaceRoot !== "string") {
+      return { ok: false, error: "missing workspaceRoot" };
+    }
+    try {
+      const resolved = validateAndNormalizeWorkspace(workspaceRoot);
+      return { ok: true, path: resolved };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
   // ── Review 快照：获取指定 Run 的不可变文件变更审查数据 ──
   // 正常终止的 Run 已在 harness-adapter 主动 finalize；

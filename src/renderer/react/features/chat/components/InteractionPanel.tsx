@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useTranslation } from "../../../i18n";
 import {
   buildAskSubmission,
+  buildPlanApprovalSubmission,
   createAskDrafts,
   isAskComplete,
   selectAskOption,
@@ -28,6 +29,47 @@ function PanelShell({ children, title }: { children: ReactNode; title: string })
     <section className="cy-interaction-panel" aria-label={title}>
       {children}
     </section>
+  );
+}
+
+function QuestionnaireChoice({
+  name,
+  value,
+  index,
+  multiple = false,
+  selected,
+  disabled = false,
+  onChange,
+  children,
+}: {
+  name: string;
+  value: string;
+  index: number;
+  multiple?: boolean;
+  selected: boolean;
+  disabled?: boolean;
+  onChange: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <label className={`cy-questionnaire-choice${selected ? " is-selected" : ""}${multiple ? " is-multiple" : ""}`}>
+      <input
+        className="cy-questionnaire-choice__input"
+        type={multiple ? "checkbox" : "radio"}
+        name={name}
+        value={value}
+        checked={selected}
+        disabled={disabled}
+        onClick={() => {
+          // 重新选择已选中的单选项也应继续前进；此时浏览器不会触发 change。
+          if (!multiple && selected) onChange();
+        }}
+        onChange={onChange}
+      />
+      <span className="cy-questionnaire-choice__index" aria-hidden="true">{index + 1}</span>
+      <span className="cy-questionnaire-choice__body">{children}</span>
+      <span className="cy-questionnaire-choice__indicator" aria-hidden="true" />
+    </label>
   );
 }
 
@@ -102,23 +144,26 @@ export function AskUserPanel({
       {current.options.length > 0 && (
         <div className="cy-interaction-panel__options" role={current.multiple ? "group" : "radiogroup"} aria-label={current.question}>
           {current.options.map((option, index) => (
-            <button
-              type="button"
+            <QuestionnaireChoice
               key={option.id}
-              className={currentDraft.optionIds.includes(option.id) ? "is-selected" : ""}
-              role={current.multiple ? "checkbox" : "radio"}
-              aria-checked={currentDraft.optionIds.includes(option.id)}
+              name={`ask-${interaction.id}-${current.id}`}
+              value={option.id}
+              index={index}
+              multiple={current.multiple}
+              selected={currentDraft.optionIds.includes(option.id)}
               disabled={disabled}
-              onClick={() => {
+              onChange={() => {
                 setDrafts((values) => selectAskOption(values, current, option.id));
+                if (!current.multiple && questions.length > 1) {
+                  setPage((value) => Math.min(questions.length - 1, value + 1));
+                }
               }}
             >
-              <span className="cy-interaction-panel__option-index">{index + 1}.</span>
-              <div className="cy-interaction-panel__option-body">
+              <span className="cy-interaction-panel__option-body">
                 <MarkdownContent content={option.label} />
                 {option.description && <small>{option.description}</small>}
-              </div>
-            </button>
+              </span>
+            </QuestionnaireChoice>
           ))}
         </div>
       )}
@@ -145,6 +190,108 @@ export function AskUserPanel({
       <div className="cy-interaction-panel__actions">
         <button type="button" className="is-primary" disabled={disabled || !canSubmit} onClick={submit}>{questions.length > 1 ? t("interaction.submitAll") : t("interaction.submit")}</button>
       </div>
+    </PanelShell>
+  );
+}
+
+/**
+ * 计划审批三档面板：批准 / 需要修改 / 不批准 三个平级主按钮。
+ * 批准与不批准点击即提交；需要修改原地展开大输入框（自动聚焦，Ctrl+Enter 提交），
+ * 空意见不提交（提示填写）。意见随档位同卡回传，不弹第二张卡。
+ */
+export function PlanApprovalPanel({
+  interaction,
+  disabled = false,
+  onAnswer,
+}: {
+  interaction: AskUserInteraction;
+  disabled?: boolean;
+  onAnswer?: (answer: unknown) => void;
+}) {
+  const { t } = useTranslation();
+  const [reviseOpen, setReviseOpen] = useState(false);
+  const [reviseText, setReviseText] = useState("");
+  const [errorText, setErrorText] = useState<string | null>(null);
+  const reviseInputRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    setReviseOpen(false);
+    setReviseText("");
+    setErrorText(null);
+  }, [interaction.id]);
+  // 展开后自动聚焦光标
+  useEffect(() => {
+    if (reviseOpen) reviseInputRef.current?.focus();
+  }, [reviseOpen]);
+
+  const submitDecision = (decision: "approve" | "revise" | "reject") => {
+    if (disabled) return;
+    if (decision === "revise") {
+      if (!reviseText.trim()) {
+        setErrorText(t("interaction.planApprovalReviseRequired"));
+        reviseInputRef.current?.focus();
+        return;
+      }
+      onAnswer?.(buildPlanApprovalSubmission(interaction, "revise", reviseText));
+      return;
+    }
+    onAnswer?.(buildPlanApprovalSubmission(interaction, decision));
+  };
+
+  return (
+    <PanelShell title={t("interaction.planApprovalTitle")}>
+      <div className="cy-interaction-panel__heading">
+        <span className="cy-interaction-panel__status"><img src={moodCompanyUrl} alt="" />{t("interaction.planApprovalTitle")}</span>
+      </div>
+      <div className="cy-interaction-panel__intro">
+        <MarkdownContent content={t("interaction.planApprovalIntro")} />
+      </div>
+      <div className="cy-plan-approval__decisions">
+        <button type="button" className="is-primary" disabled={disabled} onClick={() => submitDecision("approve")}>
+          {t("interaction.planApprovalApprove")}
+        </button>
+        <button
+          type="button"
+          className="is-primary"
+          disabled={disabled}
+          onClick={() => {
+            setErrorText(null);
+            setReviseOpen(true);
+          }}
+        >
+          {t("interaction.planApprovalRevise")}
+        </button>
+        <button type="button" className="is-primary" disabled={disabled} onClick={() => submitDecision("reject")}>
+          {t("interaction.planApprovalReject")}
+        </button>
+      </div>
+      {reviseOpen && (
+        <div className="cy-plan-approval__revise">
+          <textarea
+            ref={reviseInputRef}
+            value={reviseText}
+            disabled={disabled}
+            placeholder={t("interaction.planApprovalRevisePlaceholder")}
+            rows={4}
+            onChange={(event) => {
+              setReviseText(event.target.value);
+              if (errorText) setErrorText(null);
+            }}
+            onKeyDown={(event) => {
+              // Ctrl+Enter 提交，单 Enter 保留换行（防误触）
+              if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                submitDecision("revise");
+              }
+            }}
+          />
+          {errorText && <p className="cy-plan-approval__error" role="alert">{errorText}</p>}
+          <div className="cy-interaction-panel__actions">
+            <button type="button" className="is-primary" disabled={disabled} onClick={() => submitDecision("revise")}>
+              {t("interaction.planApprovalReviseSubmit")}
+            </button>
+          </div>
+        </div>
+      )}
     </PanelShell>
   );
 }
@@ -393,14 +540,15 @@ export function PopQuizPanel({
               ? drafts[current.id]?.optionId === option.id
               : (drafts[current.id]?.optionIds ?? []).includes(option.id);
             return (
-              <button
-                type="button"
+              <QuestionnaireChoice
                 key={option.id}
-                className={selected ? "is-selected" : ""}
-                role={current.type === "multi" ? "checkbox" : "radio"}
-                aria-checked={selected}
+                name={`quiz-${interaction.id}-${current.id}`}
+                value={option.id}
+                index={index}
+                multiple={current.type === "multi"}
+                selected={selected}
                 disabled={disabled || phase === "submitting"}
-                onClick={() => {
+                onChange={() => {
                   setDrafts((values) => {
                     const prev = values[current.id] ?? {};
                     if (current.type === "choice") {
@@ -412,32 +560,38 @@ export function PopQuizPanel({
                       : [...prevIds, option.id];
                     return { ...values, [current.id]: { ...prev, optionIds } };
                   });
+                  if (current.type === "choice" && questions.length > 1) {
+                    setPage((value) => Math.min(questions.length - 1, value + 1));
+                  }
                 }}
               >
-                <span className="cy-interaction-panel__option-index">{index + 1}.</span>
-                <div className="cy-interaction-panel__option-body">
+                <span className="cy-interaction-panel__option-body">
                   <MarkdownContent content={option.label} />
-                </div>
-              </button>
+                </span>
+              </QuestionnaireChoice>
             );
           })}
         </div>
       )}
       {current.type === "true_false" && (
         <div className="cy-interaction-panel__options" role="radiogroup" aria-label={current.question}>
-          {trueFalseOptions.map((option) => (
-            <button
-              type="button"
+          {trueFalseOptions.map((option, index) => (
+            <QuestionnaireChoice
               key={String(option.value)}
-              className={drafts[current.id]?.boolean === option.value ? "is-selected" : ""}
-              role="radio"
-              aria-checked={drafts[current.id]?.boolean === option.value}
+              name={`quiz-${interaction.id}-${current.id}`}
+              value={String(option.value)}
+              index={index}
+              selected={drafts[current.id]?.boolean === option.value}
               disabled={disabled || phase === "submitting"}
-              onClick={() => setDrafts((values) => ({ ...values, [current.id]: { ...values[current.id], boolean: option.value } }))}
+              onChange={() => {
+                setDrafts((values) => ({ ...values, [current.id]: { ...values[current.id], boolean: option.value } }));
+                if (questions.length > 1) {
+                  setPage((value) => Math.min(questions.length - 1, value + 1));
+                }
+              }}
             >
-              <span className="cy-interaction-panel__option-index">◦</span>
               <span><strong>{option.label}</strong></span>
-            </button>
+            </QuestionnaireChoice>
           ))}
         </div>
       )}

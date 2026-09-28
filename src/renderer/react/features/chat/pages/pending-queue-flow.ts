@@ -54,7 +54,6 @@ export interface PendingQueueFlow {
       visibleContent: string;
       attachments?: ComposerAttachment[];
       userSticker?: string;
-      resumeFromRunId?: string;
       /**
        * 本轮临时文本上下文（工作台当前打开的文件等）。
        * 在入队这一刻固化并随条目落盘：等真正发出时用户可能已经切走了文件。
@@ -114,7 +113,6 @@ export function createPendingQueueFlow(getHost: () => PendingQueueFlowHost): Pen
       visibleContent: string;
       attachments?: ComposerAttachment[];
       userSticker?: string;
-      resumeFromRunId?: string;
       contextAttachments?: { name: string; text: string }[];
     },
     notifyError = true,
@@ -163,7 +161,6 @@ export function createPendingQueueFlow(getHost: () => PendingQueueFlowHost): Pen
         ...(stableAttachments.length > 0 ? { attachments: stableAttachments } : {}),
         ...(entry.contextAttachments?.length ? { contextAttachments: entry.contextAttachments } : {}),
         ...(entry.userSticker ? { userSticker: entry.userSticker } : {}),
-        ...(entry.resumeFromRunId ? { resumeFromRunId: entry.resumeFromRunId } : {}),
       });
     } catch (error) {
       // 入队请求异常（IPC 断连等）：结果未知，缓存原 id 供重试去重
@@ -279,7 +276,6 @@ export function createPendingQueueFlow(getHost: () => PendingQueueFlowHost): Pen
     claim: {
       userMessage: ChatMessage;
       visibleContent: string;
-      resumeFromRunId?: string;
       contextAttachments?: { name: string; text: string }[];
       session: ChatSession;
     },
@@ -327,7 +323,6 @@ export function createPendingQueueFlow(getHost: () => PendingQueueFlowHost): Pen
       session: claim.session,
       attachments,
       visibleContent: claim.visibleContent,
-      ...(claim.resumeFromRunId ? { resumeFromRunId: claim.resumeFromRunId } : {}),
       ...(claim.contextAttachments?.length ? { contextAttachments: claim.contextAttachments } : {}),
       claimedPendingMessageId: claim.userMessage.id,
     });

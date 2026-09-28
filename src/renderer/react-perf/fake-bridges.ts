@@ -3,6 +3,7 @@
 // 同时保证：不读写磁盘、不触碰真实用户数据、事件序列可按 seed 无限重放。
 
 import type { ChatMessage, ChatSession, PendingChatMessage } from "../../shared/chat-types";
+import type { SidebarOrganizationDraft, SidebarOrganizationSnapshot } from "../../shared/sidebar-organization";
 import type {
   AguiApi,
   AguiEvent,
@@ -104,14 +105,32 @@ export function installFakeBridges(options: FakeBridgeOptions): FakeBridgeRuntim
       emit(runFinishedEvent("perf-run-1", "cancelled"));
     },
     reportRunPersisted: () => {},
-    getInterruptedRun: async () => null,
   };
 
   // ── 内存版 chatStore：完整实现 ChatStoreApi，所有变更只发生在内存 session 上 ──
   const pendingQueue: PendingChatMessage[] = [];
+  let sidebarOrganization: SidebarOrganizationSnapshot = {
+    version: 1,
+    revision: 0,
+    projects: [],
+    projectOrder: [],
+    projectCategories: [],
+    projectCategoryMembers: {},
+    groups: [],
+    topLevelOrder: [],
+    groupMembers: {},
+  };
 
   const fakeStore: ChatStoreApi = {
     list: async () => [perfSessionMeta(session)],
+    // perf 环境没有任务会话，桩返回 null 即可
+    getTaskSession: async () => null,
+    getSidebarOrganization: async () => sidebarOrganization,
+    applySidebarOrganization: async (_expectedRevision: number, draft: SidebarOrganizationDraft) => {
+      sidebarOrganization = { version: 1, revision: sidebarOrganization.revision + 1, ...draft };
+      return { ok: true, snapshot: sidebarOrganization };
+    },
+    onSidebarOrganizationChanged: () => () => {},
     get: async (id) => (id === session.id ? cloneSession(session) : null),
     create: async () => cloneSession(session),
       checkpointPresentation: async (id, messageId, _mutationKey, patch) => {
@@ -171,11 +190,16 @@ export function installFakeBridges(options: FakeBridgeOptions): FakeBridgeRuntim
     pendingAdjust: async () => ({ ok: false, error: "perf harness 不支持调整", queue: [...pendingQueue] }),
     setPinned: async () => cloneSession(session),
     setModelProfile: async () => cloneSession(session),
+    setSessionModel: async () => ({ ok: true, session: cloneSession(session) }),
     pickWorkspaceFolder: async () => ({ ok: false }),
+    listRecentProjects: async () => [],
+    validateWorkspacePath: async () => ({ ok: true }),
     setWorkspace: async () => ({ ok: true }),
     onWorkspaceChanged: () => () => {},
+    onCompactionPhase: () => () => {},
     initLearnWorkspace: async () => ({ ok: true }),
     openWorkspace: async () => ({ ok: true }),
+    shellFile: async () => ({ ok: true }),
     setActiveSession: async () => null,
     onChanged: () => () => {},
     onReactSwitchSession: () => () => {},

@@ -2,7 +2,7 @@ import type { ToolCall } from "../vendors/types";
 import { resolveEffectKind, type ToolDefinition } from "../tools/registry/tool-registry";
 import { parseToolCallArgs } from "./types";
 import { resolveSideEffect } from "./side-effect-resolver";
-import { isHarnessBuiltin } from "./builtin-tools";
+import { isHarnessBuiltin, TASK_TOOL_ID } from "./builtin-tools";
 import { READ_TOOL_RESULT_TOOL_ID } from "./tool-output/read-tool-result";
 
 export type ToolExecutionMode = "parallel" | "exclusive";
@@ -32,14 +32,22 @@ export interface ToolCallScheduleResult {
 
 /**
  * 并发默认拒绝：普通工具必须显式声明当前参数安全，且只能是读操作。
- * Harness 内置工具中仅 read_tool_result 不会改父状态，允许并发。
+ * Harness 内置工具中 read_tool_result 与显式只读 task 可并发；其余内置工具排他执行。
  */
 export function classifyToolExecutionMode(
   call: ToolCall,
   tools: ToolDefinition[],
 ): ToolExecutionMode {
   if (isHarnessBuiltin(call.name)) {
-    return call.name === READ_TOOL_RESULT_TOOL_ID ? "parallel" : "exclusive";
+    if (call.name === READ_TOOL_RESULT_TOOL_ID) return "parallel";
+    if (call.name === TASK_TOOL_ID) {
+      try {
+        return parseToolCallArgs(call).access_mode === "read_only" ? "parallel" : "exclusive";
+      } catch {
+        return "exclusive";
+      }
+    }
+    return "exclusive";
   }
 
   const tool = tools.find((candidate) => candidate.id === call.name);

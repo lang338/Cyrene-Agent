@@ -16,6 +16,10 @@ import type { ConversationMode } from "../../shared/chat-types";
 import { buildModePrompt } from "./mode-prompt-profile";
 
 export function readStylePrompt(styleId: StyleId): string {
+  // 原生风格不注入任何风格提示词。
+  if (styleId === "native") {
+    return "";
+  }
   if (styleId === "custom") {
     const filePath = ensureCustomStylePrompt();
     return fs.readFileSync(filePath, "utf8").trim();

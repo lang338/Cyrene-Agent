@@ -317,18 +317,6 @@ export function getSession(id: string): ChatSession | null {
   return readSessionFile(id);
 }
 
-/**
- * v1/v2 通吃的会话视图（v2 记录不带正式 messages，用空数组补齐）。
- *
- * ⚠️ 只读元数据（mode / workspaceBinding / 标题等）的调用方**不要用 `getSession`**：
- * CTA 之后会话会瘦身为 v2，而 `getSession` 只认 v1 记录、对 v2 返回 null，
- * 表现是"明明有这个会话却报找不到"（工作台文件树就踩过这个坑）。
- */
-export function getSessionView(id: string): ChatSession | null {
-  const record = readSessionRecordFile(id);
-  return record ? sessionView(record) : null;
-}
-
 /** 同步读取磁盘元数据；v2 记录没有正式 messages。 */
 export function getSessionRecord(id: string): ChatSessionRecord | null {
   return readSessionRecordFile(id);
@@ -410,6 +398,8 @@ export function createSession(opts?: {
   purpose?: ChatSessionPurpose;
   mode?: ConversationMode;
   modelProfileId?: string;
+  /** 创建即快照：绑定档案的默认模型（Invariant B）。缺省 = 旧式动态解析语义。 */
+  model?: string;
 }): ChatSession {
   const now = Date.now();
   const messages = opts?.initialMessages ?? [];
@@ -426,6 +416,7 @@ export function createSession(opts?: {
     titleIsCustom: opts?.purpose ? true : undefined,
     mode,
     modelProfileId: opts?.modelProfileId,
+    model: opts?.model,
   };
   writeSessionFile(session);
   upsertMeta(metaFromSession(session));
@@ -469,18 +460,51 @@ export function renameSession(id: string, title: string): ChatSession | null {
 }
 
 export function setGeneratedTitle(id: string, firstUserMessageId: string, title: string): boolean {
-  const session = readSessionFile(id);
-  if (!session || session.titleIsCustom) return false;
-  const firstUserMessage = session.messages.find(
+  const record = readSessionRecordFile(id);
+  if (!record || record.titleIsCustom) return false;
+  const trimmed = title.trim();
+  if (!trimmed) return false;
+  if (record.schemaVersion === 2) {
+    // v2：messages 在轨迹投影里，无法同步取首条消息做防串校验；
+    // 首条校验由 titleService.schedule 经 getSessionView（pendingDispatch 快照）完成
+    record.title = trimmed.slice(0, 80);
+    writeSessionRecordFile(record);
+    upsertMeta(metaFromSession(record));
+    return true;
+  }
+  const firstUserMessage = record.messages.find(
     (message) => message.role === "user" && message.content.trim(),
   );
   if (firstUserMessage?.id !== firstUserMessageId) return false;
-  const trimmed = title.trim();
-  if (!trimmed) return false;
-  session.title = trimmed.slice(0, 80);
-  writeSessionFile(session);
-  upsertMeta(metaFromSession(session));
+  record.title = trimmed.slice(0, 80);
+  writeSessionFile(record);
+  upsertMeta(metaFromSession(record));
   return true;
+}
+
+/**
+ * 标题生成用的会话视图：v1 原样返回；v2 磁盘无 messages，
+ * 把 pendingDispatch 里刚认领的用户消息快照组合成首条消息，
+ * 供 titleService 做"首条用户消息"校验（claim → AGUI_RUN 迁移 v2 后
+ * readSessionFile 返回 null 会让整条标题链路静默中断）。
+ * 视图统一呈现为 v1 形状（titleService 只读 title/titleIsCustom/messages）。
+ */
+export function getSessionView(id: string): ChatSession | null {
+  const record = readSessionRecordFile(id);
+  if (!record) return null;
+  if (record.schemaVersion === 1) return record;
+  const { schemaVersion: _v2, messageCount: _count, ...meta } = record;
+  const claimed = record.pendingDispatch?.userMessage;
+  return {
+    ...meta,
+    schemaVersion: 1,
+    messages: claimed ? [{
+      id: claimed.id,
+      role: "user" as const,
+      content: claimed.visibleContent ?? claimed.text ?? "",
+      at: claimed.at,
+    }] : [],
+  };
 }
 
 export function setSessionPinned(id: string, pinned: boolean): ChatSession | null {
@@ -492,14 +516,93 @@ export function setSessionPinned(id: string, pinned: boolean): ChatSession | nul
   return sessionView(session);
 }
 
-export function setSessionModelProfile(id: string, modelProfileId: string | undefined): ChatSession | null {
+/**
+ * run 终态后从轨迹投影同步会话统计（assistant 回复不经过本 store 落盘，
+ * messageCount/updatedAt 在此对齐投影实际值）：刷新侧栏最近聊天时间、
+ * 排序与未读检测。写盘失败仅告警——列表缓存滞后可在下次写盘自然追平。
+ */
+export function syncSessionStats(sessionId: string, messageCount: number): boolean {
+  const record = readSessionRecordFile(sessionId);
+  // 只对 v2 生效：v1 的 messages 由本 store 自己落盘，claim 的 v1 分支已刷新索引
+  if (!record || record.schemaVersion !== 2) return false;
+  if (!Number.isInteger(messageCount) || messageCount < 0) return false;
+  const nextUpdatedAt = Math.max(record.updatedAt, Date.now());
+  if (messageCount === record.messageCount && nextUpdatedAt === record.updatedAt) return false;
+  record.messageCount = messageCount;
+  record.updatedAt = nextUpdatedAt;
+  try {
+    writeSessionRecordFile(record);
+  } catch (err) {
+    console.warn("[chats-store] run 终态统计同步落盘失败:", sessionId, err);
+    return false;
+  }
+  try {
+    upsertMeta(metaFromSession(record));
+  } catch (err) {
+    console.warn("[chats-store] run 终态统计同步后索引写入失败:", sessionId, err);
+  }
+  return true;
+}
+
+// ── 会话模型状态写点（全部经 enqueueSessionModelMutation 串行提交）──────
+
+/**
+ * 切档案 = 原子状态转换（Invariant B）：绑定与模型同一次写入，
+ * 模型重置为新档案的默认模型——不让旧档案的模型选择"串"进新档案。
+ * 新档案默认模型由调用方（IPC handler）在提交时刻解析后传入。
+ */
+export function setSessionModelProfile(id: string, modelProfileId: string | undefined, model: string | undefined): ChatSession | null {
   const session = readSessionRecordFile(id);
   if (!session) return null;
   session.modelProfileId = modelProfileId;
+  session.model = model;
   session.updatedAt = Date.now();
   writeWritableSession(session);
   upsertMeta(metaFromSession(session));
   return sessionView(session);
+}
+
+/**
+ * 会话级当前模型写入（窄 IPC CHATS_SET_SESSION_MODEL 后端）。
+ * 绑定与模型同一次原子写入：stale binding 时 modelProfileId 传回退档案 id
+ * 完成修复（决策 13），正常时传会话现有绑定。
+ */
+export function setSessionModel(id: string, modelProfileId: string | undefined, model: string): ChatSession | null {
+  const session = readSessionRecordFile(id);
+  if (!session) return null;
+  session.modelProfileId = modelProfileId;
+  session.model = model;
+  session.updatedAt = Date.now();
+  writeWritableSession(session);
+  upsertMeta(metaFromSession(session));
+  return sessionView(session);
+}
+
+// ── per-session 模型状态串行队列（Invariant D）──────────────────
+// 同一 session 的 profile/model mutation 必须串行提交，提交顺序 = 主进程接收顺序。
+// 持久化最终态 = 接收顺序的最后一笔（B 慢 C 快都成功 → 最终 C，跨窗口成立）。
+// 三层并发防护各管一层、互不替代：
+//   本队列 → 持久化状态顺序；renderer barrier → SET→SEND 因果序；operation token → UI 回调序。
+const sessionModelMutationQueues = new Map<string, Promise<unknown>>();
+
+/**
+ * 把一次会话模型状态 mutation 排进该会话的串行队列。
+ * 前一笔失败不阻塞后续（各自把结果带回给调用方）；不同会话互不阻塞。
+ * mutation 内部应在提交时刻读取最新配置/会话（晚到的排队反而拿到更新的状态）。
+ */
+export function enqueueSessionModelMutation<T>(sessionId: string, mutation: () => T | Promise<T>): Promise<T> {
+  const previous = sessionModelMutationQueues.get(sessionId) ?? Promise.resolve();
+  const run = previous.then(mutation, mutation);
+  // 队列记账：吞掉错误，不让某一笔失败卡死同会话后续提交
+  const tail = run.catch(() => {});
+  sessionModelMutationQueues.set(sessionId, tail);
+  void tail.then(() => {
+    // 收尾清理：仍是队尾时移除，避免已结束会话的队列条目常驻内存
+    if (sessionModelMutationQueues.get(sessionId) === tail) {
+      sessionModelMutationQueues.delete(sessionId);
+    }
+  });
+  return run;
 }
 
 /**
@@ -673,7 +776,6 @@ function normalizePendingMessage(id: string, entry: PendingChatMessageInput): Pe
     ...(attachments ? { attachments } : {}),
     ...(contextAttachments ? { contextAttachments } : {}),
     ...(typeof entry.userSticker === "string" && entry.userSticker.trim() ? { userSticker: entry.userSticker.trim() } : {}),
-    ...(typeof entry.resumeFromRunId === "string" && entry.resumeFromRunId.trim() ? { resumeFromRunId: entry.resumeFromRunId.trim() } : {}),
     enqueuedAt: Date.now(),
   };
 }
@@ -698,7 +800,6 @@ function normalizePendingContextAttachments(value: unknown): { name: string; tex
 function pendingEntryEquals(a: PendingChatMessage, b: PendingChatMessage): boolean {
   if (a.rawContent !== b.rawContent || a.visibleContent !== b.visibleContent) return false;
   if ((a.userSticker ?? "") !== (b.userSticker ?? "")) return false;
-  if ((a.resumeFromRunId ?? "") !== (b.resumeFromRunId ?? "")) return false;
   const aCtx = a.contextAttachments ?? [];
   const bCtx = b.contextAttachments ?? [];
   // 临时上下文参与幂等比较：内容不同说明是两次不同的发送意图，不能当作重试复用现有条目
@@ -795,8 +896,6 @@ export type ClaimPendingResult =
       userMessage: ChatMessage;
       /** 队首展示内容（剥离表情包标记）：渲染端占位消息直接使用，避免回读 rawContent。 */
       visibleContent: string;
-      /** 队首携带的恢复 run 标识（中断任务续跑）；无则省略。 */
-      resumeFromRunId?: string;
       /** 队首冻结的本轮临时上下文（工作台当前打开的文件等）；无则省略。 */
       contextAttachments?: { name: string; text: string }[];
       /** 认领后剩余的待发队列（权威快照，供页面投影对账）。 */
@@ -885,18 +984,29 @@ export function claimPendingMessage(sessionId: string): ClaimPendingResult {
         ...(head.userSticker ? { sticker: head.userSticker } : {}),
       },
     };
+    // 认领即真实历史消息入册（messageCount+1）：与 v1 分支一致地刷新 updatedAt 与索引，
+    // 否则侧栏列表（排序/最近聊天时间/未读检测）在 v2 会话上永远停留在旧值
+    record.messageCount = (record.messageCount ?? 0) + 1;
+    record.updatedAt = claimedAt;
+    // 与 v1 分支一致：非自定义标题时先落首条消息推导的临时标题（生成标题 3 秒后覆盖）
+    if (!record.titleIsCustom) record.title = deriveTitle([userMessage]);
     try {
       writeSessionRecordFile(record);
     } catch (err) {
       console.warn("[chats-store] v2 待发消息认领落盘失败:", sessionId, err);
       return { ok: false, error: "write-failed" };
     }
+    // 会话文件已写成功即成立；index.json 只是列表缓存，写失败仅告警（与 v1 分支同语义）
+    try {
+      upsertMeta(metaFromSession(record));
+    } catch (err) {
+      console.warn("[chats-store] v2 待发消息认领后索引写入失败（会话列表计数可能滞后）:", sessionId, err);
+    }
     return {
       ok: true,
       claimed: true,
       userMessage,
       visibleContent: head.visibleContent,
-      ...(head.resumeFromRunId ? { resumeFromRunId: head.resumeFromRunId } : {}),
       ...(head.contextAttachments ? { contextAttachments: head.contextAttachments } : {}),
       remainingQueue: remaining.map((item) => ({ ...item })),
       session: composeSession(record, [userMessage]),
@@ -928,7 +1038,6 @@ export function claimPendingMessage(sessionId: string): ClaimPendingResult {
     claimed: true,
     userMessage,
     visibleContent: head.visibleContent,
-    ...(head.resumeFromRunId ? { resumeFromRunId: head.resumeFromRunId } : {}),
     ...(head.contextAttachments ? { contextAttachments: head.contextAttachments } : {}),
     remainingQueue: remaining.map((item) => ({ ...item })),
     session,

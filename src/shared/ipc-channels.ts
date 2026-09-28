@@ -71,7 +71,6 @@ export const IPC = {
   AGUI_CANCEL: "agui:cancel",
   // 渲染端→主进程单向通知：本轮 run 的终态消息已写入会话存储（插件轮次事件的落盘确认）
   AGUI_RUN_PERSISTED: "agui:run-persisted",
-  HARNESS_GET_INTERRUPTED_RUN: "harness:get-interrupted-run",
   SCHEDULER_EVENT: "scheduler:event",
 
   // 注意力 Toast 中心（右下角提醒弹窗；main 为生命周期唯一权威，渲染页纯表现层）
@@ -171,10 +170,10 @@ export const IPC = {
   MOMENTS_LIST_CHARACTERS: "moments:list-characters",
 
   // settings window
-  SETTINGS_MINIMIZE: "settings:minimize",
-  SETTINGS_CLOSE: "settings:close",
   // main → settings 窗口：要求切到指定标签（已打开时用）
   SETTINGS_SWITCH_SECTION: "settings:switch-section",
+  // renderer → main：请求打开设置页并定位到指定标签（main 回推上面的 switch-section）
+  SETTINGS_REQUEST_SWITCH_SECTION: "settings:request-switch-section",
   SETTINGS_GET_CONFIG: "settings:get-config",
   SETTINGS_SAVE_CONFIG: "settings:save-config",
   SETTINGS_MODEL_PROFILES_LIST: "settings:model-profiles:list",
@@ -182,6 +181,7 @@ export const IPC = {
   SETTINGS_MODEL_PROFILE_DELETE: "settings:model-profiles:delete",
   SETTINGS_MODEL_PROFILE_SET_DEFAULT: "settings:model-profiles:set-default",
   SETTINGS_TEST_CONNECTION: "settings:test-connection",
+  SETTINGS_PREVIEW_REASONING: "settings:preview-reasoning",
   SETTINGS_TEST_VISION: "settings:test-vision",
   SETTINGS_GET_GENERAL: "settings:get-general",
   SETTINGS_SAVE_GENERAL: "settings:save-general",
@@ -193,16 +193,6 @@ export const IPC = {
   UI_THEME_RADIUS_CHANGED: "ui-theme-radius:changed",
   UI_WINDOW_CORNER_RADIUS_GET: "ui-window-corner-radius:get",
   UI_WINDOW_CORNER_RADIUS_CHANGED: "ui-window-corner-radius:changed",
-  UI_FONT_GET: "ui-font:get",
-  UI_FONT_CHANGED: "ui-font:changed",
-  CHAT_TYPOGRAPHY_CHANGED: "chat-typography:changed",
-  SETTINGS_PICK_UI_FONT: "settings:pick-ui-font",
-  SETTINGS_IMPORT_UI_FONT: "settings:import-ui-font",
-  SETTINGS_RESET_UI_FONT: "settings:reset-ui-font",
-  SETTINGS_OPEN_SIDEBAR: "settings:open-sidebar",
-  SETTINGS_CLOSE_SIDEBAR: "settings:close-sidebar",
-  SETTINGS_OPEN_TASKS: "settings:open-tasks",
-  SETTINGS_CLOSE_TASKS: "settings:close-tasks",
   SETTINGS_SET_PET_ALWAYS_ON_TOP: "settings:set-pet-always-on-top",
   SETTINGS_SET_PET_VISIBLE: "settings:set-pet-visible",
   SETTINGS_SET_PET_ZOOM: "settings:set-pet-zoom",
@@ -217,11 +207,14 @@ export const IPC = {
   // chat sessions (multi-conversation history, persisted to userData/cyrene-chats/)
   CHATS_LIST: "chats:list",
   CHATS_GET: "chats:get",
+  TASK_SESSION_GET: "task-session:get",
   CHATS_GET_PAGE: "chats:get-page",
   CHATS_CREATE: "chats:create",
   CTA_PRESENTATION_CHECKPOINT: "cta:presentation-checkpoint",
   // renderer → main：主动压缩会话上下文（模型窗口内旧消息摘要成一条记忆）
   CHATS_COMPACT: "chats:compact",
+  // dev-only：一键生成"压缩演示"会话（假历史 + 真实压缩检查点链路，零 token）
+  CHATS_SEED_COMPACTION_DEMO: "chats:seedCompactionDemo",
   CHATS_RENAME: "chats:rename",
   CHATS_DELETE: "chats:delete",
   // 会话级待发队列（运行中排队、未派发；独立于正式 messages 历史）
@@ -237,11 +230,19 @@ export const IPC = {
   CHATS_PENDING_ADJUST: "chats:pending-adjust",
   CHATS_SET_PINNED: "chats:set-pinned",
   CHATS_SET_MODEL_PROFILE: "chats:set-model-profile",
+  // 会话级当前模型窄 IPC：只写会话单字段组（绑定+模型），不碰档案
+  CHATS_SET_SESSION_MODEL: "chats:set-session-model",
   CHATS_OPEN_FOLDER: "chats:open-folder",
   CHATS_OPEN_WORKSPACE: "chats:open-workspace",
+  // renderer → main：用本机默认方式打开 / 在资源管理器中定位会话工作区内的文件
+  // （FileChangeCard 右键菜单；主进程校验拼出的绝对路径必须仍在该会话绑定的工作区内）
+  CHATS_SHELL_FILE: "chats:shell-file",
   CHATS_MIGRATE_LEGACY: "chats:migrate-legacy",
   // 任意会话变动后 main → 所有渲染窗口 broadcast，触发列表/标题刷新
   CHATS_CHANGED: "chats:changed",
+  CHATS_SIDEBAR_ORGANIZATION_GET: "chats:sidebar-organization:get",
+  CHATS_SIDEBAR_ORGANIZATION_APPLY: "chats:sidebar-organization:apply",
+  CHATS_SIDEBAR_ORGANIZATION_CHANGED: "chats:sidebar-organization:changed",
   // 状态栏 → main：要求打开/复用 reactChatWindow 并加载指定 sessionId
   CHATS_OPEN_IN_REACT_WINDOW: "chats:open-in-react-window",
   // main → reactChatWindow：要求切到指定 sessionId（窗口已存在时用）
@@ -270,10 +271,17 @@ export const IPC = {
   CHATS_CLEAR_WORKSPACE: "chats:clear-workspace",
   // renderer → main：打开文件夹选择器
   CHATS_PICK_WORKSPACE_FOLDER: "chats:pick-workspace-folder",
+  // renderer → main：获取最近绑定的项目文件夹列表（已过滤失效目录）
+  CHATS_RECENT_PROJECTS: "chats:recent-projects",
+  // renderer → main：验证工作区目录当前是否可用（存在且为目录）
+  CHATS_VALIDATE_WORKSPACE: "chats:validate-workspace",
   // renderer → main：为 Learn 模式初始化工作区结构（只创建缺失文件）
   CHATS_INIT_LEARN_WORKSPACE: "chats:init-learn-workspace",
   // main → 所有窗口：工作区绑定变更广播
   CHATS_WORKSPACE_CHANGED: "chats:workspace-changed",
+  // main → 所有窗口：上下文压缩阶段（running/finished），驱动消息流尾部的呼吸提示。
+  // 自动压缩发生在 run 开始前的主进程侧，渲染端拿不到 AG-UI 事件，只能靠这条推送。
+  CHATS_COMPACTION_PHASE: "chats:compaction-phase",
 
   // Review 快照（不可变文件变更审查）
   // renderer → main：获取指定 Run 的 ReviewSnapshot（不存在时按 halted 补生成）
@@ -332,6 +340,10 @@ export const IPC = {
   USER_GET_AVATAR: "user:get-avatar",
   USER_PROFILE_CHANGED: "user:profile-changed",
   USER_AVATAR_CHANGED: "user:avatar-changed",
+  CYRENE_AVATAR_GET: "cyrene-avatar:get",
+  CYRENE_AVATAR_UPLOAD: "cyrene-avatar:upload",
+  CYRENE_AVATAR_RESET: "cyrene-avatar:reset",
+  CYRENE_AVATAR_CHANGED: "cyrene-avatar:changed",
 
   // memory panel
   MEMORY_PANEL_GET_DATA: "memory-panel:get-data",
@@ -349,6 +361,7 @@ export const IPC = {
   MCP_ADD_SERVER: "mcp:add-server",
   MCP_REMOVE_SERVER: "mcp:remove-server",
   MCP_LIST_SERVERS: "mcp:list-servers",
+  MCP_LIST_SERVER_CONFIGS: "mcp:list-server-configs",
 
   // tool (plugin) toggle
   TOOL_SET_ENABLED: "tool:set-enabled",
@@ -447,7 +460,7 @@ export const IPC = {
   POP_QUIZ_SETTLED: "pop-quiz:settled",
 
   // call window (voice call)
-  CALL_OPEN: "call:open",                 // sidebar → main：打开通话窗口
+  CALL_OPEN: "call:open",                 // 角色信息浮层 → main：打开通话窗口
   CALL_START: "call:start",               // renderer → main：开始通话（初始化 ASR）
   CALL_AUDIO_FRAME: "call:audio-frame",    // renderer → main：PCM 音频帧
   CALL_ASR_RESULT: "call:asr-result",     // main → renderer：ASR 识别结果
@@ -561,6 +574,12 @@ export const IPC = {
   /** 设置面板桥的统一转发通道：仅面板宿主窗口可用，pluginId 由宿主侧绑定 */
   PLUGINS_PANEL_INVOKE: "plugins:panel:invoke",
   PLUGINS_MARKET_LIST: "plugins:market:list",
+  PLUGINS_MARKET_DETAILS: "plugins:market:details",
   PLUGINS_MARKET_INSTALL: "plugins:market:install",
+
+  // 项目公告（远端 Markdown 文本）
+  NEWS_GET: "news:get",
+  /** 主进程拉到新版本时反向推送给窗口，渲染端据此更新未读提示 */
+  NEWS_UPDATED: "news:updated",
 
 } as const;

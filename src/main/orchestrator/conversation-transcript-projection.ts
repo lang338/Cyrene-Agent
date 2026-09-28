@@ -35,7 +35,7 @@ export interface MaterializedTranscriptWithSources extends MaterializedTranscrip
 }
 
 export interface ConversationProjectionNodeState {
-  kind: "user" | "assistant";
+  kind: "user" | "assistant" | "compaction";
   entryId: string;
   messageId: string;
   turnId?: string;
@@ -63,6 +63,7 @@ export interface ConversationProjection {
 type UserEntry = Extract<TranscriptEntry, { kind: "user" }>;
 type AssistantEntry = Extract<TranscriptEntry, { kind: "assistant" }>;
 type RewindEntry = Extract<TranscriptEntry, { kind: "turn_rewind" }>;
+type CompactionEntry = Extract<TranscriptEntry, { kind: "compaction_checkpoint" }>;
 
 type ActiveNode =
   | { kind: "user"; entry: UserEntry | RewindEntry; text: string }
@@ -71,7 +72,8 @@ type ActiveNode =
       entry: AssistantEntry;
       toolResults: Map<string, ChatMessage>;
       toolResultSeqs: Map<string, number>;
-    };
+    }
+  | { kind: "compaction"; entry: CompactionEntry };
 
 interface ActiveTranscript {
   nodes: ActiveNode[];
@@ -142,9 +144,16 @@ function reduceActiveTranscript(entries: TranscriptEntry[]): ActiveTranscript {
         if (targetIndex >= 0) nodes.length = targetIndex;
         break;
       }
+      case "compaction_checkpoint": {
+        // UI 投影专用节点：在「已被压缩覆盖的前缀」之后落一个分隔标记。
+        // 模型上下文路径（materializeNodes）会跳过它；rewind / 墓碑截断
+        // 分支时该节点随覆盖前缀一起消失，天然等价于检查点失效判定。
+        nodes.push({ kind: "compaction", entry });
+        break;
+      }
       default:
-        // Presentation, receipts, interruption, backfill and checkpoints do
-        // not themselves alter the active canonical node sequence.
+        // Presentation, receipts, interruption and backfill do not
+        // themselves alter the active canonical node sequence.
         break;
     }
   }
@@ -195,6 +204,7 @@ function materializeNodes(
       sourceSeqs.push(node.entry.seq);
       continue;
     }
+    if (node.kind === "compaction") continue;
     const payload = node.entry.payload;
     messages.push(payload);
     sourceSeqs.push(node.entry.seq);
@@ -318,7 +328,9 @@ function interruptionNotesWithSources(
         visibility: "internal",
         content: entry.payload.reason === "user_cancel"
           ? "上一轮由用户主动停止，未完整结束。不要自行延续上一轮；以用户最新消息为准。"
-          : "上一轮因系统错误未完整结束，没有生成完整回答。请结合用户最新消息决定是否继续。",
+          : entry.payload.reason === "crashed"
+            ? "上一轮因应用崩溃未完整结束。请基于现有记录与用户最新消息决定如何继续。"
+            : "上一轮因系统错误未完整结束，没有生成完整回答。请结合用户最新消息决定是否继续。",
         internal: {
           kind: "recovery",
           revision: 1,
@@ -408,6 +420,18 @@ function makeUiMessage(node: ActiveNode): CanonicalUiMessage | null {
       aliases: new Set([node.entry.id, ...(node.entry.turnId ? [node.entry.turnId] : [])]),
     };
   }
+  if (node.kind === "compaction") {
+    return {
+      message: {
+        id: node.entry.id,
+        role: "model",
+        content: "",
+        at: node.entry.at,
+        compaction: { trigger: node.entry.payload.trigger },
+      },
+      aliases: new Set([node.entry.id]),
+    };
+  }
   const groupId = node.entry.turnId ?? node.entry.id;
   return {
     message: {
@@ -428,6 +452,9 @@ function applyPatch(
 }
 
 function nodeStateFromActive(node: ActiveNode): ConversationProjectionNodeState {
+  if (node.kind === "compaction") {
+    return { kind: "compaction", entryId: node.entry.id, messageId: node.entry.id };
+  }
   return node.kind === "user"
     ? {
       kind: "user",
@@ -471,7 +498,7 @@ function projectSeedDelta(
   for (const item of messages) byAlias.set(item.message.id, item);
   const state: ConversationProjectionState = {
     nodes: (seed.state?.nodes ?? seed.messages.map((message) => ({
-      kind: message.role === "user" ? "user" : "assistant",
+      kind: message.compaction ? "compaction" as const : message.role === "user" ? "user" as const : "assistant" as const,
       entryId: message.id,
       messageId: message.id,
     }))).map((node) => ({ ...node })),
@@ -598,6 +625,24 @@ function projectSeedDelta(
         const targetIndex = findSeedUserIndex(state.nodes, entry.payload.targetUserTurnId);
         if (targetIndex >= 0) state.nodes.length = targetIndex;
         retainMessagesForState();
+        break;
+      }
+      case "compaction_checkpoint": {
+        // 与全量路径同构：标记节点跟随增量条目进入 state.nodes，
+        // 后续 rewind 截断时随覆盖前缀一起保留或消失。
+        state.nodes.push({ kind: "compaction", entryId: entry.id, messageId: entry.id });
+        const item: CanonicalUiMessage = {
+          message: {
+            id: entry.id,
+            role: "model",
+            content: "",
+            at: entry.at,
+            compaction: { trigger: entry.payload.trigger },
+          },
+          aliases: new Set([entry.id]),
+        };
+        messages.push(item);
+        byAlias.set(entry.id, item);
         break;
       }
       default:

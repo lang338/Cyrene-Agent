@@ -21,6 +21,8 @@ import type {
 import type { HarnessConfig } from "./types";
 import { AGENT_COMPACTION_PROMPT } from "./compaction";
 import { isExplicitStreamUnsupported } from "../vendors/stream-support";
+import { AgentRuntimeError } from "../agent-runtime-error";
+import { classifyModelFailure } from "../vendors/model-error-classifier";
 import {
   composePromptLayers,
   normalizeToolSpecsForCache,
@@ -107,12 +109,22 @@ export async function callLLM(
   // 非流式兜底
   const fallbackRequest: ChatRequest = { ...chatRequest, stream: false };
   const http = adapter.buildRequest(fallbackRequest, vendorConfig);
-  const response = await fetch(http.url, {
-    method: "POST",
-    headers: http.headers,
-    body: http.body,
-    signal,
-  });
+  let response: Response;
+  try {
+    response = await fetch(http.url, {
+      method: "POST",
+      headers: http.headers,
+      body: http.body,
+      signal,
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    const failure = classifyModelFailure({ provider: adapter.id, model: vendorConfig.model, error });
+    throw new AgentRuntimeError("E_MODEL_REQUEST_FAILED", "模型服务请求失败。", {
+      cause: error,
+      modelFailure: { ...failure, category: failure.category === "UNKNOWN" ? "NETWORK" : failure.category },
+    });
+  }
   if (!response.ok) {
     // [image-send] 链路日志④：服务端拒绝时带上模型名、请求地址与完整错误体（Anthropic 400 会带具体 reason）。
     const rawBody = await response.text().catch(() => "");
@@ -122,8 +134,11 @@ export async function callLLM(
       `\n  baseUrl: ${http.url}`,
       `\n  error: HTTP ${response.status} ${rawBody.slice(0, 500) || "(无响应体)"}`,
     );
-    const errorData = JSON.parse(rawBody || "{}") as { error?: { message?: string } };
-    throw new Error(errorData.error?.message || `模型请求失败：HTTP ${response.status}`);
+    let errorData: unknown;
+    try { errorData = JSON.parse(rawBody || "{}"); } catch { errorData = undefined; }
+    throw new AgentRuntimeError("E_MODEL_REQUEST_FAILED", `模型请求失败：HTTP ${response.status}`, {
+      modelFailure: classifyModelFailure({ provider: adapter.id, model: vendorConfig.model, status: response.status, error: errorData }),
+    });
   }
   return recordResponseUsage(adapter.parseResponse(await response.json()));
 }

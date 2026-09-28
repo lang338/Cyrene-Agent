@@ -1,3 +1,5 @@
+import type { ModelFailureInfo } from "../../shared/model-error";
+
 /**
  * 结构化 Agent 运行时错误（修订第 3 点）。
  *
@@ -16,9 +18,11 @@ export class AgentRuntimeError extends Error {
   constructor(
     public readonly code: AgentErrorCode,
     message: string,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { modelFailure?: ModelFailureInfo },
   ) {
     super(message, options);
     this.name = "AgentRuntimeError";
+    this.modelFailure = options?.modelFailure;
   }
+  public readonly modelFailure?: ModelFailureInfo;
 }

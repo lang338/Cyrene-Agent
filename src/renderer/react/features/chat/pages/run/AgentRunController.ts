@@ -12,6 +12,7 @@ import type {
 } from "../../../../../../shared/chat-types";
 import { isContextUsageSnapshot, type ContextUsageSnapshot } from "../../../../../../shared/context-usage";
 import type { TodoItem } from "../../../../../../shared/todo-types";
+import { isModelFailureInfo, type ModelFailureInfo } from "../../../../../../shared/model-error";
 import type { ChatMessageItem } from "../../components/ChatMessageList";
 import type { ComposerAttachment } from "../../components/ChatComposer";
 import {
@@ -21,14 +22,16 @@ import {
   resolveRunFinishedStage,
   resolveTerminalContent,
   shouldClearComposerInteractionForTerminal,
+  type AgentRunStage,
   type ComposerInteraction,
 } from "../../components/run-presentation";
 import { applyAgentRoundBoundary, createRoundProcessMessage } from "../../components/agent-rounds";
 import { applyTaskDelegationEvent, normalizeTaskDelegationEvent } from "../../components/task-delegations";
-import { t } from "../../../../i18n";
+import { getCharacterName, t } from "../../../../i18n";
 import type { AguiApi, AguiEvent, CandidateTextEventValue, ChatStoreApi } from "../chat-page-bridge";
 import { normalizeWeatherData, parseSessionRunActiveError, stageForStep } from "../chat-page-normalizers";
 import { RunEventGate } from "../run-event-gate";
+import { applyVisibleOutput, normalizeShellOutputEvent } from "./command-output";
 import {
   SMOOTH_REVEAL_TICK_MS,
   SmoothTextRevealQueue,
@@ -61,7 +64,6 @@ export interface AgentRunInput {
   contextAttachments?: Array<{ name: string; text: string }>;
   /** 原始用户文本对应的 UI 展示文本；表情包标记不进入模型 text。 */
   visibleContent?: string;
-  resumeFromRunId?: string;
   takeoverFromRunId?: string;
   /**
    * 待发队列认领派发：用户消息已由主进程认领写入历史（非本控制器追加）。
@@ -74,6 +76,11 @@ export interface AgentRunInput {
     disposition: "keep_user" | "replace_user";
   };
 }
+
+/** 计划面板更新：submit_plan 交卷（载入全文并打开面板）与执行收尾（阶段标记）。 */
+export type PlanReviewUpdate =
+  | { kind: "submitted"; planContent: string; planPath: string }
+  | { kind: "completed" };
 
 /**
  * 运行宿主：控制器与 React 世界之间的全部通道。
@@ -93,8 +100,9 @@ export interface AgentRunHost {
   updateTodos(sessionId: string, updater: (current: TodoStateBySession) => TodoStateBySession): void;
   /** 会话级上下文容量快照更新（环形图优先读取点）。 */
   updateContextUsage(sessionId: string, snapshot: ContextUsageSnapshot): void;
-  /** 上下文压缩中提示。sessionId 供宿主未来按会话映射，当前实现为全局单值。 */
-  setCompressingContext(sessionId: string, value: boolean): void;
+  setMainModelFailure?(sessionId: string, failure: ModelFailureInfo | null): void;
+  /** 会话级计划面板更新：submit_plan 交卷与执行收尾（事件均在 run 内到达）。 */
+  updatePlanReview(sessionId: string, update: PlanReviewUpdate): void;
   /** 模式级 busy 标记（ref 与渲染状态由宿主同步维护）。 */
   setModeBusy(mode: ConversationMode, busy: boolean): void;
   /** 会话守卫冲突（SESSION_RUN_ACTIVE）：挂起接管操作卡，等用户决定。 */
@@ -155,6 +163,8 @@ export class AgentRunController {
   private streamContent = "";
   /** RUN_FINISHED.result.status：success / cancelled / timeout / runtime_error。 */
   private terminalStatus: string | undefined;
+  /** 终态阶段文案：结算后候选正文还会逐帧补完，用它挡住把阶段退回「组织回复」的后续帧。 */
+  private terminalStage: AgentRunStage | undefined;
   private reasoningContent = "";
   private reasoningBlocks: ReasoningBlock[] = [];
   private processMessages: ProcessMessageRecord[] = [];
@@ -208,6 +218,7 @@ export class AgentRunController {
 
   /** 启动并完整跑完一轮 run（从派发请求到终态落盘）。 */
   async start(): Promise<void> {
+    this.deps.host.setMainModelFailure?.(this.input.sessionId, null);
     const { api, store } = this.deps;
     if (!api || !store) {
       const visibleError = t("chatPage.errorModelServiceNotReady");
@@ -292,7 +303,6 @@ export class AgentRunController {
         ...(this.input.contextAttachments?.length
           ? { attachments: this.input.contextAttachments }
           : {}),
-        ...(this.input.resumeFromRunId ? { resumeFromRunId: this.input.resumeFromRunId } : {}),
         ...(this.input.takeoverFromRunId ? { takeoverFromRunId: this.input.takeoverFromRunId } : {}),
         ...(this.input.transcriptRewind ? { transcriptRewind: this.input.transcriptRewind } : {}),
         imageAttachments: this.input.attachments
@@ -367,11 +377,15 @@ export class AgentRunController {
         loading: false,
         waitingForFirstEvent: false,
         streaming: false,
+        // 回复结算时刻：footer 的回复时间据此展示；会话重载后由持久化消息的 at 接管
+        at: Date.now(),
         reasoning: this.reasoningContent || undefined,
         reasoningBlocks: this.reasoningBlocks,
         processMessages: this.processMessages,
         agentRounds: this.agentRounds,
         reasoningStreaming: false,
+        // 结算收尾统一回写终态阶段，避免停在流式过程的「组织回复」上
+        runStage: this.terminalStage,
         runActivity: this.runActivity,
         responseStarted: formalAnswerCommitted,
         sticker: this.sticker,
@@ -613,7 +627,9 @@ export class AgentRunController {
       waitingForFirstEvent: false,
       streaming: true,
       responseStarted: true,
-      runStage: { kind: "responding" },
+      // 终态已定：后面几帧只是把正文补完，不能再把阶段退回「组织回复」，
+      // 否则回复都出完了，面板头还挂着"昔涟正在组织回复…"。
+      ...(this.terminalStage ? {} : { runStage: { kind: "responding" } as AgentRunStage }),
     });
   }
 
@@ -748,6 +764,8 @@ export class AgentRunController {
       this.resetCandidateState();
       return;
     }
+    // 候选正文降级为过程消息：清掉已切未播的句子与半句缓冲（正在播的不打断）
+    this.earlyTtsQueue?.dropPending();
     this.scheduleCandidateClassification(this.candidateText);
   }
 
@@ -865,6 +883,8 @@ export class AgentRunController {
         }
         this.candidateText += value.delta;
         this.appendCandidateDelta(value.delta);
+        // 流式正文直接喂早播队列：边生成边切句合成，超长回复首句无需等 run 结束
+        this.earlyTtsQueue?.append(value.delta);
       } else if (value.action === "discard") {
         // discard 是历史协议名：语义是「该轮正文不再是候选」，内容保留为过程消息
         this.closeRoundCandidateText();
@@ -872,7 +892,6 @@ export class AgentRunController {
     } else if (event.type === "RUN_STARTED") {
       this.runStarted = true;
       this.runActivity = { startedAt: Date.now(), reasoningMs: 0 };
-      this.deps.host.setCompressingContext(this.input.sessionId, false);
       if (event.runId) {
         // RUN_STARTED.runId 必须与 ack.runId 一致（由 bridge 注入 options.runId 保证）。
         // 不一致时只 warn 不重写，避免渲染端拿到错误 runId 后无法 cancel。
@@ -980,6 +999,17 @@ export class AgentRunController {
       void this.checkpointRun("running", true);
     } else if (event.type === "TOOL_CALL_END" && event.toolCallId) {
       this.updateRunTool(event.toolCallId, {});
+    } else if (event.type === "CUSTOM" && event.name === "cyrene.tool_output") {
+      const output = normalizeShellOutputEvent(event.value);
+      const tool = output && this.toolExecutions.find((item) => item.id === output.toolCallId);
+      if (output && tool?.name === "run_shell" && tool.status === "running") {
+        const visible = applyVisibleOutput(tool.terminalOutput ?? "", output, tool.terminalOutputTruncated);
+        this.updateRunTool(tool.id, {
+          terminalOutput: visible.text,
+          terminalOutputTruncated: visible.truncated,
+        });
+        void this.checkpointRun("running");
+      }
     } else if (event.type === "TEXT_MESSAGE_START") {
       this.deps.host.patchMessage(this.input.sessionId, this.input.assistantId, {
         loading: false,
@@ -1020,6 +1050,8 @@ export class AgentRunController {
         // 权威全文替换候选：沿用候选开始时的时间线序号，正文保持在同轮工具之前
         const processSeq = replacesCandidate ? this.candidateSeq : this.nextSeq();
         if (replacesCandidate) {
+          // 候选正文被权威全文降级替换：清掉已切未播的句子与半句缓冲
+          this.earlyTtsQueue?.dropPending();
           this.scheduleCandidateClassification(content, this.candidateRoundId ?? this.activeRoundId, processSeq);
         } else {
           const processId = `process-${this.processMessageSequence++}`;
@@ -1046,7 +1078,7 @@ export class AgentRunController {
         this.taskDelegations = applyTaskDelegationEvent(this.taskDelegations, delegation, this.activeRoundId);
         this.deps.host.patchMessage(this.input.sessionId, this.input.assistantId, {
           taskDelegations: this.taskDelegations,
-          runStage: { kind: "executing", detail: delegation.nickname },
+          runStage: { kind: "executing", detail: getCharacterName(delegation.nickname) },
         });
         void this.checkpointRun("running", true);
       }
@@ -1060,6 +1092,22 @@ export class AgentRunController {
     } else if (event.type === "CUSTOM" && event.name === "cyrene.choice.dismiss") {
       this.deps.host.dismissAskIfMatched(this.input.sessionId, event.value);
       void this.checkpointRun("running", true);
+    } else if (event.type === "CUSTOM" && event.name === "cyrene.plan.review") {
+      // submit_plan 交卷：计划全文经 run 内事件链到达，载入面板供用户在审批等待期间审阅。
+      const value = event.value as { sessionId?: unknown; planPath?: unknown; planContent?: unknown } | null | undefined;
+      if (
+        typeof value?.sessionId === "string" && value.sessionId === this.input.sessionId
+        && typeof value.planContent === "string" && value.planContent.trim()
+      ) {
+        this.deps.host.updatePlanReview(this.input.sessionId, {
+          kind: "submitted",
+          planContent: value.planContent,
+          planPath: typeof value.planPath === "string" ? value.planPath : "",
+        });
+      }
+    } else if (event.type === "CUSTOM" && event.name === "cyrene.plan.completed") {
+      // 执行收尾通知（completePlanRun 在 run 内发出，不带 sessionId）：面板阶段标记为已完成。
+      this.deps.host.updatePlanReview(this.input.sessionId, { kind: "completed" });
     } else if (event.type === "CUSTOM" && event.name === "cyrene.taskPlan") {
       const taskPlan = normalizeTaskPlanPresentation(event.value);
       if (taskPlan) {
@@ -1089,8 +1137,6 @@ export class AgentRunController {
         ));
         void this.checkpointRun("running", true);
       }
-    } else if (event.type === "CUSTOM" && event.name === "cyrene.compressingContext") {
-      this.deps.host.setCompressingContext(this.input.sessionId, true);
     } else if (event.type === "CUSTOM" && event.name === "cyrene.context.usage") {
       // 上下文容量快照：preRequest 纯内存实时刷新（零 I/O）；
       // terminal 用 debounce 版 checkpointRun，合并进紧随其后的 RUN_FINISHED terminal checkpoint，一次落盘。
@@ -1119,6 +1165,7 @@ export class AgentRunController {
         this.abortCandidateReveal();
       }
       const stage = resolveRunFinishedStage(result);
+      this.terminalStage = stage;
       this.deps.host.patchMessage(this.input.sessionId, this.input.assistantId, { runStage: stage });
       const activeRunId = this.deps.registries.activeRuns.current[this.input.sessionId]?.runId;
       if (shouldClearComposerInteractionForTerminal(activeRunId, event.runId)) {
@@ -1129,7 +1176,10 @@ export class AgentRunController {
       this.revealCancelled = true;
       this.abortCandidateReveal();
       this.completeRunActivity(true);
-      this.deps.host.patchMessage(this.input.sessionId, this.input.assistantId, { runStage: { kind: "failed" } });
+      this.terminalStage = { kind: "failed" };
+      const modelFailure = event.metadata?.cyreneModelFailure;
+      if (isModelFailureInfo(modelFailure)) this.deps.host.setMainModelFailure?.(this.input.sessionId, modelFailure);
+      this.deps.host.patchMessage(this.input.sessionId, this.input.assistantId, { runStage: this.terminalStage });
       const activeRunId = this.deps.registries.activeRuns.current[this.input.sessionId]?.runId;
       if (shouldClearComposerInteractionForTerminal(activeRunId, event.runId)) {
         this.deps.host.clearInteraction(this.input.sessionId);

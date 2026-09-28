@@ -16,6 +16,12 @@ vi.mock("@ant-design/x", async () => {
 });
 vi.mock("../../../../../shared/renderer-base", () => ({ resolveAsset: (path: string) => path }));
 vi.mock("./StreamdownMessageContent.css", () => ({}));
+// svg 资产 import 在 node 测试环境不可加载，mock 掉图标资产表
+vi.mock("./file-icon-assets", () => ({
+  FILE_ICON_URLS: { default: "default-url" },
+  FILE_NAME_MAP: {},
+  FILE_EXT_MAP: {},
+}));
 vi.mock("./MermaidBlock", () => ({ MermaidBlock: () => null }));
 vi.mock("./SvgCardBlock", () => ({ SvgCardBlock: () => null }));
 
@@ -254,6 +260,23 @@ describe("bound channel message presentation", () => {
   });
 });
 
+describe("compaction marker presentation", () => {
+  it("converts a compaction marker into a single separator bubble entry", () => {
+    const message: ChatMessageItem = {
+      id: "checkpoint-1",
+      role: "assistant",
+      content: "",
+      compaction: { trigger: "manual" },
+    };
+    expect(createMessageItems([message], [])).toEqual([{
+      key: "checkpoint-1",
+      role: "compaction",
+      content: "",
+      extraInfo: {},
+    }]);
+  });
+});
+
 describe("review panel visibility", () => {
   it("appends a review bubble when runId is set and message is not streaming", () => {
     const message: ChatMessageItem = {
@@ -329,7 +352,8 @@ describe("function-calling round presentation", () => {
     expect(html).toContain("cy-reasoning-status-art is-thinking");
     const thinkingArt = html.match(/cy-reasoning-status-art is-thinking[^>]*><img src="([^"]+)"/)?.[1];
     const completedArt = html.match(/cy-reasoning-status-art is-complete[^>]*><img src="([^"]+)"/)?.[1];
-    expect(completedArt).toBe(thinkingArt);
+    expect(thinkingArt).toContain(encodeURIComponent("思考中.png"));
+    expect(completedArt).toContain(encodeURIComponent("提醒.png"));
     expect(html).toContain("昔涟已完成 · 浏览 1 个目录");
     expect(html).toContain("昔涟正在读取文件");
     expect(html).toContain("先看项目结构");

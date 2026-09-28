@@ -23,6 +23,22 @@ describe("harness event mapper", () => {
     expect(sent[1]).toMatchObject({ type: "TOOL_CALL_END", runId: "run-1" });
   });
 
+  it("routes a command output chunk to its tool call in the current run", () => {
+    expect(capture({
+      type: "tool_output",
+      toolCallId: "shell-2",
+      action: "append",
+      text: "正在编译\n",
+    } as HarnessEvent)).toEqual([
+      expect.objectContaining({
+        type: "CUSTOM",
+        name: "cyrene.tool_output",
+        runId: "run-1",
+        value: { toolCallId: "shell-2", action: "append", text: "正在编译\n" },
+      }),
+    ]);
+  });
+
   it("maps final answers into one AG-UI text message", () => {
     expect(capture({ type: "final_answer", content: "完成" })).toEqual([
       expect.objectContaining({ type: "TEXT_MESSAGE_START", runId: "run-1" }),
@@ -55,6 +71,27 @@ describe("harness event mapper", () => {
         type: "CUSTOM",
         name: "cyrene.candidate_text",
         value: { action: "discard", roundId: "round-2" },
+        runId: "run-1",
+      }),
+    ]);
+  });
+
+  it("maps plan_submitted to cyrene.plan.review with the full plan content", () => {
+    // 交卷事件走独立 CUSTOM 事件下发计划全文，渲染端持久监听据此打开计划面板
+    expect(capture({
+      type: "plan_submitted",
+      conversationId: "conv-1",
+      planPath: "E:/ws/.cyrene/docs/plan-20260923-120000.md",
+      planContent: "# 实施计划\n\n- [ ] 第一步：写测试",
+    })).toEqual([
+      expect.objectContaining({
+        type: "CUSTOM",
+        name: "cyrene.plan.review",
+        value: {
+          planPath: "E:/ws/.cyrene/docs/plan-20260923-120000.md",
+          planContent: "# 实施计划\n\n- [ ] 第一步：写测试",
+          sessionId: "conv-1",
+        },
         runId: "run-1",
       }),
     ]);

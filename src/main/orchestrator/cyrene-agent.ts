@@ -85,6 +85,7 @@ export interface AgentLoopSettings {
   apiKey: string;
   explicitTransport?: "openai" | "anthropic" | "responses" | "auto";
   reasoning?: import("../../shared/reasoning").ReasoningPreference;
+  manualReasoning?: import("../../shared/manual-reasoning").ManualReasoningConfig;
   /** 用户设置的模型上下文窗口（Token）。用于非 code 模式的对话压缩触发阈值。 */
   contextWindowTokens: number;
 }
@@ -104,8 +105,6 @@ export interface CyreneRunOptions {
    *   不得再各自生成 harness-${Date.now()} 等本地 ID。
    */
   runId?: string;
-  /** 用户明确要求继续的旧 Harness Run；仅由恢复入口注入。 */
-  resumeFromRunId?: string;
   /** 原始消息（不含 system）。system 由 chat-loop / harness-adapter 按 promptLayers 组装，不随消息持久化。 */
   messages: ChatMessage[];
   conversationId?: string;
@@ -316,8 +315,6 @@ export function toAguiEvent(event: AgentLoopEvent): BaseEvent {
       return { type: EventType.REASONING_MESSAGE_CONTENT, messageId: event.messageId, delta: event.delta };
     case "reasoning_message_end":
       return { type: EventType.REASONING_MESSAGE_END, messageId: event.messageId };
-    case "compressing_context":
-      return { type: EventType.CUSTOM, name: "cyrene.compressingContext", value: { text: "昔涟正在压缩上下文…" } };
     case "context_usage":
       // 上下文容量快照：与 harness-adapter 的同名 CUSTOM 事件对齐。
       return {
@@ -589,7 +586,9 @@ export class CyreneAgent extends AbstractAgent {
           } catch (closureError) {
             console.error(LOG_PREFIX, "transcript failure closure failed:", closureError);
           }
-          const safeErr = new Error(classification.userMessage);
+          const safeErr = new AgentRuntimeError("E_MODEL_REQUEST_FAILED", classification.userMessage, {
+            ...(classification.modelFailure ? { modelFailure: classification.modelFailure } : {}),
+          });
           finished = true;
           detachExternalAbort();
           subscriber.error(safeErr);
@@ -636,6 +635,7 @@ export interface AbortDiagnostic {
   phase: AbortPhase;
   userMessage: string;
   diagnostics: Record<string, unknown>;
+  modelFailure?: import("../../shared/model-error").ModelFailureInfo;
 }
 
 /** 分类 abort/error 来源，返回用户安全消息和诊断信息 */
@@ -708,6 +708,7 @@ export function classifyRunError(
       phase,
       userMessage,
       diagnostics,
+      ...(err.modelFailure ? { modelFailure: err.modelFailure } : {}),
     };
   }
 

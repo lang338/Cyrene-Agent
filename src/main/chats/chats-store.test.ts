@@ -161,6 +161,114 @@ describe("chats store", () => {
     expect(disk).not.toHaveProperty("messages");
   });
 
+  it("v2 claim 与 run 终态同步都刷新 messageCount/updatedAt 与列表索引", async () => {
+    const store = await import("./chats-store");
+    store.initialize();
+    const session = store.createSession({ title: "统计同步" });
+    const file = path.join(store.getRootDir(), "sessions", `${session.id}.json`);
+    const persisted = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, any>;
+    delete persisted.messages;
+    persisted.schemaVersion = 2;
+    persisted.messageCount = 0;
+    persisted.updatedAt = 1;
+    fs.writeFileSync(file, JSON.stringify(persisted));
+
+    // v2 claim：用户消息入册 → messageCount+1、updatedAt 刷新、索引可见
+    store.enqueuePendingMessage(session.id, {
+      id: "stats-claim",
+      rawContent: "原始输入",
+      visibleContent: "原始输入",
+    });
+    expect(store.claimPendingMessage(session.id)).toEqual(expect.objectContaining({ ok: true, claimed: true }));
+    let disk = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, any>;
+    expect(disk.messageCount).toBe(1);
+    expect(disk.updatedAt).toBeGreaterThan(1);
+    let listed = store.listSessions().find((item) => item.id === session.id);
+    expect(listed).toEqual(expect.objectContaining({ messageCount: 1 }));
+
+    // run 终态同步：投影消息总数覆盖写入（assistant 回复入投影）
+    expect(store.syncSessionStats(session.id, 2)).toBe(true);
+    disk = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, any>;
+    expect(disk.messageCount).toBe(2);
+    listed = store.listSessions().find((item) => item.id === session.id);
+    expect(listed).toEqual(expect.objectContaining({ messageCount: 2 }));
+
+    // 重复同步无害：计数不回退，时间戳单调不减（两次调用间 Date.now 前进属正常）
+    expect(store.syncSessionStats(session.id, 2)).toBe(true);
+    disk = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, any>;
+    expect(disk.messageCount).toBe(2);
+    // 不存在的会话/非法计数安全返回
+    expect(store.syncSessionStats("no-such-session", 5)).toBe(false);
+    expect(store.syncSessionStats(session.id, -1)).toBe(false);
+  });
+
+  it("v2 会话的标题链路：claim 落临时标题、getSessionView 组合首条、setGeneratedTitle 写回", async () => {
+    const store = await import("./chats-store");
+    store.initialize();
+    const session = store.createSession({ title: "新任务" });
+    const file = path.join(store.getRootDir(), "sessions", `${session.id}.json`);
+    const persisted = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, any>;
+    delete persisted.messages;
+    persisted.schemaVersion = 2;
+    persisted.messageCount = 0;
+    fs.writeFileSync(file, JSON.stringify(persisted));
+
+    // 迁移成 v2 后 getSession（readSessionFile）返回 null，标题服务旧链路会静默中断
+    expect(store.getSession(session.id)).toBeNull();
+
+    // v2 claim：落首条消息推导的临时标题（与 v1 行为一致）
+    store.enqueuePendingMessage(session.id, {
+      id: "title-claim",
+      rawContent: "原始输入",
+      visibleContent: "展示输入",
+    });
+    expect(store.claimPendingMessage(session.id)).toEqual(expect.objectContaining({ ok: true, claimed: true }));
+    let disk = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, any>;
+    expect(disk.title).toBe("原始输入");
+
+    // getSessionView：把 pendingDispatch 的用户消息快照组合成首条消息（titleService 校验用）
+    const view = store.getSessionView(session.id);
+    expect(view?.messages).toEqual([
+      expect.objectContaining({ id: "title-claim", role: "user", content: "展示输入" }),
+    ]);
+
+    // setGeneratedTitle：v2 无同步 messages 可校验，靠 schedule 侧校验，写回成功
+    expect(store.setGeneratedTitle(session.id, "title-claim", "生成的标题")).toBe(true);
+    disk = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, any>;
+    expect(disk.title).toBe("生成的标题");
+    expect(store.listSessions().find((item) => item.id === session.id)).toEqual(
+      expect.objectContaining({ title: "生成的标题" }),
+    );
+
+    // 用户改过标题（titleIsCustom）后不再覆盖
+    store.renameSession(session.id, "用户手动标题");
+    expect(store.setGeneratedTitle(session.id, "title-claim", "迟到的生成标题")).toBe(false);
+  });
+
+  it("getSessionView 对 v1 原样返回、无 pendingDispatch 的 v2 返回空消息", async () => {
+    const store = await import("./chats-store");
+    store.initialize();
+    // v1：原样（含真实 messages）
+    const v1 = store.createSession({ title: "v1 会话" });
+    const v1View = store.getSessionView(v1.id);
+    expect(v1View?.schemaVersion).toBe(1);
+    expect(v1View?.messages).toEqual([]);
+
+    // v2 且认领已完成（pendingDispatch 清除）：空 messages，视图统一为 v1 形状
+    const v2 = store.createSession({ title: "v2 会话" });
+    const file = path.join(store.getRootDir(), "sessions", `${v2.id}.json`);
+    const persisted = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, any>;
+    delete persisted.messages;
+    persisted.schemaVersion = 2;
+    persisted.messageCount = 3;
+    fs.writeFileSync(file, JSON.stringify(persisted));
+    const v2View = store.getSessionView(v2.id);
+    expect(v2View?.schemaVersion).toBe(1);
+    expect(v2View?.messages).toEqual([]);
+
+    expect(store.getSessionView("no-such-session")).toBeNull();
+  });
+
   it("用稳定 withdrawal id 原子标记并提交 v1/v2 pending 撤回", async () => {
     const store = await import("./chats-store");
     store.initialize();
@@ -512,5 +620,100 @@ describe("chats store", () => {
     });
     expect(store.setGeneratedTitle(changed.id, "old-first-user", "过期模型标题")).toBe(false);
     expect(store.getSession(changed.id)?.title).toBe("修改后的问题");
+  });
+
+  it("#5 旧式会话语义零变化：createSession 不传模型字段 → 磁盘 JSON 不出现 model/modelProfileId", async () => {
+    const store = await import("./chats-store");
+    store.initialize();
+    const session = store.createSession({ title: "旧式会话" });
+
+    const file = path.join(store.getRootDir(), "sessions", `${session.id}.json`);
+    const disk = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    expect(disk).not.toHaveProperty("model");
+    expect(disk).not.toHaveProperty("modelProfileId");
+  });
+
+  it("#16 切档案原子转换：绑定与模型同一次写入，旧模型不串进新档案", async () => {
+    const store = await import("./chats-store");
+    store.initialize();
+    const session = store.createSession({ modelProfileId: "p-a", model: "a2" });
+
+    const updated = store.setSessionModelProfile(session.id, "p-b", "b1");
+    expect(updated).toMatchObject({ modelProfileId: "p-b", model: "b1" });
+    // 磁盘与内存一致：不存在"绑定已换、模型还是旧值"的中间态
+    const file = path.join(store.getRootDir(), "sessions", `${session.id}.json`);
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).toMatchObject({
+      modelProfileId: "p-b",
+      model: "b1",
+    });
+  });
+
+  it("#17 A 与 B 含同名模型：切 B 写入的是 B 的默认模型，不因同名继承旧值", async () => {
+    const store = await import("./chats-store");
+    store.initialize();
+    // 会话当前用 x；B 档案默认 b1，但 B 的清单里也有 x
+    const session = store.createSession({ modelProfileId: "p-a", model: "x" });
+
+    const updated = store.setSessionModelProfile(session.id, "p-b", "b1");
+    expect(updated).toMatchObject({ modelProfileId: "p-b", model: "b1" });
+  });
+
+  it("#22/#23 队列串行：慢 B 先入队、快 C 后入队 → 提交顺序 = 接收顺序，最终态为 C", async () => {
+    const store = await import("./chats-store");
+    store.initialize();
+    const session = store.createSession({ modelProfileId: "p-a", model: "a1" });
+
+    // 模拟 B 请求慢（提交前 await）、C 请求快：若没有串行队列，C 会先落盘被 B 覆盖
+    const slowB = store.enqueueSessionModelMutation(session.id, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return store.setSessionModelProfile(session.id, "p-b", "b1");
+    });
+    const fastC = store.enqueueSessionModelMutation(session.id, () =>
+      store.setSessionModelProfile(session.id, "p-c", "c1"));
+    await Promise.all([slowB, fastC]);
+
+    expect(store.getSessionRecord(session.id)).toMatchObject({ modelProfileId: "p-c", model: "c1" });
+    const file = path.join(store.getRootDir(), "sessions", `${session.id}.json`);
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).toMatchObject({
+      modelProfileId: "p-c",
+      model: "c1",
+    });
+  });
+
+  it("队列前一笔失败不卡后续：各自把结果带回调用方，最终态由后一笔决定", async () => {
+    const store = await import("./chats-store");
+    store.initialize();
+    const session = store.createSession({ modelProfileId: "p-a", model: "a1" });
+
+    const failing = store.enqueueSessionModelMutation(session.id, async () => {
+      throw new Error("boom");
+    });
+    const next = store.enqueueSessionModelMutation(session.id, () =>
+      store.setSessionModelProfile(session.id, "p-d", "d1"));
+    await expect(failing).rejects.toThrow("boom");
+    await expect(next).resolves.toMatchObject({ modelProfileId: "p-d", model: "d1" });
+    expect(store.getSessionRecord(session.id)).toMatchObject({ modelProfileId: "p-d", model: "d1" });
+  });
+
+  it("不同会话的队列互不阻塞", async () => {
+    const store = await import("./chats-store");
+    store.initialize();
+    const first = store.createSession({ title: "会话一" });
+    const second = store.createSession({ title: "会话二" });
+
+    const slowFirst = store.enqueueSessionModelMutation(first.id, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return store.setSessionModelProfile(first.id, "p-b", "b1");
+    });
+    const fastSecond = store.enqueueSessionModelMutation(second.id, () =>
+      store.setSessionModelProfile(second.id, "p-c", "c1"));
+    // second 先完成（不等 first 的慢队列）
+    await expect(Promise.race([
+      fastSecond.then(() => "second"),
+      slowFirst.then(() => "first"),
+    ])).resolves.toBe("second");
+    await Promise.all([slowFirst, fastSecond]);
+    expect(store.getSessionRecord(first.id)).toMatchObject({ modelProfileId: "p-b", model: "b1" });
+    expect(store.getSessionRecord(second.id)).toMatchObject({ modelProfileId: "p-c", model: "c1" });
   });
 });
