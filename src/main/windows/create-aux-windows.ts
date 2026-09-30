@@ -55,7 +55,9 @@ export function createReactChatWindowShell(): BrowserWindow {
 
   const workArea = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
   const bounds = getWorkspaceInitialBounds(workArea);
-  const rememberWindowState = loadGeneralSettings().rememberWindowState;
+  const { rememberWindowState, uiTheme } = loadGeneralSettings();
+  // 非透明窗口：底色跟随主题，避免暗色主题启动瞬间闪白
+  const windowBackgroundColor = uiTheme === "charcoal-pink" ? "#141414" : "#fff8fb";
   const window = new BrowserWindow({
     ...persistedWindowState("cyrene.workspace", rememberWindowState, true),
     ...bounds,
@@ -63,11 +65,10 @@ export function createReactChatWindowShell(): BrowserWindow {
     minHeight: Math.min(540, workArea.height),
     title: "Cyrene · 聊天",
     icon: getCurrentAppIconPath(),
-    backgroundColor: "#00000000",
+    backgroundColor: windowBackgroundColor,
     autoHideMenuBar: true,
     show: false,
     frame: false,
-    transparent: true,
     resizable: true,
     webPreferences: {
       preload: path.join(app.getAppPath(), "dist", "preload", "preload", "index.js"),

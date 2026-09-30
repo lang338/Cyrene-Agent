@@ -88,7 +88,7 @@ body:
       label: 日志 / 截图
       description: |
         如有报错弹窗、异常截图请拖拽上传。
-        日志位于 `%APPDATA%/live2d-cyrene/logs/`，可粘贴相关片段。
+        日志位于 `%APPDATA%/Cyrene/logs/`，可粘贴相关片段。
     validations:
       required: false
 

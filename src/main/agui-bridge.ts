@@ -37,6 +37,7 @@ import { createRunAdjustmentPoller } from "./chats/pending-adjustment";
 import { broadcastChatsChanged } from "./chats/chats-ipc";
 import { loadModelSettings, resolveSessionModelSettings } from "./settings/model-settings";
 import type { ChatMessage, ConversationMode, PendingChatAttachment } from "../shared/chat-types";
+import { isModelFailureInfo } from "../shared/model-error";
 import { prepareTranscriptDispatch, type TranscriptRewindRequest } from "./orchestrator/conversation-transcript-coordinator";
 import { getConversationTranscriptStore } from "./orchestrator/conversation-transcript-store";
 import { createConversationSessionMigration } from "./orchestrator/conversation-session-migration";
@@ -797,7 +798,14 @@ export function registerAgUiIpc(
           // complete 回调据此跳过成功收尾副作用；渲染端只收到 RUN_ERROR 作为终态。
           if (terminal.status === "runtime_error") {
             const reason = terminal.reason ?? "E_RUN_FAILURE";
-            send({ type: "RUN_ERROR", message: reason, code: reason, threadId, runId });
+            const eventMetadata = (baseEvent as { metadata?: unknown }).metadata;
+            const modelFailure = eventMetadata && typeof eventMetadata === "object"
+              ? (eventMetadata as { cyreneModelFailure?: unknown }).cyreneModelFailure
+              : undefined;
+            send({
+              type: "RUN_ERROR", message: reason, code: reason, threadId, runId,
+              ...(isModelFailureInfo(modelFailure) ? { metadata: { cyreneModelFailure: modelFailure } } : {}),
+            });
             pendingRunFinishedEvent = null;
             return;
           }

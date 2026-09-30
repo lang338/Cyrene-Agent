@@ -157,9 +157,6 @@ export function handleGeneralSettingsChanged(
   if (before.uiThemeRadius !== after.uiThemeRadius) {
     deps.windowManager?.broadcast(IPC.UI_THEME_RADIUS_CHANGED, after.uiThemeRadius);
   }
-  if (before.windowCornerRadius !== after.windowCornerRadius) {
-    deps.windowManager?.broadcast(IPC.UI_WINDOW_CORNER_RADIUS_CHANGED, after.windowCornerRadius);
-  }
   if (before.uiIcon !== after.uiIcon) {
     applyUiIcon(after.uiIcon, deps);
   }

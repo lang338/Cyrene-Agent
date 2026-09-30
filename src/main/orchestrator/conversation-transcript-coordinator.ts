@@ -59,7 +59,7 @@ export function buildLegacyBackfillDrafts(
   messages: UiChatMessage[],
   excludedTurnId?: string,
 ): LegacyBackfillDraft[] {
-  const patchKeys: Array<keyof TranscriptPresentationPatch> = [
+  const patchKeys: Array<Exclude<keyof TranscriptPresentationPatch, "delta">> = [
     "content", "reasoning", "reasoningBlocks", "processMessages", "agentRounds",
     "taskDelegations", "channelSource", "sticker", "toolExecutions", "runActivity",
     "runSnapshot", "ttsCacheKey", "ttsCacheVersion", "musicCard", "contextUsage",

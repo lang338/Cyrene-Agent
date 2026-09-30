@@ -16,7 +16,6 @@ import type {
 } from "./types";
 import { parseToolCallArgs } from "./types";
 import { isAbortError } from "../../abort-utils";
-import { resolveUncertainEffect } from "./uncertain-effect-guard";
 import type { TaskCloseRequest, TaskCloseResult, TaskExecuteRequest, TaskExecuteResult } from "../task-runtime";
 import { buildGoldenDescendantsPrompt, getGoldenDescendantNames } from "../../tasks/task-character-pool";
 import { DEFAULT_TASK_MAX_PARALLEL_TOOL_CALLS, MAX_PARALLEL_TOOL_CALLS } from "../../../shared/task-session";
@@ -252,6 +251,7 @@ export async function executeUpdateTodo(
   call: ToolCall,
   state: AgentState,
   onEvent?: (event: HarnessEvent) => void,
+  onStateChanged?: (items: TodoItem[]) => Promise<void>,
 ): Promise<ToolObservation> {
   const args = parseToolCallArgs(call);
   const rawTodos = (args.todos as unknown) ?? [];
@@ -277,8 +277,15 @@ export async function executeUpdateTodo(
 
   const { items, corrections } = validateAndCorrectTodos(typedTodos, state.todoItems);
 
-  // 更新 state
+  // 更新 state；失败时恢复旧值，避免后续兼容快照把未提交状态冒充为成功。
+  const previousItems = state.todoItems;
   state.todoItems = items;
+  try {
+    await onStateChanged?.(items);
+  } catch (error) {
+    state.todoItems = previousItems;
+    throw error;
+  }
 
   // 发事件给 UI
   onEvent?.({ type: "todo_update", items });
@@ -590,6 +597,15 @@ export async function executeConfirmUncertainEffect(
   call: ToolCall,
   state: AgentState,
   requestUserClarification: ((card: unknown) => Promise<unknown>) | undefined,
+  options?: {
+    authorizationId?: string;
+    onAuthorized?: (input: {
+      effectId: string;
+      authorizationId: string;
+      fingerprint: string;
+      grantedAt: number;
+    }) => Promise<void> | undefined;
+  },
 ): Promise<ToolObservation> {
   const effectId = String(parseToolCallArgs(call).effectId ?? "").trim();
   const effect = state.uncertainEffects.find((candidate) => candidate.id === effectId);
@@ -627,24 +643,9 @@ export async function executeConfirmUncertainEffect(
     deferredFields: [],
   };
 
+  let raw: unknown;
   try {
-    const raw = await requestUserClarification(card) as {
-      answers?: Array<{ field?: string; selectedValues?: string[] }>;
-    };
-    const decision = raw.answers?.find((answer) => answer.field === "decision")?.selectedValues?.[0];
-    const matchedEffect = state.uncertainEffects.find((effect) => effect.id === effectId);
-    const authorized = decision === "allow_repeat" && Boolean(matchedEffect);
-    if (authorized && matchedEffect) {
-      resolveUncertainEffect(state, matchedEffect.toolCallId);
-    }
-    return {
-      outcome: "success",
-      tool: CONFIRM_UNCERTAIN_EFFECT_TOOL_ID,
-      message: authorized
-        ? "用户已明确授权下一次匹配操作；授权只消费一次。"
-        : "用户未授权重复操作；uncertain effect 保持 unresolved。",
-      output: JSON.stringify({ effectId, authorized }),
-    };
+    raw = await requestUserClarification(card);
   } catch (error) {
     if (isAbortError(error)) throw error;
     return {
@@ -654,6 +655,30 @@ export async function executeConfirmUncertainEffect(
       message: `用户确认超时或失败：${error instanceof Error ? error.message : String(error)}`,
     };
   }
+
+  const answers = (raw as { answers?: Array<{ field?: string; selectedValues?: string[] }> })?.answers;
+  const decision = answers?.find((answer) => answer.field === "decision")?.selectedValues?.[0];
+  const matchedEffect = state.uncertainEffects.find((effect) => effect.id === effectId);
+  const authorized = decision === "allow_repeat" && Boolean(matchedEffect);
+  if (authorized && matchedEffect) {
+    const grantedAt = Date.now();
+    const authorizationId = options?.authorizationId ?? `${matchedEffect.id}:repeat`;
+    await options?.onAuthorized?.({
+      effectId: matchedEffect.id,
+      authorizationId,
+      fingerprint: matchedEffect.fingerprint,
+      grantedAt,
+    });
+    matchedEffect.repeatAuthorization = { id: authorizationId, source: "user", grantedAt };
+  }
+  return {
+    outcome: "success",
+    tool: CONFIRM_UNCERTAIN_EFFECT_TOOL_ID,
+    message: authorized
+      ? "用户已明确授权下一次匹配操作；授权只消费一次。"
+      : "用户未授权重复操作；uncertain effect 保持 unresolved。",
+    output: JSON.stringify({ effectId, authorized }),
+  };
 }
 
 // ── 内置工具注册 ─────────────────────────────────────────

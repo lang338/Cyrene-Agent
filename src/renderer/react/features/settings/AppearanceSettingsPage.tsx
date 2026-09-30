@@ -4,8 +4,6 @@ import { ArrowLeft, AudioLines, BarChart3, Bot, Boxes, Brain, FileText, Headphon
 import { MCP } from "@lobehub/icons";
 import packageJson from "../../../../../package.json";
 import { normalizeUiTheme, type UiTheme } from "../../../../shared/ui-theme";
-import { normalizeUiIcon, UI_ICON_PRESETS, type UiIcon } from "../../../../shared/ui-icon";
-import { normalizeWindowCornerRadius } from "../../../../shared/window-corner-radius";
 import {
   DEFAULT_MESSAGE_TYPOGRAPHY,
   MESSAGE_TYPOGRAPHY_RANGES,
@@ -14,7 +12,6 @@ import {
 } from "../../../../shared/message-typography";
 import { useTranslation } from "../../i18n";
 import { useCyreneAvatar } from "../../hooks/useCyreneAvatar";
-import { applyWindowCornerRadius } from "../../../ui/window-corner-radius";
 import { applyMessageTypography } from "../../../ui/message-typography";
 import { applyUiTheme } from "../../../ui/theme";
 import { WindowControls } from "../../components/ui/WindowControls";
@@ -44,8 +41,6 @@ import "./AppearanceSettingsPage.css";
 
 interface AppearanceValues {
   uiTheme: UiTheme;
-  windowCornerRadius: number;
-  uiIcon: UiIcon;
   messageTypography: MessageTypography;
   petAlwaysOnTop: boolean;
   petVisible: boolean;
@@ -54,8 +49,6 @@ interface AppearanceValues {
 
 const defaults: AppearanceValues = {
   uiTheme: "pearl-white",
-  windowCornerRadius: 6,
-  uiIcon: "cyrene-sun",
   messageTypography: DEFAULT_MESSAGE_TYPOGRAPHY,
   petAlwaysOnTop: false,
   petVisible: true,
@@ -74,8 +67,6 @@ function readAppearance(value: unknown): AppearanceValues {
   const input = objectValue(value);
   return {
     uiTheme: normalizeUiTheme(input.uiTheme),
-    windowCornerRadius: normalizeWindowCornerRadius(input.windowCornerRadius),
-    uiIcon: normalizeUiIcon(input.uiIcon),
     messageTypography: normalizeMessageTypography(input.messageTypography),
     petAlwaysOnTop: typeof input.petAlwaysOnTop === "boolean" ? input.petAlwaysOnTop : defaults.petAlwaysOnTop,
     petVisible: typeof input.petVisible === "boolean" ? input.petVisible : defaults.petVisible,
@@ -144,7 +135,6 @@ export function AppearanceSettingsPage({ section, onSelectSection, onBackToWorks
         const next = readAppearance(config);
         setValues(next);
         typographyRef.current = next.messageTypography;
-        applyWindowCornerRadius(next.windowCornerRadius);
         setLoading(false);
       })
       .catch(() => {
@@ -194,12 +184,11 @@ export function AppearanceSettingsPage({ section, onSelectSection, onBackToWorks
     }
   }
 
-  function updateNumber<K extends "windowCornerRadius" | "petZoom">(
+  function updateNumber<K extends "petZoom">(
     key: K,
     value: number,
   ) {
     setValues((current) => ({ ...current, [key]: value }));
-    if (key === "windowCornerRadius") applyWindowCornerRadius(value);
     setStatus(t("settingsPage.applyOnRelease"));
   }
 
@@ -231,12 +220,6 @@ export function AppearanceSettingsPage({ section, onSelectSection, onBackToWorks
     setValues((current) => ({ ...current, messageTypography: DEFAULT_MESSAGE_TYPOGRAPHY }));
     applyMessageTypography(DEFAULT_MESSAGE_TYPOGRAPHY);
     void savePatch({ messageTypography: DEFAULT_MESSAGE_TYPOGRAPHY }, t("settingsPage.messageTypographyReset"));
-  }
-
-  async function selectIcon(uiIcon: UiIcon) {
-    if (uiIcon === values.uiIcon) return;
-    const saved = await savePatch({ uiIcon }, t("settingsPage.iconApplied"));
-    if (saved) setValues((current) => ({ ...current, uiIcon: normalizeUiIcon(uiIcon) }));
   }
 
   function updatePetBoolean(key: "petAlwaysOnTop" | "petVisible", checked: boolean) {
@@ -311,13 +294,6 @@ export function AppearanceSettingsPage({ section, onSelectSection, onBackToWorks
                     <SettingsSegmented value={values.uiTheme} onChange={(value) => void selectTheme(value as UiTheme)} options={[{ label: t("settingsPage.themePearlWhite"), value: "pearl-white" }, { label: t("settingsPage.themeCharcoalPink"), value: "charcoal-pink" }]} />
                   </div>
                   <div className="cy-settings-row">
-                    <div className="cy-settings-row__copy"><strong>{t("settingsPage.windowRadius")}</strong><span>{t("settingsPage.windowRadiusDescription")}</span></div>
-                    <div className="cy-settings-row__control cy-settings-slider">
-                      <SettingsSlider min={0} max={40} step={1} value={values.windowCornerRadius} ariaLabel={t("settingsPage.windowRadius")} onChange={(value) => updateNumber("windowCornerRadius", value)} onChangeComplete={(value) => void savePatch({ windowCornerRadius: value })} />
-                      <span>{values.windowCornerRadius}px</span>
-                    </div>
-                  </div>
-                  <div className="cy-settings-row">
                     <div className="cy-settings-row__copy"><strong>{t("settingsPage.uiFont")}</strong><span>{t("settingsPage.defaultFont")}</span></div>
                   </div>
                   <div className="cy-settings-row">
@@ -364,16 +340,6 @@ export function AppearanceSettingsPage({ section, onSelectSection, onBackToWorks
                   </div>
                   <div className="cy-settings-row">
                     <p className="cy-message-typography-preview">{t("settingsPage.messageTypographyPreviewText")}</p>
-                  </div>
-                  <div className="cy-settings-row">
-                    <div className="cy-settings-row__copy"><strong>{t("settingsPage.desktopIcon")}</strong><span>{t("settingsPage.desktopIconDescription")}</span></div>
-                    <div className="cy-settings-icon-options" role="radiogroup" aria-label={t("settingsPage.desktopIcon")}>
-                      {UI_ICON_PRESETS.map((preset) => (
-                        <button key={preset.id} type="button" className={`cy-settings-icon-option ${values.uiIcon === preset.id ? "is-active" : ""}`} aria-pressed={values.uiIcon === preset.id} aria-label={preset.label} onClick={() => void selectIcon(preset.id)}>
-                          <img src={`/icons/${preset.fileName}`} alt="" />
-                        </button>
-                      ))}
-                    </div>
                   </div>
                 </Card>
               </section>

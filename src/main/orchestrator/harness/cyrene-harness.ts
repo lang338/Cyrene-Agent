@@ -23,6 +23,7 @@
  * - harness-observability.ts — 上下文容量快照与缓存结构诊断（调用点仍在主循环）
  */
 
+import { AgentRuntimeError } from "../agent-runtime-error";
 import type {
   ChatMessage,
   ChatResponse,
@@ -46,6 +47,7 @@ import { StreamController } from "./stream-controller";
 import { TimeoutClock } from "./timeout-clock";
 import { buildCurrentTodoNotebookContext } from "./todo-working-notebook";
 import { appendInternalTranscriptMessage, createInternalTranscriptMessage } from "./internal-transcript";
+import { TranscriptWriteError } from "../transcript-sink";
 import { callLLM, summarizeHistory } from "./harness-llm";
 import { ChatTimeStreamPrefixFilter } from "../../chat-time-stream-filter";
 import { runToolRound, type ToolRoundOutcome } from "./tool-round";
@@ -83,6 +85,10 @@ export interface HarnessRun {
   toolDispatchContext: ToolDispatchContext;
   /** 工具调用开始时刻（toolCallId → epoch ms），供完成事件计算耗时；提交后即移除。 */
   toolCallStartedAt: Map<string, number>;
+  /** Tool calls whose durable dispatch boundary and lifecycle start were recorded. */
+  startedToolCallIds: Set<string>;
+  /** Last todo state already committed to the transcript. */
+  lastPersistedTodoItemsJson: string;
   /** 当前轮 assistant 的轨迹条目 ID（appendAssistant 返回；工具结果提交的锚点）。 */
   currentAssistantEntryId?: string;
 }
@@ -174,7 +180,10 @@ export async function runCyreneHarness(input: HarnessInput): Promise<HarnessResu
         `\n  error: ${errCode} ${errorMsg}`,
         err,
       );
-      return finishRun(run, `抱歉，模型调用失败：${errorMsg}`, true, "error");
+      const failed = finishRun(run, `抱歉，模型调用失败：${errorMsg}`, true, "error");
+      return err instanceof AgentRuntimeError && err.modelFailure
+        ? { ...failed, modelFailure: err.modelFailure }
+        : failed;
     }
 
     // ── Assistant response 必须写回 transcript（否则模型下一轮看不到自己上一轮的回复）──
@@ -302,17 +311,75 @@ function createRun(input: HarnessInput): HarnessRun {
 
   // 排他轮（ask_user / submit_plan）分发上下文：submit_plan 交卷需要会话身份
   // （conversationId / runId）驱动状态机与注意力提醒，因此 toolContext 必须在此就位
+  let run!: HarnessRun;
+  const recordToolStarted: NonNullable<ToolDispatchContext["onToolStarted"]> = async (event) => {
+    if (run.startedToolCallIds.has(event.toolCallId)) return;
+    const sink = input.transcriptSink;
+    if (sink?.appendToolStarted) {
+      const assistantEntryId = run.currentAssistantEntryId;
+      if (!assistantEntryId) {
+        throw new TranscriptWriteError("tool_started", new Error("TRANSCRIPT_ASSISTANT_ENTRY_MISSING"));
+      }
+      try {
+        await sink.appendToolStarted({ assistantEntryId, ...event });
+      } catch (error) {
+        throw new TranscriptWriteError("tool_started", error);
+      }
+    }
+    run.startedToolCallIds.add(event.toolCallId);
+    run.toolCallStartedAt.set(event.toolCallId, Date.now());
+    input.onToolLifecycle?.({
+      toolCallId: event.toolCallId,
+      toolName: event.toolName,
+      toolSideEffect: event.sideEffect,
+      status: "started",
+    });
+  };
+  const recordEffectResolution: NonNullable<ToolDispatchContext["onEffectResolution"]> = async (event) => {
+    const sink = input.transcriptSink;
+    if (!sink?.appendEffectResolution) return;
+    const assistantEntryId = run.currentAssistantEntryId;
+    if (!assistantEntryId) {
+      throw new TranscriptWriteError("effect_resolution", new Error("TRANSCRIPT_ASSISTANT_ENTRY_MISSING"));
+    }
+    try {
+      await sink.appendEffectResolution({ assistantEntryId, ...event });
+    } catch (error) {
+      throw new TranscriptWriteError("effect_resolution", error);
+    }
+  };
+  const recordTaskState: NonNullable<ToolDispatchContext["onTaskState"]> = async ({ toolCallId, items }) => {
+    const nextTodoItemsJson = JSON.stringify(items);
+    if (nextTodoItemsJson === run.lastPersistedTodoItemsJson) return;
+    const sink = input.transcriptSink;
+    if (sink?.appendTaskState) {
+      const assistantEntryId = run.currentAssistantEntryId;
+      if (!assistantEntryId) {
+        throw new TranscriptWriteError("task_state", new Error("TRANSCRIPT_ASSISTANT_ENTRY_MISSING"));
+      }
+      try {
+        await sink.appendTaskState({ assistantEntryId, toolCallId, items });
+      } catch (error) {
+        throw new TranscriptWriteError("task_state", error);
+      }
+    }
+    run.lastPersistedTodoItemsJson = nextTodoItemsJson;
+  };
   const askDispatchContext: ToolDispatchContext = {
     state,
     tools: input.tools,
     onEvent: input.onEvent,
     requestUserClarification: input.requestUserClarification,
     includeInteractiveTools: input.includeInteractiveTools,
+    signal: input.signal,
     toolOutputStore: input.toolOutputStore,
     toolContext: input.toolContext,
+    onToolStarted: recordToolStarted,
+    onEffectResolution: recordEffectResolution,
+    onTaskState: recordTaskState,
   };
 
-  return {
+  run = {
     input,
     config,
     state,
@@ -336,7 +403,10 @@ function createRun(input: HarnessInput): HarnessRun {
       deferOutputPersistence: true,
     },
     toolCallStartedAt: new Map(),
+    startedToolCallIds: new Set(),
+    lastPersistedTodoItemsJson: JSON.stringify(state.todoItems),
   };
+  return run;
 }
 
 /**
@@ -413,6 +483,11 @@ async function runCompaction(run: HarnessRun, roundSystemPrompt: string, budget:
       history,
       run.allToolSpecs,
       input.signal,
+      {
+        maxRetries: config.modelRequestMaxRetries,
+        idleTimeoutMs: config.modelRequestIdleTimeoutMs,
+        onStatus: (status) => input.onEvent?.({ type: "model_retry", status }),
+      },
     ),
   });
   if (compactedMessages !== run.messages) {
@@ -454,6 +529,7 @@ async function callRoundLLM(run: HarnessRun, promptLayers: PromptLayers, roundId
         const visibleDelta = candidateFilter.push(delta);
         if (visibleDelta) run.input.onEvent?.({ type: "candidate_text_delta", roundId, delta: visibleDelta });
       },
+      (status) => run.input.onEvent?.({ type: "model_retry", status }),
     );
   } finally {
     const tail = candidateFilter.finish();

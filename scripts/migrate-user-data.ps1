@@ -1,4 +1,4 @@
-# Cyrene 用户数据迁移脚本
+﻿# Cyrene 用户数据迁移脚本
 # 作用：把旧数据目录 %APPDATA%\live2d-cyrene 的数据搬到新目录 %APPDATA%\Cyrene
 # 场景：应用内自动迁移失败时的手动兜底。双击同目录的 migrate-user-data.cmd 即可运行。
 # 规则：旧数据优先覆盖新目录同名文件；lockfile 等运行时文件保留新目录版本；

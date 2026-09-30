@@ -1,4 +1,3 @@
-import "./window-corner-radius";
 import "./message-typography";
 import { normalizeUiTheme, type UiTheme } from "../../shared/ui-theme";
 

@@ -359,6 +359,7 @@ export function createAgentRuntime(rawDeps: AgentRuntimeDeps): AgentRuntime {
           reasoning: settings.reasoning,
           manualReasoning: settings.manualReasoning,
           contextWindowTokens: settings.contextWindowTokens,
+          modelRequestMaxRetries: settings.modelRequestMaxRetries ?? 5,
         },
         messages: [{ role: "system" as const, content: systemContent }, ...messages],
         // 定时任务也不因整轮耗时被中断；仍保留单次模型/工具自身的超时。

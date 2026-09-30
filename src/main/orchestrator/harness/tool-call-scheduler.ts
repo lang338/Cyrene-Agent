@@ -105,8 +105,8 @@ export async function scheduleToolCalls<T>(
         result = await options.execute(execution);
       } catch (error) {
         if (options.signal?.aborted) {
-          // 当前调用已进入 execute（runStore 已记 started、非幂等副作用可能已派发）：
-          // 不能闭合为 not_executed，保留 started 交取消闭合写 unknown + uncertainEffects；
+          // 当前调用已进入 execute（tool_started 已落盘、非幂等副作用可能已派发）：
+          // 不能闭合为 not_executed，取消收尾会按轨迹写 unknown；
           // 只有 index 之后真正未派发的调用才记 aborted_before_dispatch。
           await commitNotStarted(index + 1, "aborted_before_dispatch");
           return { cancelled: true, halted: false };
@@ -201,7 +201,7 @@ async function runParallelGroup<T>(
       active.delete(next.index);
       if (next.error !== undefined) {
         if (options.signal?.aborted) {
-          // abort 拒绝的槽位永不 ready：commitIndex 停在其前（恢复路径按 toolCalls 记录兜底）
+          // abort 拒绝的槽位永不 ready：commitIndex 停在其前（恢复路径按 tool_started 轨迹兜底）
           cancelled = true;
           continue;
         }

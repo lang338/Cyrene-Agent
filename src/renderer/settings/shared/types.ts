@@ -64,6 +64,8 @@ export interface ModelSettings {
   stickerSimilarityThreshold: number;
   /** 整个聊天请求的超时（秒）。30-1800，默认 300。 */
   chatRequestTimeoutSec: number;
+  /** 主模型请求的额外重试次数；0–10，默认 5。 */
+  modelRequestMaxRetries: number;
   /** CITA 结构化输出重试总预算（秒）。4-30，默认 8。 */
   citaRepairBudgetSec: number;
   vision?: {
@@ -92,6 +94,8 @@ export interface ModelPreset {
   baseUrl: string;
   /** 已由厂商官方确认的 Anthropic 兼容 Base URL；没有就不猜。 */
   anthropicBaseUrl?: string;
+  /** 已由厂商官方确认的 Responses API Base URL。 */
+  responsesBaseUrl?: string;
   /** 预设首次使用时选中的明确协议；用户之后可以手动修改。 */
   transport: ApiTransport;
   mainModels: string[];
@@ -134,7 +138,6 @@ export interface GeneralSettings {
   launchAtLogin: boolean;
   language: UiLanguage;
   uiTheme: UiTheme;
-  windowCornerRadius: number;
   uiThemeRadius: boolean;
   uiIcon: UiIcon;
   defaultChatMode: DefaultChatMode;

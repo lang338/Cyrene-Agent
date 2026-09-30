@@ -21,10 +21,14 @@ import { TranscriptWriteError } from "../transcript-sink";
 import type { HarnessToolFinishedEvent, SideEffectKind, ToolCallOutcome, ToolObservation } from "./types";
 import type { ToolRiskLevel } from "../../permission-policy";
 import { parseToolCallArgs, toolCallFingerprint } from "./types";
-import { dispatchToolCall, persistToolDispatchResult, type ToolDispatchResult } from "./tool-dispatcher";
+import {
+  dispatchToolCall,
+  persistToolDispatchResult,
+  resolveToolDispatchSideEffect,
+  type ToolDispatchResult,
+} from "./tool-dispatcher";
 import { classifyToolExecutionMode, scheduleToolCalls, type ToolCallScheduleResult, type ToolExecutionMode, type ToolScheduleCommitDecision } from "./tool-call-scheduler";
 import { TASK_TOOL_ID } from "./builtin-tools";
-import { resolveSideEffect } from "./side-effect-resolver";
 import { extractFileChangesFromOutput } from "../tools/registry/tool-evidence";
 import { classifyToolResultError } from "./error-classifier";
 import { decideRetry, getRetryParams, sleepWithJitter } from "./retry-policy";
@@ -245,7 +249,7 @@ async function runAskUserRound(
     input.onToolLifecycle?.({
       toolCallId: call.id,
       toolName: call.name,
-      toolSideEffect: resolveSideEffect(input.tools.find((tool) => tool.id === call.name), parseToolCallArgs(call)),
+      toolSideEffect: resolveToolDispatchSideEffect(call.name, parseToolCallArgs(call), input.tools),
       status: "not_executed",
     });
     notifyToolFinished(run, call, "not_executed");
@@ -253,15 +257,7 @@ async function runAskUserRound(
 
   // 执行 ask_user（等待期间不计入执行超时）
   // ask_user 同样走工具卡事件链：运行流里出现「询问用户」卡片，等待与问答结果可见
-  input.onEvent?.({
-    type: "tool_start",
-    toolCallId: primaryAsk.id,
-    toolName: primaryAsk.name,
-    args: parseToolCallArgs(primaryAsk),
-  });
   run.clock.startUserWait();
-  input.onToolLifecycle?.({ toolCallId: primaryAsk.id, toolName: primaryAsk.name, toolSideEffect: "read_only", status: "started" });
-  const askStartedAt = Date.now();
   let askResult: ToolDispatchResult;
   try {
     askResult = await raceWithSignal(
@@ -273,6 +269,7 @@ async function runAskUserRound(
     throw error;
   }
   run.clock.stopUserWait();
+  const askStartedAt = run.toolCallStartedAt.get(primaryAsk.id);
 
   // 问答结果发布到工具卡：message 已含「问题 → 回答」逐行预览
   input.onEvent?.({
@@ -290,6 +287,7 @@ async function runAskUserRound(
     status: askResult.outcome === "unknown" ? "unknown" : askResult.outcome === "not_executed" ? "not_executed" : "committed",
   });
   notifyToolFinished(run, primaryAsk, askResult.outcome, askStartedAt);
+  run.toolCallStartedAt.delete(primaryAsk.id);
 }
 
 /**
@@ -311,9 +309,7 @@ async function executeToolCallWithRetry(run: HarnessRun, call: ToolCall): Promis
   }
 
   const { input } = run;
-  const toolSideEffect = resolveSideEffect(input.tools.find((tool) => tool.id === call.name), parseToolCallArgs(call));
-  input.onToolLifecycle?.({ toolCallId: call.id, toolName: call.name, toolSideEffect, status: "started" });
-  run.toolCallStartedAt.set(call.id, Date.now());
+  const toolSideEffect = resolveToolDispatchSideEffect(call.name, parseToolCallArgs(call), input.tools);
 
   let result = await raceWithSignal(dispatchToolCall(call, run.toolDispatchContext), input.signal);
   if (result.outcome === "failure") {
@@ -344,7 +340,7 @@ async function commitToolResult(
 ): Promise<ToolScheduleCommitDecision> {
   const { input } = run;
   const toolSideEffect = result.toolSideEffect
-    ?? resolveSideEffect(input.tools.find((tool) => tool.id === call.name), parseToolCallArgs(call));
+    ?? resolveToolDispatchSideEffect(call.name, parseToolCallArgs(call), input.tools);
 
   // 熔断计数（结果必经点）：failure 递增、success 清零、not_executed/unknown 不动
   const streaks = (run.state.toolFailureStreaks ??= {});

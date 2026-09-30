@@ -1,9 +1,5 @@
 import * as fs from "fs";
 import * as path from "path";
-import {
-  DEFAULT_WINDOW_CORNER_RADIUS,
-  normalizeWindowCornerRadius,
-} from "../../shared/window-corner-radius";
 import { DEFAULT_MESSAGE_TYPOGRAPHY, normalizeMessageTypography } from "../../shared/message-typography";
 import {
   DEFAULT_CUSTOM_STYLE,
@@ -56,7 +52,6 @@ const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   launchAtLogin: false,
   language: "zh-CN",
   uiTheme: "pearl-white",
-  windowCornerRadius: DEFAULT_WINDOW_CORNER_RADIUS,
   uiThemeRadius: false,
   uiIcon: "cyrene-sun",
   messageTypography: DEFAULT_MESSAGE_TYPOGRAPHY,
@@ -243,7 +238,6 @@ export function normalizeGeneralSettings(
     // 界面语言只认已翻译完成的语种，非法值（含旧配置的 ja/ko）一律回落中文
     language: normalizeUiLanguage(input?.language),
     uiTheme: normalizeUiTheme(input?.uiTheme),
-    windowCornerRadius: normalizeWindowCornerRadius(input?.windowCornerRadius),
     uiThemeRadius: input?.uiThemeRadius ?? true,
     uiIcon: normalizeUiIcon(input?.uiIcon),
     messageTypography: normalizeMessageTypography(input?.messageTypography),

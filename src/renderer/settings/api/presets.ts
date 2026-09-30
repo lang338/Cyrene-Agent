@@ -2,6 +2,7 @@
 // 从 settings.ts 抽离的纯数据常量。
 // 注意：引用了 CUSTOM_ENDPOINT_PROVIDERS（运行时值），需用 import（非 type-only）。
 
+import type { ApiTransport } from "../../../shared/api-endpoint";
 import type { ModelPreset } from "../shared/types";
 import { CUSTOM_ENDPOINT_PROVIDERS } from "../custom-endpoint-state";
 
@@ -14,6 +15,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     shortName: "MiniMax",
     baseUrl: "https://api.minimaxi.com/v1",
     anthropicBaseUrl: "https://api.minimaxi.com/anthropic",
+    responsesBaseUrl: "https://api.minimax.cn/v1",
     transport: "anthropic",
     mainModels: ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"],
     iconUrl: "../icons/providers/minimax.svg",
@@ -170,3 +172,9 @@ export const MODEL_PRESETS: ModelPreset[] = [
     hiddenInPresetList: true,
   },
 ];
+
+export function presetTransportUrl(preset: ModelPreset, transport: ApiTransport): string {
+  if (transport === "anthropic" && preset.anthropicBaseUrl) return preset.anthropicBaseUrl;
+  if (transport === "responses" && preset.responsesBaseUrl) return preset.responsesBaseUrl;
+  return preset.baseUrl;
+}

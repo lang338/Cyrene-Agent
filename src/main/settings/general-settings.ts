@@ -62,7 +62,6 @@ export interface GeneralSettings {
   /** 界面语言：已支持中文、英文、日文，其余语言待翻译补齐后开放。 */
   language: UiLanguage;
   uiTheme: UiTheme;
-  windowCornerRadius: number;
   /** @deprecated 旧版透明窗口开关，仅保留用于配置兼容。 */
   uiThemeRadius: boolean;
   uiIcon: UiIcon;

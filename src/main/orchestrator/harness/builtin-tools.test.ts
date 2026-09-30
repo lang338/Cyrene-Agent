@@ -334,7 +334,10 @@ describe("Harness user-wait builtins", () => {
     }, state, request);
 
     expect(result.outcome).toBe("success");
-    expect(state.uncertainEffects).toEqual([]);
+    expect(state.uncertainEffects[0]?.repeatAuthorization).toMatchObject({
+      id: "effect-1:repeat",
+      source: "user",
+    });
   });
 
   it("keeps the effect unresolved when the user does not authorize", async () => {

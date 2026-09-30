@@ -1,5 +1,6 @@
 import type {
   ChatMessage,
+  ChatPresentationCheckpointPatch,
   ChatSession,
   ChatSessionMeta,
   ConversationMode,
@@ -54,7 +55,7 @@ export interface ChatStoreApi {
     sessionId: string,
     messageId: string,
     mutationKey: string,
-    patch: Partial<ChatMessage>,
+    patch: ChatPresentationCheckpointPatch,
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
   rename: (id: string, title: string) => Promise<ChatSession | null>;
   delete: (id: string) => Promise<boolean>;
@@ -165,7 +166,6 @@ export interface AguiApi {
     /** 本轮临时文本上下文（如工作台当前打开的文件）；不落历史，拼进每轮尾部上下文。 */
     attachments?: Array<{ name: string; text: string }>;
     imageAttachments?: Array<{ name: string; filePath: string; mime?: string }>;
-    recoveryContext?: string;
     takeoverFromRunId?: string;
     /** 桌面 edit / regenerate 的轨迹回退锚点（主进程写 turn_rewind；渲染端只传元数据）。 */
     transcriptRewind?: {

@@ -40,6 +40,21 @@ describe("React chat sticker messages", () => {
 });
 
 describe("formal answer visibility", () => {
+  it("attaches transient retry status to the visible waiting state", () => {
+    const message: ChatMessageItem = {
+      id: "assistant-retrying",
+      role: "assistant",
+      content: "",
+      waitingForFirstEvent: true,
+      modelRetry: { phase: "waiting", retryNumber: 2, maxRetries: 5, delayMs: 3000 },
+    };
+
+    expect(createMessageItems([message], [])).toMatchObject([{
+      role: "waiting",
+      extraInfo: { modelRetry: { phase: "waiting", retryNumber: 2, maxRetries: 5, delayMs: 3000 } },
+    }]);
+  });
+
   it("keeps an interrupted run in the process area without creating an empty assistant bubble", () => {
     const message: ChatMessageItem = {
       id: "assistant-interrupted",

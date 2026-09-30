@@ -223,10 +223,26 @@ export async function streamChatWithSdk(
         if (terminal) finalResponse = terminal;
         for (const delta of normalizeResponsesEvent(event)) dispatch(delta);
       }
+      if (finalResponse === undefined || !Array.isArray(finalResponse.output)) {
+        const reason = finalResponse === undefined
+          ? "Responses 流结束但未收到终态事件"
+          : "Responses 终态事件缺少 output 项";
+        const protocolFailure = new AgentRuntimeError(
+          "E_MODEL_RESPONSE_PARSE_FAILED",
+          reason,
+          {
+            modelFailure: {
+              ...classifyModelFailure({ provider: input.adapter.id, model: input.request.model }),
+              category: "UNKNOWN",
+            },
+          },
+        );
+        throw protocolFailure;
+      }
       flushTaggedThink();
       const finalized = accumulator.finalize(finalResponse);
       // rawAssistant 补挂：完整 output items 是 Responses 多轮保真的核心（accumulator 不产出该字段）。
-      // 真正传输中断（无终态事件）时 finalResponse 为空 → rawAssistant 缺失 → 下轮退化构造，安全降级。
+      // 无终态事件已在上方按协议失败结算，成功响应始终有完整 rawAssistant。
       const outputItems = finalResponse !== undefined && Array.isArray(finalResponse.output)
         ? finalResponse.output
         : undefined;

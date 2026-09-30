@@ -493,35 +493,6 @@
   background: var(--rb-accent);
 }
 
-.cy-settings-icon-options {
-  display: flex;
-  gap: 10px;
-}
-
-.cy-settings-icon-option {
-  display: grid;
-  width: 42px;
-  height: 42px;
-  place-items: center;
-  padding: 3px;
-  border: 1px solid var(--rb-border-default);
-  border-radius: 10px;
-  background: var(--rb-surface-elevated);
-  cursor: pointer;
-}
-
-.cy-settings-icon-option img {
-  width: 32px;
-  height: 32px;
-  object-fit: contain;
-}
-
-.cy-settings-icon-option:hover,
-.cy-settings-icon-option.is-active {
-  border-color: var(--rb-accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--rb-accent) 18%, transparent);
-}
-
 .cy-settings-status {
   min-height: 22px;
   margin-top: 12px;

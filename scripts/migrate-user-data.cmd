@@ -1,4 +1,6 @@
 @echo off
-rem Cyrene 用户数据迁移脚本入口：双击运行，免除 PowerShell 执行策略限制
+rem Cyrene user data migration entry point. Double-click to run.
+rem Keep this file ASCII-only: cmd.exe reads BOM-less files with the system
+rem ANSI codepage, and non-ASCII bytes here can break parsing on some machines.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0migrate-user-data.ps1"
 pause

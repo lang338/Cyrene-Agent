@@ -191,8 +191,6 @@ export const IPC = {
   UI_THEME_CHANGED: "ui-theme:changed",
   UI_THEME_RADIUS_GET: "ui-theme-radius:get",
   UI_THEME_RADIUS_CHANGED: "ui-theme-radius:changed",
-  UI_WINDOW_CORNER_RADIUS_GET: "ui-window-corner-radius:get",
-  UI_WINDOW_CORNER_RADIUS_CHANGED: "ui-window-corner-radius:changed",
   SETTINGS_SET_PET_ALWAYS_ON_TOP: "settings:set-pet-always-on-top",
   SETTINGS_SET_PET_VISIBLE: "settings:set-pet-visible",
   SETTINGS_SET_PET_ZOOM: "settings:set-pet-zoom",

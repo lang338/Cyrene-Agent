@@ -114,6 +114,7 @@ interface SettingsWindowApi {
     vision?: { baseUrl: string; apiKey: string; model: string };
     thinkingOverride?: -1 | 0 | 1;
     disableMaxToken?: boolean;
+    modelRequestMaxRetries?: number;
   }>;
   saveConfig: (config: Record<string, unknown>) => Promise<unknown>;
   testConnection: (config: {

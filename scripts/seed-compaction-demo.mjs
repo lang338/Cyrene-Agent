@@ -15,7 +15,7 @@ import os from "node:os";
 
 const transcriptsRoot = path.join(
   process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"),
-  "live2d-cyrene",
+  "Cyrene",
   "transcripts",
 );
 

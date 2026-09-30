@@ -210,10 +210,25 @@ describe("conversation transcript projection", () => {
     ];
     const runReader: TranscriptRunReader = {
       get: () => ({
+        schemaVersion: 1,
+        conversationId: "c1",
+        runId: "run-1",
+        status: "interrupted",
+        createdAt: 1,
+        updatedAt: 1,
+        messages: [],
+        state: { todoItems: [], uncertainEffects: [] },
+        toolOutputs: [],
         toolCalls: [{
           toolCallId: "mail-1", toolName: "send_email", sideEffect: "non_idempotent_side_effect",
           status: "started", updatedAt: 1,
         }],
+        rounds: 1,
+        cache: { cacheEpoch: 1, epochReason: "run_start" },
+        request: {
+          provider: "openai", model: "test", contextWindowTokens: 128_000,
+          promptFingerprint: "prompt", toolSchemaFingerprint: "tools",
+        },
       }),
     };
     expect(buildFullModelContext(entries, runReader).uncertainEffects)

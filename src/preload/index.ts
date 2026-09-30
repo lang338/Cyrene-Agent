@@ -325,18 +325,6 @@ const cyreneThemeApi = {
 
 contextBridge.exposeInMainWorld("cyreneTheme", cyreneThemeApi);
 
-const cyreneWindowAppearanceApi = {
-  getCornerRadius: () =>
-    ipcRenderer.invoke(IPC.UI_WINDOW_CORNER_RADIUS_GET) as Promise<number>,
-  onCornerRadiusChanged: (callback: (radius: number) => void) => {
-    const listener = (_e: unknown, radius: number) => callback(radius);
-    ipcRenderer.on(IPC.UI_WINDOW_CORNER_RADIUS_CHANGED, listener);
-    return () => ipcRenderer.off(IPC.UI_WINDOW_CORNER_RADIUS_CHANGED, listener);
-  },
-};
-
-contextBridge.exposeInMainWorld("cyreneWindowAppearance", cyreneWindowAppearanceApi);
-
 const settingsApi = {
   getConfig: () => ipcRenderer.invoke(IPC.SETTINGS_GET_CONFIG),
   saveConfig: (config: unknown) => ipcRenderer.invoke(IPC.SETTINGS_SAVE_CONFIG, config),

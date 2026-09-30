@@ -119,8 +119,6 @@ export function registerSettingsIpc(deps: SettingsIpcDependencies): void {
 
   ipc.handle(IPC.UI_THEME_RADIUS_GET, () => getGeneralSettings().uiThemeRadius);
 
-  ipc.handle(IPC.UI_WINDOW_CORNER_RADIUS_GET, () => getGeneralSettings().windowCornerRadius);
-
   ipc.handle(IPC.SETTINGS_SAVE_GENERAL, (_event, settings: Partial<GeneralSettings>) => {
     const saved = saveGeneralSettings(settings);
     if ("proactiveChatMode" in settings || "proactiveDeliveryTarget" in settings) {

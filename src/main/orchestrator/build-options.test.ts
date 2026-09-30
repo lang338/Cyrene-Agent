@@ -88,6 +88,28 @@ describe("build-options", () => {
     expect(result.options.soulSystemBaseContent).toContain(`[MODE:${mode}]`);
   });
 
+  it("把全局模型重试设置冻结进聊天运行配置，旧设置默认为 5", async () => {
+    const deps = createBuildDeps();
+    const defaultResult = await buildAgentRunOptions({
+      sessionId: "retry-default",
+      mode: "chat",
+      executionMode: "chat",
+      messages: [{ role: "user", content: "你好" }],
+    }, deps);
+    expect(defaultResult.options.settings.modelRequestMaxRetries).toBe(5);
+
+    deps.loadModelSettings = () => ({
+      provider: "test", baseUrl: "https://example.test", model: "m", apiKey: "k", modelRequestMaxRetries: 3,
+    });
+    const configuredResult = await buildAgentRunOptions({
+      sessionId: "retry-configured",
+      mode: "work",
+      executionMode: "work",
+      messages: [{ role: "user", content: "开始" }],
+    }, deps);
+    expect(configuredResult.options.settings.modelRequestMaxRetries).toBe(3);
+  });
+
   it("把插件贡献放入每轮 runtime context，并传递可信运行元数据", async () => {
     const deps = createBuildDeps();
     deps.buildPluginPromptContext = vi.fn(async (input) => (

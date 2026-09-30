@@ -184,6 +184,27 @@ export interface ChatMessage {
   contextUsage?: ContextUsageSnapshot;
 }
 
+/**
+ * Incremental presentation updates used only by transcript checkpoint writes.
+ * These operations are folded into the normal ChatMessage fields when a
+ * transcript projection is materialized; they are never exposed to the UI.
+ */
+export interface ChatPresentationDelta {
+  reasoningBlockUpserts?: ReasoningBlock[];
+  reasoningBlockAppends?: Array<{ id: string; content: string }>;
+  processMessageUpserts?: ProcessMessageRecord[];
+  processMessageAppends?: Array<{ id: string; content: string }>;
+  agentRoundUpserts?: AgentRoundRecord[];
+  taskDelegationUpserts?: TaskDelegationDisplayRecord[];
+  toolExecutionUpserts?: ToolExecutionRecord[];
+}
+
+export type ChatPresentationCheckpointPatch = Partial<Pick<ChatMessage,
+  "content" | "reasoning" | "reasoningBlocks" | "processMessages" | "agentRounds" |
+  "taskDelegations" | "channelSource" | "sticker" | "toolExecutions" | "runActivity" |
+  "runSnapshot" | "ttsCacheKey" | "ttsCacheVersion" | "musicCard" | "contextUsage"
+>> & { delta?: ChatPresentationDelta };
+
 export type MessageAttachment = ImageMessageAttachment | DocumentMessageAttachment;
 
 export interface ImageMessageAttachment {

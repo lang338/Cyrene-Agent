@@ -234,6 +234,8 @@ docs/
 docs/superpowers/
 # 聊天渲染性能基线的本地运行报告（跑指标生成的 JSON，随代码变化易失真，不进 git）
 docs/internal-issue/perf/
+# Git 工作区监视负载的复现素材（独立最小仓库，npm install 生成上万测试文件做 A/B 压测，不进本仓库）
+docs/repro-git-workspace-watcher/
 !docs/local-models.md
 !docs/opener-pack.md
 !docs/electron-33-to-43-upgrade-assessment.md
