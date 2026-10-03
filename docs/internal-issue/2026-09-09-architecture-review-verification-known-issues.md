@@ -45,7 +45,7 @@ Duration    138.29s
 
 ### 证据
 
-[`vitest.config.ts`](../../vitest.config.ts) 的 `include` 定义了以下权威范围：
+[`vitest.config.mts`](../../vitest.config.mts) 的 `include` 定义了以下权威范围：
 
 ```text
 src/plugins/**/*.test.ts
@@ -92,7 +92,7 @@ packages/*/src/**/*.test.ts
   run: npm test
 ```
 
-不要继续手工维护第二份测试目录清单。完整范围已经由 `vitest.config.ts` 管理，CI 直接复用即可。
+不要继续手工维护第二份测试目录清单。完整范围已经由 `vitest.config.mts` 管理，CI 直接复用即可。
 
 ### 验收标准
 
@@ -347,4 +347,3 @@ MCP prune
 - CI 仍漏掉 95 个测试文件；
 - Memory 恢复和直接覆盖写存在真实数据安全缺口；
 - 插件系统是明确声明的可信同进程模型，不应误解为已建立恶意代码隔离。
-

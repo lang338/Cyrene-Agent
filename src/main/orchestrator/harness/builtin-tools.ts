@@ -498,6 +498,7 @@ export async function executeAskUser(
   // 我们把 question.id 映射到 field, 收答案时再翻译回 questionId, 让模型无歧义看到.
   const card = {
     mode: "semantic_clarification" as const,
+    additionalContextEnabled: true,
     intro: "任务需要补全信息",
     questions: questions.map((q) => ({
       field: q.id,                    // ← 用 field 承载 question.id
@@ -515,7 +516,14 @@ export async function executeAskUser(
   try {
     const rawAnswer = await requestUserClarification(card);
     // AskUserAnswer.answers[] 的 field 就是上面我们塞进去的 question.id
-    const rawAnswers = (rawAnswer as { answers?: Array<{ field?: string; selectedValues?: string[]; customText?: string }> })?.answers ?? [];
+    const answerObject = rawAnswer as {
+      answers?: Array<{ field?: string; selectedValues?: string[]; customText?: string }>;
+      additionalContext?: string;
+    };
+    const rawAnswers = answerObject?.answers ?? [];
+    const additionalContext = typeof answerObject?.additionalContext === "string"
+      ? answerObject.additionalContext.trim()
+      : "";
 
     // 超时签名：requestUserClarification 超时统一 resolve 空 answers；
     // 用户真实回答经校验后至少有一条。给模型明确的系统提示而非"校验失败"，
@@ -556,13 +564,15 @@ export async function executeAskUser(
     const observation: ToolObservation = {
       outcome: "success",
       tool: ASK_USER_TOOL_ID,
-      message: `用户已回答 ${answers.length} 个问题`,
-      output: JSON.stringify({ answers }),
+      message: `用户已回答 ${answers.length} 个问题${additionalContext ? "，并提供了额外补充" : ""}`,
+      output: JSON.stringify({ answers, ...(additionalContext ? { additionalContext } : {}) }),
     };
     const preview = formatAskUserPreview({ questions }, observation);
     return {
       ...observation,
-      message: Array.isArray(preview) ? `${observation.message}\n${preview.join("\n")}` : observation.message,
+      message: Array.isArray(preview)
+        ? `${observation.message}\n${preview.join("\n")}${additionalContext ? `\n给昔涟的额外补充：${additionalContext}` : ""}`
+        : observation.message,
     };
   } catch (err) {
     if (isAbortError(err)) throw err;

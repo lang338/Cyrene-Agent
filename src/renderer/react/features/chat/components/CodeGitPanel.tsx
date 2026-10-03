@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Input, Modal } from "antd";
 import { useTranslation } from "../../../i18n";
 import type { CodeGitChangedPayload, CodeGitStatus } from "../../../../../shared/code-git-types";
@@ -24,6 +24,7 @@ export interface CodeGitPanelProps {
   sessionId: string;
   projectName?: string;
   todoState: TodoState | null;
+  containerRef?: RefObject<HTMLElement | null>;
   planPhase?: PlanReviewPhase;
   onOpenPlan?: () => void;
 }
@@ -36,7 +37,7 @@ function ToggleIcon() {
   return <svg width="16" height="16" viewBox="0 0 48 48" fill="none" aria-hidden="true"><path d="M27 9V21H39M21 39V27H9M27 21L42 6M21 27L6 42" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }
 
-export function CodeGitPanel({ sessionId, projectName, todoState, planPhase, onOpenPlan }: CodeGitPanelProps) {
+export function CodeGitPanel({ sessionId, projectName, todoState, containerRef, planPhase, onOpenPlan }: CodeGitPanelProps) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<CodeGitStatus | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -47,7 +48,7 @@ export function CodeGitPanel({ sessionId, projectName, todoState, planPhase, onO
   const [operating, setOperating] = useState(false);
   const refreshControllerRef = useRef<CodeGitRefreshController | null>(null);
   const api = codeGitApi();
-  const floating = useFloatingCard({ width: 260 });
+  const floating = useFloatingCard({ width: 260, containerRef });
 
   useEffect(() => {
     if (!api) return undefined;
@@ -97,7 +98,7 @@ export function CodeGitPanel({ sessionId, projectName, todoState, planPhase, onO
 
   return (
     <aside
-      className={`cy-code-git ${floating.collapsed ? "cy-code-git--collapsed" : ""}`}
+      className={`cy-code-git${containerRef ? " cy-code-git--workspace" : ""}${floating.collapsed ? " cy-code-git--collapsed" : ""}`}
       style={{ left: floating.position.x, top: floating.position.y }}
       aria-label={t("codeGit.panelAria")}
     >

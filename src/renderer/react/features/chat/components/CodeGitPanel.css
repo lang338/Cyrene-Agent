@@ -1,4 +1,5 @@
 .cy-code-git { position:fixed; z-index:1000; width:260px; height:min(390px,calc(100vh - 96px)); min-height:min(290px,calc(100vh - 96px)); display:flex; flex-direction:column; overflow:hidden; border:1px solid var(--rb-task-card-border); border-radius:var(--rb-radius-lg); background:var(--rb-task-card-surface); box-shadow:var(--rb-task-card-shadow); color:var(--rb-task-card-text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; }
+.cy-code-git--workspace { position:absolute; }
 .cy-code-git--collapsed { height:auto; min-height:0; }
 .cy-code-git--collapsed .cy-code-git__body { max-height:0; padding-top:0; padding-bottom:0; opacity:0; pointer-events:none; overflow:hidden; }
 .cy-code-git__dragbar { width:100%; height:28px; flex:0 0 auto; position:relative; display:flex; align-items:center; justify-content:center; padding:0 10px; border:0; background:transparent; cursor:grab; }

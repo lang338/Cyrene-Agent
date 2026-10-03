@@ -185,6 +185,24 @@
   background: #eee;
 }
 
+.cy-message__web-element {
+  display: flex;
+  max-width: min(300px, 55vw);
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px;
+  border: 1px solid color-mix(in srgb, var(--rb-accent, #e75d87) 45%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--rb-accent, #e75d87) 12%, var(--rb-bg-2, #252328));
+  color: var(--rb-accent, #e75d87);
+}
+
+.cy-message__web-element-copy { display: grid; min-width: 0; }
+.cy-message__web-element-copy strong,
+.cy-message__web-element-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cy-message__web-element-copy strong { color: var(--rb-text-primary, #f1edf0); font-size: 12px; font-weight: 600; }
+.cy-message__web-element-copy small { color: var(--rb-text-secondary, #aaa); font-size: 10px; }
+
 .cy-message__image-attachment img {
   display: block;
   width: 100%;

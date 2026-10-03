@@ -17,7 +17,8 @@ export const MODEL_PRESETS: ModelPreset[] = [
     anthropicBaseUrl: "https://api.minimaxi.com/anthropic",
     responsesBaseUrl: "https://api.minimax.cn/v1",
     transport: "anthropic",
-    mainModels: ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"],
+    // M3.1-Flash-Preview（2026-09-27）为 M3 的日常 Coding 提速款，同款订阅 Key 可用。
+    mainModels: ["MiniMax-M3.1-Flash-Preview", "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"],
     iconUrl: "../icons/providers/minimax.svg",
     websiteUrl: "https://platform.minimaxi.com/",
     // 主模型默认走 Anthropic SDK；视觉继续走 OpenAI 兼容入口。
@@ -62,7 +63,9 @@ export const MODEL_PRESETS: ModelPreset[] = [
     baseUrl: "https://open.bigmodel.cn/api/paas/v4",
     anthropicBaseUrl: "https://open.bigmodel.cn/api/anthropic",
     transport: "openai",
-    mainModels: ["glm-5.3", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-4.7"],
+    // glm-5.3-flash / glm-5.3-flashx（2026-08-26 / 09-18）：GLM-5 系列首个原生多模态
+    // （图片/视频/文件输入），思考行为与 glm-5.3 一致。
+    mainModels: ["glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-4.7"],
     iconUrl: "../icons/providers/glm.svg",
     websiteUrl: "https://open.bigmodel.cn/",
   },
@@ -95,9 +98,9 @@ export const MODEL_PRESETS: ModelPreset[] = [
     transport: "responses",
     // 官方入口只推荐已纳入结构化输出 Profile 的型号；代理与自定义型号走“自定义端点”。
     // gpt-6-astra 为 2026-09-03 新旗舰；gpt-6-sol / gpt-6-luna（2026-09-22 发布）为
-    // Astra 能力下放的复杂任务与高吞吐款；gpt-5.6 为别名，路由到旗舰 Sol；
-    // terra/luna 为平衡与低成本档。
-    mainModels: ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6", "gpt-5.6-terra", "gpt-5.6-luna"],
+    // Astra 能力下放的复杂任务与高吞吐款；gpt-6.1-sol（2026-09-29）为 Sol 升级款；
+    // gpt-5.6 为别名，路由到旗舰 Sol；terra/luna 为平衡与低成本档。
+    mainModels: ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6", "gpt-5.6-terra", "gpt-5.6-luna"],
     iconUrl: "../icons/providers/openai.svg",
     websiteUrl: "https://platform.openai.com/",
   },

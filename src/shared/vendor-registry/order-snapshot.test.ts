@@ -11,6 +11,27 @@ const EXPECTED = [
   {
     "providerId": "chatgpt",
     "pattern": {
+      "source": "^gpt-6\\.1",
+      "flags": "i"
+    },
+    "capability": {
+      "control": "effort",
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "defaultEffort": "medium",
+      "requestStyle": "openai-effort",
+      "supportsDisable": true,
+      "supportsProMode": true
+    }
+  },
+  {
+    "providerId": "chatgpt",
+    "pattern": {
       "source": "^gpt-6-(?:sol|luna)",
       "flags": "i"
     },
@@ -540,6 +561,27 @@ const EXPECTED = [
       "control": "none",
       "requestStyle": "none",
       "supportsDisable": false
+    }
+  },
+  {
+    "providerId": "minimax",
+    "pattern": {
+      "source": "^MiniMax-M3\\.1",
+      "flags": "i"
+    },
+    "capability": {
+      "control": "toggle-effort",
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "defaultEffort": "high",
+      "requestStyle": "anthropic-adaptive",
+      "supportsDisable": false,
+      "autoEffort": "high"
     }
   },
   {

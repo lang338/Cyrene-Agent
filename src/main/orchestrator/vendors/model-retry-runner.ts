@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { ModelRetryStatus } from "../../../shared/model-retry";
 import { isModelFailureInfo, type ModelFailureInfo } from "../../../shared/model-error";
 import { AgentRuntimeError } from "../agent-runtime-error";
-import { nextModelRetryDelayMs, readRetryAfterMs, shouldRetryModelFailure } from "./model-retry-policy";
+import { nextModelRetryDelayMs, readRetryAfterMs } from "./model-retry-policy";
 
 export interface ModelRetryAttemptInput {
   signal: AbortSignal;
@@ -115,8 +115,7 @@ export async function runModelRequestWithRetry<T>(
           : originalError;
         if (visibleOutput) throw error;
 
-        const failure = findModelFailure(error);
-        if (!failure || !shouldRetryModelFailure(failure) || retryNumber >= maxRetries) throw error;
+        if (retryNumber >= maxRetries) throw error;
 
         const retryAfterMs = readRetryAfterMs(error);
         const delayMs = nextModelRetryDelayMs(retryNumber + 1, retryAfterMs);
@@ -124,7 +123,10 @@ export async function runModelRequestWithRetry<T>(
         const remaining = options.getRemainingBudgetMs?.();
         if (remaining !== undefined && remaining <= delayMs) throwBudgetTimeout(error);
 
-        emitStatus({ phase: "waiting", retryNumber: retryNumber + 1, maxRetries, delayMs, category: failure.category });
+        emitStatus({
+          phase: "waiting", retryNumber: retryNumber + 1, maxRetries, delayMs,
+          category: findModelFailure(error)?.category ?? "UNKNOWN",
+        });
         try {
           await sleep(delayMs, undefined, { signal: options.signal });
         } catch (waitError) {

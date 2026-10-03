@@ -12,7 +12,7 @@ const REPORT_EMAIL = "ky2569ly@gmail.com";
 const GITHUB_TEMPLATE = "runtime-bug.yml";
 
 const INSTALL_SOURCES = [
-  { value: "仓库源码（git clone + npm install / npm run dev）", label: "sourceCode" },
+  { value: "仓库源码（git clone + pnpm install / pnpm run dev）", label: "sourceCode" },
   { value: "预编译安装包（GitHub Releases 下载的 exe）", label: "prebuilt" },
   { value: "不确定 / 其他", label: "sourceUnknown" },
 ] as const;

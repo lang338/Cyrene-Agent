@@ -41,7 +41,7 @@ export type ToolRoundOutcome = "completed" | "cancelled";
 
 /** 从工具注册表读取工具注册时声明的风险级；未注册（如 harness 内置工具）视为 safe。 */
 function toolRiskOf(run: HarnessRun, toolId: string): ToolRiskLevel {
-  return run.input.tools.find((t) => t.id === toolId)?.risk ?? "safe";
+  return run.currentTools.find((t) => t.id === toolId)?.risk ?? "safe";
 }
 
 /** 发布工具完成观察事件：只读稳定元数据，未注入回调时零开销。 */
@@ -84,7 +84,7 @@ export async function runToolRound(run: HarnessRun, toolCalls: ToolCall[]): Prom
   const parallelTaskCompanions = new Set<string>();
   const parallelTaskIds = new Set<string>();
   for (const call of otherCalls) {
-    let mode = classifyToolExecutionMode(call, input.tools);
+    let mode = classifyToolExecutionMode(call, run.currentTools);
     if (mode === "parallel" && call.name === TASK_TOOL_ID) {
       const args = parseToolCallArgs(call);
       const companionId = args.companion_id;
@@ -249,7 +249,7 @@ async function runAskUserRound(
     input.onToolLifecycle?.({
       toolCallId: call.id,
       toolName: call.name,
-      toolSideEffect: resolveToolDispatchSideEffect(call.name, parseToolCallArgs(call), input.tools),
+      toolSideEffect: resolveToolDispatchSideEffect(call.name, parseToolCallArgs(call), run.currentTools),
       status: "not_executed",
     });
     notifyToolFinished(run, call, "not_executed");
@@ -309,7 +309,7 @@ async function executeToolCallWithRetry(run: HarnessRun, call: ToolCall): Promis
   }
 
   const { input } = run;
-  const toolSideEffect = resolveToolDispatchSideEffect(call.name, parseToolCallArgs(call), input.tools);
+  const toolSideEffect = resolveToolDispatchSideEffect(call.name, parseToolCallArgs(call), run.currentTools);
 
   let result = await raceWithSignal(dispatchToolCall(call, run.toolDispatchContext), input.signal);
   if (result.outcome === "failure") {
@@ -340,7 +340,7 @@ async function commitToolResult(
 ): Promise<ToolScheduleCommitDecision> {
   const { input } = run;
   const toolSideEffect = result.toolSideEffect
-    ?? resolveToolDispatchSideEffect(call.name, parseToolCallArgs(call), input.tools);
+    ?? resolveToolDispatchSideEffect(call.name, parseToolCallArgs(call), run.currentTools);
 
   // 熔断计数（结果必经点）：failure 递增、success 清零、not_executed/unknown 不动
   const streaks = (run.state.toolFailureStreaks ??= {});

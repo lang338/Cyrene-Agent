@@ -8,6 +8,8 @@ import "../fs-tools";
 import { registerLifeTools, setTranslateConfig } from "../life-tools";
 import { registerMomentsTools } from "../moments-tools";
 import { registerRecallHistoryTool } from "../history-tools";
+import { registerWikiMemoryTools } from "../wiki-memory-tools";
+import { registerKnowledgeBaseTools } from "../knowledge-base-tools";
 import { registerSearchTextTool } from "../search-text-tools";
 import { registerAstGrepTools } from "../ast-grep-tools";
 import { toolRegistry } from "./tool-registry";
@@ -27,6 +29,8 @@ export function registerAllTools(deps: { lspManager: LspManager }): void {
   registerSearchTextTool();
   registerAstGrepTools();
   registerRecallHistoryTool();
+  registerWikiMemoryTools();
+  registerKnowledgeBaseTools();
   registerDocumentTools();
 
   setTranslateConfig(() => {

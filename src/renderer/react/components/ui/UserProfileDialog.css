@@ -257,7 +257,7 @@
   app-region: no-drag;
 }
 
-.cy-user-profile__timezone-options { z-index: 1502; }
+.cy-user-profile__select-options { z-index: 1502; }
 
 .cy-user-profile__calendar-popover .rdp-root {
   --rdp-accent-color: var(--rb-accent, #ff5b8a);

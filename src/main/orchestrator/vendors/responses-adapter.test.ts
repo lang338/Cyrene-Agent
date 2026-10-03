@@ -18,7 +18,6 @@ const capability: ProviderCapability = {
   thinkingField: null,
   cacheStrategy: "none",
   testStrategy: "text",
-  supportsVision: true,
 };
 
 const cfg: VendorConfig = {

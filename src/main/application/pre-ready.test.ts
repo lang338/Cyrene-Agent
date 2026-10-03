@@ -3,7 +3,6 @@ import { prepareBeforeReady, type PreReadyDependencies } from "./pre-ready";
 
 function makePreReadyDeps(calls: string[], overrides: Partial<PreReadyDependencies> = {}): PreReadyDependencies {
   return {
-    configureDocumentIndex: vi.fn(() => { calls.push("configure-document-index"); }),
     installSingleInstance: vi.fn(() => { calls.push("single-instance-lock"); return true; }),
     migrateLegacyUserData: vi.fn(() => { calls.push("migrate-user-data"); }),
     registerPrivilegedSchemes: vi.fn(() => { calls.push("register-schemes"); }),
@@ -19,7 +18,6 @@ describe("prepareBeforeReady", () => {
     const calls: string[] = [];
     const result = prepareBeforeReady(makePreReadyDeps(calls));
     expect(calls).toEqual([
-      "configure-document-index",
       "single-instance-lock",
       "migrate-user-data",
       "register-schemes",

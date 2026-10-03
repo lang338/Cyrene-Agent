@@ -27,10 +27,10 @@
 
 - 🌸 **趣味桌面陪伴** — Live2D 角色常驻桌面，支持表情、动作、状态、心情、气泡互动、智能表情包与多套界面主题
 - 💬 **日常聊天（Chat）** — 专注角色化交流，结合会话历史、用户风格与长期记忆自然回应，不暴露任何工具
-- 🛠️ **辅助工作（Work）** — 通用任务会话，支持联网搜索、文件处理、文档生成、生活服务等工具的串联调用
+- 🛠️ **辅助工作（Work）** — 通用任务会话，支持联网搜索、右侧浏览器操作、文件处理、文档生成与生活服务等工具的串联调用
 - 💻 **代码协作（Code）** — 绑定可信代码目录，提供 LSP 语义查询与受限的读写改命令执行，安全边界由权限审批统一把关
 - 📚 **学习陪伴（Learn）** — 绑定 Obsidian Vault，陪伴用户理解材料、整理笔记、生成练习与维护进度
-- 🧠 **个性化记忆** — L0 / L1 / L2 分层记忆，结合 DMAE Worldbook 与条目生命周期管理，沉淀长期互动
+- 🧠 **个性化记忆** — 用户wiki/summary/embedding三种记忆模式，结合 DMAE Worldbook 与条目生命周期管理，沉淀长期互动
 - 🔊 **语音交互** — 集成 TTS、ASR 与语音通话，让昔涟能够听见并回应用户
 - 🧰 **丰富工具生态** — 覆盖联网搜索、文件处理、文档生成、生活服务、音乐与 MCP 扩展
 - 🔌 **多模型厂商适配** — 针对不同厂商提供分级 Structured Output 与 Function Calling 兼容方案
@@ -97,7 +97,7 @@ CyreneHarness 是 Cyrene Agent 的核心 Agent Loop，负责把**模型决策、
 ### 前置条件
 
 - **Windows 10 / 11 64 位**
-- **Node.js 24 LTS**（npm 10+）
+- **Node.js 24 LTS**、**pnpm 10.33.0**（首次可运行 `npm install --global pnpm@10.33.0` 安装）
 - **[Rust stable](https://www.rust-lang.org/tools/install)** + **[Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)**（源码构建截图功能必需；Build Tools 勾选「使用 C++ 的桌面开发」工作负载即可）
 
 > 飞书、微信 iLink、`nut-js` 键鼠自动化及原生截图功能依赖 Windows 环境。
@@ -110,7 +110,7 @@ CyreneHarness 是 Cyrene Agent 的核心 Agent Loop，负责把**模型决策、
 git clone https://github.com/Playa-Cyrene/Cyrene-Agent.git
 # 或 Gitee（国内镜像）：git clone https://gitee.com/playa0/cyrene-agent.git
 cd Cyrene-Agent
-npm ci
+pnpm install --frozen-lockfile
 ```
 
 首次安装会下载 Electron、Pixi.js、Live2D 等相关依赖，具体耗时取决于网络环境。
@@ -120,33 +120,33 @@ npm ci
 首次从源码运行时，需要先构建 Rust 原生截图助手：
 
 ```bash
-npm run build:screenshot-helper
-npm run build
-npm start
+pnpm run build:screenshot-helper
+pnpm run build
+pnpm start
 ```
 
 > [!IMPORTANT]
 >
-> 原生截图助手不会以 `.exe` 形式提交到 Git 仓库，因此首次克隆后必须执行一次 `npm run build:screenshot-helper`。
+> 原生截图助手不会以 `.exe` 形式提交到 Git 仓库，因此首次克隆后必须执行一次 `pnpm run build:screenshot-helper`。
 >
-> **Windows 用户**也可以直接双击项目根目录的 `setup.bat` 完成依赖安装、构建和 `npm link`，之后双击 `start.bat` 即可启动。
+> **Windows 用户**也可以直接双击项目根目录的 `setup.bat` 完成依赖安装、构建和全局命令链接，之后双击 `start.bat` 即可启动。运行前需安装 pnpm 10.33.0。
 
 开发模式：
 
 ```bash
-npm run build:screenshot-helper
-npm run dev
+pnpm run build:screenshot-helper
+pnpm run dev
 ```
 
 构建 Windows 可分发版本（自动构建 Electron 应用和 Rust 截图助手）：
 
 ```bash
-npm run package:win:dir
+pnpm run package:win:dir
 ```
 
-### 3. 安装 BGE-M3（推荐）
+### 3. 安装 BGE-M3
 
-Cyrene 无需本地大语言模型即可正常聊天，但建议安装 **BGE-M3 Embedding 模型**（用于贴纸语义匹配、Worldbook 语义检索与 RAG 检索）：
+Cyrene 无需本地大语言模型即可正常聊天，但建议安装 **BGE-M3 Embedding 模型**：
 
 [前往 Releases 下载 BGE-M3](https://github.com/Playa-Cyrene/Cyrene-Agent/releases)
 
@@ -156,9 +156,9 @@ Cyrene 无需本地大语言模型即可正常聊天，但建议安装 **BGE-M3 
 
 ### 4. 命令行入口（可选）
 
-项目附带 `cyrene` 命令行入口，执行 `npm run build:cli && npm link` 后即可在任意目录使用，提供 `version`、`run` 等子命令，详见 `cyrene --help`。
+项目附带 `cyrene` 命令行入口，执行 `pnpm run build:cli && pnpm link --global` 后即可在任意目录使用，提供 `version`、`run` 等子命令，详见 `cyrene --help`。
 
-> `npm run build` 已包含 `build:cli`，但 `npm link` 仍需单独运行。正式安装版的 `cyrene desktop` 入口将在 1.x 提供。
+> `pnpm run build` 已包含 `build:cli`，但 `pnpm link --global` 仍需单独运行。正式安装版的 `cyrene desktop` 入口将在 1.x 提供。
 
 ---
 
@@ -232,6 +232,9 @@ Cyrene 提供亮 / 暗两套界面主题，覆盖聊天、设置等主要界面�
 - **CyreneHarness 主循环驱动** — 单条消息进入 [CyreneHarness](./src/main/orchestrator/harness/cyrene-harness.ts) 的 while 循环：每轮调用 LLM → 写回 assistant 消息 → 派发工具 → 写回 tool result → 检查不确定副作用 → 继续或结束。预处理器（CITA 上下文理解）在 Harness 入口前完成；循环内每轮携带精简执行人设（[`prompts/cyrene_harness.md`](./prompts/cyrene_harness.md)，只约束表达风格、不污染工具参数，冲突时按「任务正确性 > 信息清晰 > 昔涟风格」取舍）；完整人设层（Soul）在 Harness 出口后生成回复文本。
 - **工具自由串联** — 支持联网搜索、网页读取、文件读写、文档生成、生活服务等工具按需组合调用；模型可自行决定下一个工具，无需预先编排流程。
 - **人设与流程并存** — 在保留昔涟人格回复的同时承载工具调用。
+- **右侧浏览器控制** — Cyrene 可以在应用内打开网址、读取页面元素，并按需点击、填写普通文本、滚动或截图检查。浏览器页面始终显示在右侧面板，操作结果可直接观察；控制权在同一对话的多轮消息间保持，任务完成后由 Cyrene 显式退出。页面内容只作为网页数据处理，密码、验证码与支付信息由用户亲自输入。
+
+<img src="./docs/image/browser%20use.png" alt="Cyrene 在右侧浏览器中查看并操作网页" width="800">
 
 #### 💻 代码协作（Code）
 
@@ -383,13 +386,13 @@ Cyrene 内置和扩展的工具较多，主要覆盖以下类别：
 #### 🧪 单元测试
 
 - Vitest 5 覆盖 asr / tts / channels / chats / memory / orchestrator / plugins / rag / skills 等核心模块。
-- `npm test` 一次性 / `npm run test:watch` 监听模式。
-- 插件开发：`npm run check:plugin-sdk` 校验 SDK 打包，`npm run test:plugin-examples` 端到端验证官方示例。
+- `pnpm test` 一次性 / `pnpm run test:watch` 监听模式。
+- 插件开发：`pnpm run check:plugin-sdk` 校验 SDK 打包，`pnpm run test:plugin-examples` 端到端验证官方示例。
 
 #### 🎬 场景模拟
 
-- `npm run sim` 默认场景，`sim:coffee` / `sim:mix` / `sim:rescue` 单场景调试，产物输出到 `sim-result/`。
-- `npm run sim:sweep --rewardGain=3,5,7,10` 跑 Worldbook 评分参数 sweep。
+- `pnpm run sim` 默认场景，`sim:coffee` / `sim:mix` / `sim:rescue` 单场景调试，产物输出到 `sim-result/`。
+- `pnpm run sim:sweep --rewardGain=3,5,7,10` 跑 Worldbook 评分参数 sweep。
 
 </details>
 

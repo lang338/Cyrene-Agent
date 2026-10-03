@@ -19,6 +19,7 @@ interface UserProfile {
   birthday: string;
   defaultCity: string;
   timezone: string;
+  replyLanguage: string;
 }
 
 interface UserApi {
@@ -41,7 +42,16 @@ const EMPTY_PROFILE: UserProfile = {
   birthday: "",
   defaultCity: "",
   timezone: FALLBACK_TIMEZONE,
+  replyLanguage: "auto",
 };
+
+// 回复语言候选：auto 表示跟随界面语言，其余为显式 BCP 47 值。
+const REPLY_LANGUAGE_OPTIONS = [
+  { value: "auto", labelKey: "ui.profile.replyLanguageAuto" },
+  { value: "zh-CN", labelKey: "ui.profile.replyLanguageZh" },
+  { value: "en", labelKey: "ui.profile.replyLanguageEn" },
+  { value: "ja-JP", labelKey: "ui.profile.replyLanguageJa" },
+];
 
 function getUserApi(): UserApi | undefined {
   return (window as typeof window & { user?: UserApi }).user;
@@ -249,7 +259,18 @@ export function UserProfileDialog({ open, onOpenChange, avatarUrl }: UserProfile
                   options={TIMEZONE_OPTIONS.map(({ value, label }) => ({ value, label }))}
                   onChange={(value) => updateProfile("timezone", normalizeTimezoneOptionValue(value))}
                   ariaLabel={t("ui.profile.timezone")}
-                  contentClassName="cy-user-profile__timezone-options"
+                  contentClassName="cy-user-profile__select-options"
+                />
+              </label>
+
+              <label className="cy-user-profile__field">
+                <span>{t("ui.profile.replyLanguage")}</span>
+                <SettingsSelect
+                  value={profile.replyLanguage}
+                  options={REPLY_LANGUAGE_OPTIONS.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
+                  onChange={(value) => updateProfile("replyLanguage", value)}
+                  ariaLabel={t("ui.profile.replyLanguage")}
+                  contentClassName="cy-user-profile__select-options"
                 />
               </label>
             </div>

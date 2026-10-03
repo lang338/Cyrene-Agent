@@ -15,6 +15,7 @@ import {
   type SessionModelBindingInput,
 } from "../../shared/session-model";
 import { addModelProfile, resolveDefaultModelProfile, updateModelProfile, type SavedModelProfile } from "./model-catalog";
+import { normalizeMemoryMode, type MemoryMode } from "../memory/memory-mode";
 
 /**
  * 统一模型配置入口：所有模块（包括 Code 模式）必须通过此函数读取。
@@ -150,6 +151,7 @@ export interface ModelSettings {
   modelProfiles?: SavedModelProfile[];
   defaultModelProfileId?: string;
   runtimeSync: "off" | "local" | "llm";
+  memoryMode: MemoryMode;
   stickerEnabled: boolean;
   stickerSize: StickerSize;
   stickerSimilarityThreshold: number;
@@ -183,8 +185,8 @@ export interface VisionModelConfig {
   model: string;
 }
 
-/** 当前配置文件 schema：2 = multimodal 迁移，3 = MiniMax Responses 端点迁移，4 = 兼容旧 MiniMax 厂商名。 */
-const MODEL_SETTINGS_SCHEMA_VERSION = 4;
+/** 当前配置文件 schema：2 = multimodal 迁移，3 = MiniMax Responses 端点迁移，4 = 兼容旧 MiniMax 厂商名，5 = 记忆模式设置。 */
+const MODEL_SETTINGS_SCHEMA_VERSION = 5;
 
 const DEFAULT_MODEL_SETTINGS: ModelSettings = {
   mode: "auto",
@@ -197,6 +199,7 @@ const DEFAULT_MODEL_SETTINGS: ModelSettings = {
   explicitTransport: "anthropic",
   perProvider: {},
   runtimeSync: "off",
+  memoryMode: "vector",
   stickerEnabled: true,
   stickerSize: "standard",
   stickerSimilarityThreshold: 0.55,
@@ -423,6 +426,7 @@ export function normalizeModelSettings(input: Partial<ModelSettings> | null | un
     modelProfiles,
     defaultModelProfileId: typeof input?.defaultModelProfileId === "string" ? input.defaultModelProfileId : modelProfiles[0]?.id,
     runtimeSync: input?.runtimeSync === "llm" ? "llm" : input?.runtimeSync === "local" ? "local" : "off",
+    memoryMode: normalizeMemoryMode(input?.memoryMode),
     stickerEnabled: input?.stickerEnabled !== false,
     stickerSize: input?.stickerSize === "small" || input?.stickerSize === "large" ? input.stickerSize : "standard",
     stickerSimilarityThreshold: typeof input?.stickerSimilarityThreshold === "number"

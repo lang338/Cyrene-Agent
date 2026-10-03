@@ -19,7 +19,6 @@ import type {
 import type { UiTheme } from "../shared/ui-theme";
 import type { PluginPanelApi } from "../shared/plugin-management";
 import type { ReasoningPreference } from "../shared/reasoning";
-import type { DocumentIndexProgress } from "../shared/document-index";
 import type { AguiRunAck } from "../shared/run-terminal";
 import type { ReviewSnapshot, ReviewRestoreOutcome } from "../shared/review-types";
 import type { WorkspaceListResult, WorkspaceReadResult } from "../shared/workspace-files-types";
@@ -31,6 +30,8 @@ import type { AppUpdateApi, AppUpdateState } from "../shared/app-update";
 import type { ConversationMode } from "../shared/chat-types";
 import type { SidebarOrganizationDraft, SidebarOrganizationResult, SidebarOrganizationSnapshot } from "../shared/sidebar-organization";
 import type { ToastItem, ToastPushPayload, ToastTtsAudioPayload } from "../shared/toast-types";
+import type { BrowserElementSelection, BrowserPanelBounds, BrowserPanelResult, BrowserPanelState } from "../shared/browser-panel-types";
+import type { LearnExamAnswerValue, LearnExamChangedEvent, LearnExamCreatedEvent, LearnExamView } from "../shared/learn-exam";
 
 // 渲染目标标识：preload 每次加载（即每次页面初始化/重新加载）生成一次，
 // 随活动会话一并上报主进程；同一页面内切换会话不改变该标识。
@@ -94,15 +95,6 @@ const chatApi = {
     if (entries.length === 0) return [];
     return ipcRenderer.invoke(IPC.CHAT_INGEST_FILES, entries);
   },
-  processDocuments: (filePaths: string[], query: string) =>
-    ipcRenderer.invoke(IPC.CHAT_PROCESS_DOCUMENTS, { filePaths, query }),
-  onDocumentIndexProgress: (callback: (progress: DocumentIndexProgress) => void) => {
-    const listener = (_event: unknown, progress: DocumentIndexProgress) => callback(progress);
-    ipcRenderer.on(IPC.CHAT_DOCUMENT_INDEX_PROGRESS, listener);
-    return () => ipcRenderer.removeListener(IPC.CHAT_DOCUMENT_INDEX_PROGRESS, listener);
-  },
-  cancelDocumentIndex: (jobId: string) =>
-    ipcRenderer.invoke(IPC.CHAT_CANCEL_DOCUMENT_INDEX, { jobId }) as Promise<boolean>,
   captionImage: (filePath: string, hasAnnotations = false) =>
     ipcRenderer.invoke(IPC.CHAT_CAPTION_IMAGE, { filePath, hasAnnotations }),
   getImagePreview: (filePath: string) =>
@@ -131,6 +123,40 @@ const chatApi = {
 contextBridge.exposeInMainWorld("cyrene", cyreneApi);
 contextBridge.exposeInMainWorld("appUpdate", appUpdateApi);
 contextBridge.exposeInMainWorld("chat", chatApi);
+
+const browserPanelApi = {
+  getState: () => ipcRenderer.invoke(IPC.BROWSER_PANEL_GET_STATE) as Promise<BrowserPanelState | null>,
+  setBounds: (bounds: BrowserPanelBounds | null) => ipcRenderer.invoke(IPC.BROWSER_PANEL_SET_BOUNDS, bounds) as Promise<boolean>,
+  navigate: (url: string) => ipcRenderer.invoke(IPC.BROWSER_PANEL_NAVIGATE, url) as Promise<BrowserPanelResult>,
+  goBack: () => ipcRenderer.invoke(IPC.BROWSER_PANEL_BACK) as Promise<boolean>,
+  goForward: () => ipcRenderer.invoke(IPC.BROWSER_PANEL_FORWARD) as Promise<boolean>,
+  reload: () => ipcRenderer.invoke(IPC.BROWSER_PANEL_RELOAD) as Promise<boolean>,
+  stop: () => ipcRenderer.invoke(IPC.BROWSER_PANEL_STOP) as Promise<boolean>,
+  clearCookies: () => ipcRenderer.invoke(IPC.BROWSER_PANEL_CLEAR_COOKIES) as Promise<BrowserPanelResult>,
+  newTab: () => ipcRenderer.invoke(IPC.BROWSER_PANEL_NEW_TAB) as Promise<boolean>,
+  openInNewTab: (url: string) => ipcRenderer.invoke(IPC.BROWSER_PANEL_OPEN_IN_NEW_TAB, url) as Promise<BrowserPanelResult>,
+  openExam: (examId: string, conversationId: string) => ipcRenderer.invoke(IPC.BROWSER_PANEL_OPEN_EXAM, { examId, conversationId }) as Promise<boolean>,
+  activateTab: (tabId: string) => ipcRenderer.invoke(IPC.BROWSER_PANEL_ACTIVATE_TAB, tabId) as Promise<boolean>,
+  closeTab: (tabId: string) => ipcRenderer.invoke(IPC.BROWSER_PANEL_CLOSE_TAB, tabId) as Promise<boolean>,
+  startElementPicker: () => ipcRenderer.invoke(IPC.BROWSER_PANEL_START_ELEMENT_PICKER) as Promise<boolean>,
+  cancelElementPicker: () => ipcRenderer.invoke(IPC.BROWSER_PANEL_CANCEL_ELEMENT_PICKER) as Promise<boolean>,
+  onStateChanged: (callback: (state: BrowserPanelState) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: BrowserPanelState) => callback(state);
+    ipcRenderer.on(IPC.BROWSER_PANEL_STATE_CHANGED, listener);
+    return () => ipcRenderer.removeListener(IPC.BROWSER_PANEL_STATE_CHANGED, listener);
+  },
+  onElementSelected: (callback: (element: BrowserElementSelection) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, element: BrowserElementSelection) => callback(element);
+    ipcRenderer.on(IPC.BROWSER_PANEL_ELEMENT_SELECTED, listener);
+    return () => ipcRenderer.removeListener(IPC.BROWSER_PANEL_ELEMENT_SELECTED, listener);
+  },
+  onOpenForControl: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on(IPC.BROWSER_PANEL_OPEN_FOR_CONTROL, listener);
+    return () => ipcRenderer.removeListener(IPC.BROWSER_PANEL_OPEN_FOR_CONTROL, listener);
+  },
+};
+contextBridge.exposeInMainWorld("browserPanel", browserPanelApi);
 
 // AG-UI 事件流：发起一次 agent run，通过 onEvent 回调收 AG-UI 标准事件，
 // 返回 AguiRunAck 表示 invoke 已被接收（终态仍由事件流承载）。
@@ -595,9 +621,15 @@ const userApi = {
 
 const memoryPanelApi = {
   getData: () => ipcRenderer.invoke(IPC.MEMORY_PANEL_GET_DATA),
-  deleteImportedDoc: (importId: string, fileName?: string) => ipcRenderer.invoke(IPC.MEMORY_PANEL_DELETE_IMPORTED_DOC, { importId, fileName }),
+  getSummaryMemory: () => ipcRenderer.invoke(IPC.MEMORY_PANEL_GET_SUMMARY),
   saveL0: (patch: Record<string, unknown>) => ipcRenderer.invoke(IPC.MEMORY_PANEL_SAVE_L0, patch),
   saveL1: (patch: Record<string, unknown>) => ipcRenderer.invoke(IPC.MEMORY_PANEL_SAVE_L1, patch),
+  listWikiPages: (request: import("../shared/wiki-memory-types").WikiPageListRequest = {}) => ipcRenderer.invoke(IPC.MEMORY_WIKI_LIST_PAGES, request),
+  searchWiki: (request: import("../shared/wiki-memory-types").WikiSearchRequest) => ipcRenderer.invoke(IPC.MEMORY_WIKI_SEARCH, request),
+  readWikiPage: (pageId: string) => ipcRenderer.invoke(IPC.MEMORY_WIKI_READ_PAGE, pageId),
+  listWikiConflicts: () => ipcRenderer.invoke(IPC.MEMORY_WIKI_LIST_CONFLICTS),
+  correctWikiClaim: (request: import("../shared/wiki-memory-types").WikiClaimCorrection) => ipcRenderer.invoke(IPC.MEMORY_WIKI_CORRECT_CLAIM, request),
+  deleteWikiClaim: (request: import("../shared/wiki-memory-types").WikiClaimDeletion) => ipcRenderer.invoke(IPC.MEMORY_WIKI_DELETE_CLAIM, request),
   exportToObsidianVault: () => ipcRenderer.invoke(IPC.MEMORY_EXPORT_OBSIDIAN_VAULT),
   bindVault: () => ipcRenderer.invoke(IPC.OBSIDIAN_VAULT_BIND),
   unbindVault: () => ipcRenderer.invoke(IPC.OBSIDIAN_VAULT_UNBIND),
@@ -622,6 +654,23 @@ const cyreneAvatarApi = {
 contextBridge.exposeInMainWorld("cyreneAvatar", cyreneAvatarApi);
 
 contextBridge.exposeInMainWorld("memoryPanel", memoryPanelApi);
+
+const knowledgeBaseApi: import("../shared/knowledge-base-types").KnowledgeBaseApi = {
+  getState: () => ipcRenderer.invoke(IPC.KNOWLEDGE_GET_STATE),
+  setEnabled: (enabled) => ipcRenderer.invoke(IPC.KNOWLEDGE_SET_ENABLED, enabled),
+  createCollection: (input) => ipcRenderer.invoke(IPC.KNOWLEDGE_CREATE_COLLECTION, input),
+  deleteCollection: (id) => ipcRenderer.invoke(IPC.KNOWLEDGE_DELETE_COLLECTION, id),
+  setCollectionEnabled: (id, enabled) => ipcRenderer.invoke(IPC.KNOWLEDGE_SET_COLLECTION_ENABLED, id, enabled),
+  listWorkspaces: () => ipcRenderer.invoke(IPC.KNOWLEDGE_LIST_WORKSPACES),
+  pickPaths: (kind) => ipcRenderer.invoke(IPC.KNOWLEDGE_PICK_PATHS, kind),
+  addPaths: (id, paths) => ipcRenderer.invoke(IPC.KNOWLEDGE_ADD_PATHS, id, paths),
+  removePath: (id, sourcePath) => ipcRenderer.invoke(IPC.KNOWLEDGE_REMOVE_PATH, id, sourcePath),
+  refreshCollection: (id) => ipcRenderer.invoke(IPC.KNOWLEDGE_REFRESH_COLLECTION, id),
+  listDocuments: (id) => ipcRenderer.invoke(IPC.KNOWLEDGE_LIST_DOCUMENTS, id),
+  search: (query, id) => ipcRenderer.invoke(IPC.KNOWLEDGE_SEARCH, query, id),
+  openSource: (id) => ipcRenderer.invoke(IPC.KNOWLEDGE_OPEN_SOURCE, id),
+};
+contextBridge.exposeInMainWorld("knowledgeBase", knowledgeBaseApi);
 contextBridge.exposeInMainWorld("runtimeState", runtimeStateApi);
 
 const live2dSpeechApi = {
@@ -820,6 +869,35 @@ const chatStoreApi = {
 };
 
 contextBridge.exposeInMainWorld("chatStore", chatStoreApi);
+
+const learnExamApi = {
+  listByConversation: (conversationId: string) =>
+    ipcRenderer.invoke(IPC.LEARN_EXAM_LIST, { conversationId }) as Promise<LearnExamView[]>,
+  getView: (conversationId: string, examId: string) =>
+    ipcRenderer.invoke(IPC.LEARN_EXAM_GET, { conversationId, examId }) as Promise<{ ok: boolean; exam?: LearnExamView; error?: string }>,
+  saveAnswer: (conversationId: string, examId: string, questionId: string, answer: LearnExamAnswerValue | null) =>
+    ipcRenderer.invoke(IPC.LEARN_EXAM_SAVE_ANSWER, { conversationId, examId, questionId, answer }) as Promise<{ ok: boolean; exam?: LearnExamView; error?: string }>,
+  saveNavigation: (conversationId: string, examId: string, activeQuestionId: string, flaggedQuestionIds: string[]) =>
+    ipcRenderer.invoke(IPC.LEARN_EXAM_SAVE_NAVIGATION, { conversationId, examId, activeQuestionId, flaggedQuestionIds }) as Promise<{ ok: boolean; exam?: LearnExamView; error?: string }>,
+  submit: (conversationId: string, examId: string) =>
+    ipcRenderer.invoke(IPC.LEARN_EXAM_SUBMIT, { conversationId, examId }) as Promise<{ ok: boolean; shouldStartGrading?: boolean; exam?: LearnExamView; error?: string }>,
+  retry: (conversationId: string, examId: string) =>
+    ipcRenderer.invoke(IPC.LEARN_EXAM_RETRY, { conversationId, examId }) as Promise<{ ok: boolean; shouldStartGrading?: boolean; exam?: LearnExamView; error?: string }>,
+  markGradingFailed: (conversationId: string, examId: string) =>
+    ipcRenderer.invoke(IPC.LEARN_EXAM_MARK_GRADING_FAILED, { conversationId, examId }) as Promise<{ ok: boolean; exam?: LearnExamView; error?: string }>,
+  onCreated: (callback: (event: LearnExamCreatedEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: LearnExamCreatedEvent) => callback(payload);
+    ipcRenderer.on(IPC.LEARN_EXAM_CREATED, listener);
+    return () => ipcRenderer.removeListener(IPC.LEARN_EXAM_CREATED, listener);
+  },
+  onChanged: (callback: (event: LearnExamChangedEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: LearnExamChangedEvent) => callback(payload);
+    ipcRenderer.on(IPC.LEARN_EXAM_CHANGED, listener);
+    return () => ipcRenderer.removeListener(IPC.LEARN_EXAM_CHANGED, listener);
+  },
+};
+
+contextBridge.exposeInMainWorld("learnExam", learnExamApi);
 
 // Review 快照：获取指定 Run 的不可变文件变更审查数据
 const reviewApi = {

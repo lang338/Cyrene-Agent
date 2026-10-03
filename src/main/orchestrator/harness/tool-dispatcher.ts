@@ -45,6 +45,7 @@ import { isBlockedByUncertainEffect } from "./uncertain-effect-guard";
 import { ExecutionLedger } from "../execution-ledger";
 import type { ToolExecutionOutcome } from "../types";
 import { executeToolDefinition } from "../tools/registry/tool-executor";
+import { toolRegistry } from "../tools/registry/tool-registry";
 import type { ToolOutputStore } from "./tool-output/tool-output-store";
 import { ToolOutputPersistenceError } from "./tool-output/file-tool-output-store";
 
@@ -229,6 +230,17 @@ export async function dispatchToolCall(
 
   // 工具不存在
   if (!tool) {
+    const registeredTool = toolRegistry.getById(call.name);
+    if (registeredTool?.browserControlPhase === "active") {
+      return {
+        outcome: "failure",
+        category: "not_found",
+        tool: call.name,
+        message:
+          `浏览器交互工具“${call.name}”当前没有开放给本轮。请先调用 browser_control_start 并确认控制已开启；` +
+          "只有后续模型请求的可用工具列表中出现该工具后，才能调用它。",
+      };
+    }
     return {
       outcome: "failure",
       category: "not_found",

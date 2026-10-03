@@ -9,6 +9,7 @@ import type { MusicCardData } from "./music-card";
 import type { TodoItem } from "./todo-types";
 import type { TaskDelegationPresentation } from "./task-session";
 import type { ContextUsageSnapshot } from "./context-usage";
+import type { BrowserElementSelection } from "./browser-panel-types";
 
 // - schemaVersion 用于以后改 schema 时的迁移判断；当前固定 1。
 
@@ -205,7 +206,7 @@ export type ChatPresentationCheckpointPatch = Partial<Pick<ChatMessage,
   "runSnapshot" | "ttsCacheKey" | "ttsCacheVersion" | "musicCard" | "contextUsage"
 >> & { delta?: ChatPresentationDelta };
 
-export type MessageAttachment = ImageMessageAttachment | DocumentMessageAttachment;
+export type MessageAttachment = ImageMessageAttachment | DocumentMessageAttachment | WebElementMessageAttachment;
 
 export interface ImageMessageAttachment {
   kind: "image";
@@ -229,6 +230,12 @@ export interface DocumentMessageAttachment {
   reason?: string;
 }
 
+export interface WebElementMessageAttachment {
+  kind: "web-element";
+  name: string;
+  element: BrowserElementSelection;
+}
+
 /** 对话工作区绑定：将一个可信目录绑定到对话 */
 export interface ConversationWorkspaceBinding {
   /** 规范化后的绝对路径（realpath + Windows 标准化） */
@@ -244,14 +251,15 @@ export interface ConversationWorkspaceBinding {
  * blob: 预览 URL、预处理状态等瞬态数据不落盘，派发时由渲染层重建。
  */
 export interface PendingChatAttachment {
-  kind: "image" | "document";
+  kind: "image" | "document" | "web-element";
   name: string;
   /** 主进程落盘的附件绝对路径（临时文件或用户文件），派发时按它重新读取。 */
-  filePath: string;
+  filePath?: string;
   mime?: string;
   caption?: string;
   /** 截图标注标记：标注像素已由截图 helper 绘入图片文件，此标记供派发时的 caption 提示词分支与展示使用。 */
   hasAnnotations?: boolean;
+  element?: BrowserElementSelection;
 }
 
 /**
@@ -345,6 +353,8 @@ export interface ChatSession {
   pinned?: boolean;
   /** 当前会话选择的已保存模型；缺失时使用默认模型。 */
   modelProfileId?: string;
+  /** 摘要模式的增量缓冲；只记录成功终态的正式回复。 */
+  summaryMemoryProgress?: SummaryMemoryProgress;
   /**
    * 本对话固定的当前模型（从属于 modelProfileId 绑定，Invariant B）。
    * 缺省 = 旧会话：继续跟随绑定档案默认模型的动态解析（兼容性例外，不回填）。
@@ -367,6 +377,18 @@ export interface ChatSession {
   pendingMessages?: PendingChatMessage[];
   /** 待发派发状态：认领后 run 确认接受前存在；残留即恢复入口（向后兼容缺省为无）。 */
   pendingDispatch?: PendingDispatchState;
+}
+
+export interface SummaryMemoryPendingTurn {
+  assistantEntryId: string;
+  userTurnId?: string;
+  userText: string;
+  assistantText: string;
+}
+
+export interface SummaryMemoryProgress {
+  lastProcessedAssistantId?: string;
+  pendingTurns: SummaryMemoryPendingTurn[];
 }
 
 /**

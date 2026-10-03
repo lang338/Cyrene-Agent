@@ -15,8 +15,6 @@ export const GLM_REGISTRY = defineVendor({
     thinkingField: "reasoning_content",
     cacheStrategy: "auto",
     testStrategy: "text",
-    // 视觉版是 glm-5v-turbo，默认 glm-5.2 不支持
-    supportsVision: false,
     // OpenAI 兼容 + Anthropic 兼容（协议矩阵 2026-08-21，用户确认）
     supportedTransports: ["openai", "anthropic"],
   },

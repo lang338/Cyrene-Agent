@@ -124,6 +124,7 @@ export default defineConfig({
             "chat-react": resolve(import.meta.dirname, "src/renderer/react/index.html"),
             music: resolve(import.meta.dirname, "src/renderer/music/index.html"),
             toast: resolve(import.meta.dirname, "src/renderer/toast/index.html"),
+            "learn-exam": resolve(import.meta.dirname, "src/renderer/learn-exam.html"),
           },
     },
   },

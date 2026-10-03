@@ -31,6 +31,18 @@ electronDist: node_modules/electron/dist
 files:
   - dist/**/*
   - "!dist/components/**/*"
+  # 这些是本地性能测试、旧构建备份和模拟器产物，正式应用不依赖。
+  - "!dist/perf-normal{,/**/*}"
+  - "!dist/perf-profiling{,/**/*}"
+  - "!dist/renderer-old-*{,/**/*}"
+  - "!dist/sim{,/**/*}"
+  - "!dist/virtualization-*-build.log"
+  # 源码映射只供调试定位源码，正式运行不读取。
+  - "!**/*.map"
+  # Windows x64 安装包只携带 Windows x64 的 ONNX Runtime 文件。
+  - "!**/onnxruntime-node/bin/napi-v3/darwin/**/*"
+  - "!**/onnxruntime-node/bin/napi-v3/linux/**/*"
+  - "!**/onnxruntime-node/bin/napi-v3/win32/arm64/**/*"
   - package.json
   - assets/**/*
   - vendor/**/*
@@ -57,6 +69,11 @@ extraResources:
     to: cyrene-skills
 win:
   icon: assets/tray-icon.ico
+  # 保留应用支持的英文、简体中文和繁体中文界面语言。
+  electronLanguages:
+    - en-US
+    - zh-CN
+    - zh-TW
   target:
     - nsis
 nsis:

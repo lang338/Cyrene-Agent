@@ -6,7 +6,7 @@ import {
   normalizeCustomStyleConfig,
   normalizeStyleId,
 } from "../../shared/style-sampling";
-import { normalizeUiTheme } from "../../shared/ui-theme";
+import { normalizeUiThemeChoice } from "../../shared/ui-theme";
 import { MAX_PARALLEL_TOOL_CALLS } from "../../shared/task-session";
 import { normalizeUiIcon } from "../../shared/ui-icon";
 import { normalizeUiLanguage } from "../../shared/ui-language";
@@ -237,7 +237,7 @@ export function normalizeGeneralSettings(
     launchAtLogin: Boolean(input?.launchAtLogin),
     // 界面语言只认已翻译完成的语种，非法值（含旧配置的 ja/ko）一律回落中文
     language: normalizeUiLanguage(input?.language),
-    uiTheme: normalizeUiTheme(input?.uiTheme),
+    uiTheme: normalizeUiThemeChoice(input?.uiTheme),
     uiThemeRadius: input?.uiThemeRadius ?? true,
     uiIcon: normalizeUiIcon(input?.uiIcon),
     messageTypography: normalizeMessageTypography(input?.messageTypography),

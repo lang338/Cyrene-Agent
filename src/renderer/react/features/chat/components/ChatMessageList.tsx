@@ -40,7 +40,8 @@ import { FileLinkContext, type FileLinkEnv } from "./FileLinkContext";
 import { ReviewPanel } from "./ReviewPanel";
 import { reportChatPerfRender } from "./chat-perf-probe";
 import { StreamdownMessageContent } from "./StreamdownMessageContent";
-import { Archive } from "lucide-react";
+import { Archive, ScanLine } from "lucide-react";
+import type { BrowserElementSelection } from "../../../../../shared/browser-panel-types";
 import { Marker, MarkerContent, MarkerIcon } from "../../../components/ui/marker";
 import { VirtualChatMessageList } from "./VirtualChatMessageList";
 
@@ -96,6 +97,7 @@ export interface ChatMessageAttachment {
   status?: string;
   reason?: string;
   imageSendMode?: "direct" | "caption";
+  element?: BrowserElementSelection;
 }
 
 interface ChatMessageListProps {
@@ -125,6 +127,8 @@ interface ChatMessageListProps {
   workspaceRoot?: string;
   /** 点击界内文件链接 → 打开右侧预览标签并定位行号 */
   onOpenFileLink?: (relPath: string, line?: number) => void;
+  /** 点击助手消息网页链接 → 在 Cyrene 右侧浏览器打开，或从右键菜单选择外部浏览器。 */
+  onOpenWebLink?: (url: string, destination: "cyrene" | "external") => void | Promise<void>;
 }
 
 type CharacterMoodRenderContext = {
@@ -858,6 +862,17 @@ function UserAttachments({ attachments }: { attachments: ChatMessageAttachment[]
     <div className="cy-message__attachments">
       {attachments.map((attachment, index) => {
         const status = attachmentStatus(attachment);
+        if (attachment.kind === "web-element" && attachment.element) {
+          return (
+            <div className="cy-message__web-element" key={`web-element-${attachment.element.tabId}-${attachment.element.ref ?? index}-${index}`} title={attachment.element.snapshotLine}>
+              <ScanLine size={16} />
+              <span className="cy-message__web-element-copy">
+                <strong>{attachment.element.name}</strong>
+                <small>{attachment.element.pageTitle || attachment.element.pageUrl}</small>
+              </span>
+            </div>
+          );
+        }
         if (attachment.kind === "image" && (attachment.previewUrl || attachment.filePath)) {
           return (
             <figure className="cy-message__image-attachment" key={`${attachment.filePath ?? attachment.name}-${index}`}>
@@ -1399,6 +1414,7 @@ export function ChatMessageList({
   onOpenTaskInspector,
   workspaceRoot,
   onOpenFileLink,
+  onOpenWebLink,
 }: ChatMessageListProps) {
   // 性能探针：列表外壳执行次数（A0 实验补 markdownRenders 覆盖不到的 Bubble 外壳/footer 路径）
   reportChatPerfRender("listRenders");
@@ -1531,8 +1547,8 @@ export function ChatMessageList({
   const channelConversationLabel = resolveChannelConversationLabel(messages);
   const shouldVirtualizeMessages = items.length > MESSAGE_VIRTUALIZATION_THRESHOLD;
   const fileLinkEnv = useMemo<FileLinkEnv>(
-    () => ({ sessionId: conversationId, workspaceRoot, openFile: onOpenFileLink }),
-    [conversationId, workspaceRoot, onOpenFileLink],
+    () => ({ sessionId: conversationId, workspaceRoot, openFile: onOpenFileLink, openWebLink: onOpenWebLink }),
+    [conversationId, workspaceRoot, onOpenFileLink, onOpenWebLink],
   );
   const characterMoodContext = useMemo(
     () => ({ moods: characterMoodAssets ?? {}, avatar: assistantAvatar ?? null }),

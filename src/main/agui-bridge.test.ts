@@ -174,12 +174,13 @@ describe("agui-bridge sticker event ordering", () => {
     expect(onFinished).toHaveBeenCalledWith(
       expect.objectContaining({ reply: "抱抱你" }),
       "你好",
-      {
+      expect.objectContaining({
         source: "desktop",
         mode: "chat",
         conversationId: "chat-events",
         runId: ack.runId,
-      },
+        assistantEntryId: expect.any(String),
+      }),
     );
   });
 

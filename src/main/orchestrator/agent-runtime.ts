@@ -15,7 +15,10 @@ import { captionImageSafe, IMAGE_CAPTION_PROMPT } from "../chat/image-caption";
 import { buildEnvironmentContext } from "./environment";
 import { buildToneInjection } from "./tone-injector";
 import { buildAlwaysOnContext, scheduleMemoryWrite } from "./index";
-import { matchSticker } from "../sticker-embedder";
+import { scheduleSummaryTurn } from "../memory/summary-memory-scheduler";
+import { scheduleWikiTurn } from "../memory/wiki-memory-scheduler";
+import { matchSticker } from "../sticker-text-matcher";
+import type { StickerTextEntry } from "../sticker-text-matcher";
 import { buildRelationshipContext, recordRelationshipTurn } from "../relationship/relationship-log";
 import { compileSocialContextBlock } from "../social-context/context";
 import * as momentsStore from "../moments/moments-store";
@@ -84,13 +87,15 @@ export interface AgentRuntimeDeps {
     getEnabledToolsForMode: (mode: ConversationMode, overrides?: ToolModeOverrides) => ToolDefinition[];
   };
   skillRegistry: typeof skillRegistry;
-  getStickerEmbeddingIndex: () => unknown;
-  getEmbeddingProvider: () => unknown;
+  getStickerTextIndex: () => readonly StickerTextEntry[];
   broadcastRuntimeStateChanged: () => void;
   citaService: CitaService;
   socialContextScheduler: { schedule: (input: SocialExtractionInput) => void };
   chatsStore: { getWorkspaceBinding: (conversationId: string) => { workspaceRoot: string; displayName: string; boundAt: number } | undefined };
   socialAtomStore: { listActive: (conversationId: string, now: number) => SocialAtom[] };
+  buildSummaryMemoryContext?: (conversationId: string) => Promise<{ stablePrompt: string; runtimeContext: string }>;
+  scheduleSummaryTurn?: (input: Parameters<typeof scheduleSummaryTurn>[0]) => void;
+  scheduleWikiTurn?: (input: Parameters<typeof scheduleWikiTurn>[0]) => void;
   buildPluginPromptContext: (input: PluginPromptBuildInput) => Promise<string>;
   publishPluginHostEvent: <T>(event: string, payload: T) => Promise<void>;
   /** 工具完成事件发布入口；缺省不发布（早期装配与测试场景）。 */
@@ -107,6 +112,8 @@ export interface AgentRunFinishedContext {
   conversationId: string;
   channel?: string;
   runId?: string;
+  assistantEntryId?: string;
+  userTurnId?: string;
 }
 
 export interface AgentRuntime {
@@ -174,8 +181,8 @@ export function createAgentRuntime(rawDeps: AgentRuntimeDeps): AgentRuntime {
       loadModelSettings: (modelProfileId?: string) => resolveModelSettingsProfile(rawDeps.loadModelSettings(), modelProfileId),
       loadGeneralSettings: () => rawDeps.loadGeneralSettings(),
       loadUserProfile: () => rawDeps.loadUserProfile(),
-      buildEnvironmentContext: ((model, profile) =>
-        buildEnvironmentContext(model, profile as any)) as BuildOptionsDeps["buildEnvironmentContext"],
+      buildEnvironmentContext: ((profile) =>
+        buildEnvironmentContext(profile as any)) as BuildOptionsDeps["buildEnvironmentContext"],
       buildSkillCatalog: ((skills) =>
         buildSkillCatalog(skills as any)) as BuildOptionsDeps["buildSkillCatalog"],
       buildAutoInjectedSkillContext: ((skills) =>
@@ -202,8 +209,8 @@ export function createAgentRuntime(rawDeps: AgentRuntimeDeps): AgentRuntime {
       buildToolSystemPrompt: ((mode, enabledTools) =>
         buildToolSystemPrompt(mode, enabledTools as ToolDefinition[])) as BuildOptionsDeps["buildToolSystemPrompt"],
       buildSoulSystemBasePrompt,
-      resolveRunCapabilities: ({ mode, activeSearchBackend, toolModeOverrides, skillModeOverrides, chatToolsEnabled }) => resolveRunCapabilities({
-        mode, activeSearchBackend, toolModeOverrides, skillModeOverrides, chatToolsEnabled,
+      resolveRunCapabilities: ({ mode, activeSearchBackend, toolModeOverrides, skillModeOverrides, chatToolsEnabled, hasFileAttachments }) => resolveRunCapabilities({
+        mode, activeSearchBackend, toolModeOverrides, skillModeOverrides, chatToolsEnabled, hasFileAttachments,
         toolRegistry: rawDeps.toolRegistry,
         skillRegistry: rawDeps.skillRegistry,
       }),
@@ -242,6 +249,7 @@ export function createAgentRuntime(rawDeps: AgentRuntimeDeps): AgentRuntime {
       getWorkspaceBinding: (conversationId: string) => {
         return rawDeps.chatsStore.getWorkspaceBinding(conversationId);
       },
+      buildSummaryMemoryContext: rawDeps.buildSummaryMemoryContext,
       buildPluginPromptContext: (input) => rawDeps.buildPluginPromptContext(input),
       // 权威轨迹上下文（CTA Phase 1）：桌面端与 bridge 共用同一 userData 根下的单例 store
       buildModelContext: (conversationId, retainTokens) => buildModelContext({
@@ -258,6 +266,8 @@ export function createAgentRuntime(rawDeps: AgentRuntimeDeps): AgentRuntime {
     return {
       loadModelSettings: () => rawDeps.loadModelSettings(),
       scheduleMemoryWrite,
+      scheduleSummaryTurn: rawDeps.scheduleSummaryTurn ?? ((input) => scheduleSummaryTurn(input)),
+      scheduleWikiTurn: rawDeps.scheduleWikiTurn ?? ((input) => scheduleWikiTurn(input)),
       scheduleSocialAtomExtraction: (input) => rawDeps.socialContextScheduler.schedule(input),
       scheduleMomentsTurn: (input) => momentsService.scheduleTurn(input),
       inferRuntimeState: ((userText, reply, flag) =>
@@ -266,12 +276,8 @@ export function createAgentRuntime(rawDeps: AgentRuntimeDeps): AgentRuntime {
       feelingToExpression,
       setRuntimeState: ((next) =>
         runtimeStateService.setStateWithoutNotify(next as any)) as OnRunFinishedDeps["setRuntimeState"],
-      stickerEmbeddingIndex: rawDeps.getStickerEmbeddingIndex(),
-      getEmbeddingProvider: (() => rawDeps.getEmbeddingProvider() as unknown) as OnRunFinishedDeps["getEmbeddingProvider"],
-      matchSticker: ((text, provider, index, threshold) =>
-        matchSticker(text, provider as any, index as any, threshold) as Promise<{
-          id: string;
-        } | null | undefined>) as OnRunFinishedDeps["matchSticker"],
+      stickerTextIndex: rawDeps.getStickerTextIndex(),
+      matchSticker,
       loadStickerSettings,
       broadcastRuntimeStateChanged: rawDeps.broadcastRuntimeStateChanged,
       observeRuntimeState: ((settings, history, userText, reply) =>
@@ -339,7 +345,7 @@ export function createAgentRuntime(rawDeps: AgentRuntimeDeps): AgentRuntime {
         : rawDeps.skillRegistry.getEnabledForMode(mode, generalSettings.skillModeOverrides);
       const systemContent = [
         buildModePrompt(mode),
-        buildEnvironmentContext({ provider: settings.provider, model: settings.model }, profile),
+        buildEnvironmentContext(profile),
         buildSkillCatalog(scheduledSkills),
         await buildAlwaysOnContext(task.prompt, messages),
         await rawDeps.buildPluginPromptContext({

@@ -43,30 +43,36 @@ import {
   syncVolcanoSearchMcp,
 } from "../settings/general-settings-lifecycle";
 import { registerMemoryUserToolIpc } from "../memory/memory-user-ipc";
-import { configureDocumentIndexQueue } from "../rag/document-index-queue";
-import { runDocumentIndexJob } from "../rag/document-index-worker";
+import { registerWikiMemoryIpc } from "../memory/wiki-memory-ipc";
+import { registerKnowledgeBaseIpc } from "../knowledge-base/knowledge-base-ipc";
+import { initializeKnowledgeBase } from "../knowledge-base/knowledge-base-service";
 import { createLlmClient } from "../services/llm/llm-client";
 import { createTtsSynthesisService } from "../services/tts/tts-synthesis-service";
-import { createEmbeddingIndexService } from "../services/embedding/embedding-index-service";
-import { momentsService, registerMomentsMediaMatcher } from "../moments/moments-service";
+import { momentsService } from "../moments/moments-service";
 import {
   addL2MemoryVector,
   deleteUserMemoryVectors,
   flushRAGStore,
   flushRAGStoreSync,
   getEntriesBySource,
-  initRAG,
+  initWorldbook,
+  initVectorMemory,
+  disposeVectorMemory,
   isUserMemoryVectorStoreReady,
 } from "../rag";
-import { getEmbeddingProvider } from "../rag/embedding";
+import { isMemoryEnabled, isSummaryMemoryEnabled, setMemoryMode, type MemoryMode } from "../memory/memory-mode";
+import { initializeSummaryMemoryScheduler, enableSummaryMemoryScheduler, flushAllSummaryMemory, scheduleSummaryTurn } from "../memory/summary-memory-scheduler";
+import { createConversationSessionMigration } from "../orchestrator/conversation-session-migration";
+import { createWikiChatSourceReader } from "../memory/wiki-source";
+import { initializeWikiMemoryScheduler, enableWikiMemoryScheduler, scheduleWikiTurn } from "../memory/wiki-memory-scheduler";
+import { loadSummaryMemoryContext } from "../memory/summary-memory-context";
+import { clearLegacyStickerEmbeddingCache, loadStickerTextIndex } from "../sticker-text-matcher";
 import { toolRegistry } from "../orchestrator/tools/registry/tool-registry";
 import { pluginPromptRegistry } from "../../plugins/prompts";
 import type { PluginManager } from "../../plugins/manager";
 import { setLive2dWindowSender } from "../orchestrator/tools/built-in-tools";
 import { registerAllTools } from "../orchestrator/tools/registry/tool-registration";
 import { LspManager } from "../lsp/manager";
-import { createLspServerInstaller } from "../lsp/server-installer";
-import { resolveLspServer } from "../lsp/server-discovery";
 import { initSandbox } from "../orchestrator/sandbox/sandbox-exec";
 import {
   encodePlanSessionKey,
@@ -91,15 +97,16 @@ import {
 } from "../protocols/bootstrap";
 import { memoryStore } from "../memory/memory-store";
 import { backupMemoryRagFiles, reconcileMemoryRag } from "../memory/memory-rag-reconciliation";
+import { initReranker, resetReranker } from "../rag/reranker";
 import { broadcastCompactionPhase, registerChatsIpc } from "../chats/chats-ipc";
 import { registerWorkspaceFilesIpc } from "../chats/workspace-files-ipc";
 import { registerOpenInAppIpc } from "../chats/open-in-app";
+import { registerBrowserPanelIpc } from "../browser/browser-panel-ipc";
 import { registerMomentsIpc } from "../moments/moments-ipc";
 import { registerChatUiIpc, getActiveChatSessionId } from "../chats/chat-ui-ipc";
 import { createToastWindowController } from "../toast/toast-window";
 import { createToastService } from "../toast/toast-service";
 import { toastEvents } from "../toast/toast-events";
-import { synthesizeTaskAnnouncement } from "../toast/task-alert-tts";
 import { createToastWindowShell } from "../windows/create-toast-window";
 import * as chatsStore from "../chats/chats-store";
 import { flush as flushTokenUsage } from "../token-usage-store";
@@ -143,6 +150,11 @@ import { initializeScreenshotService } from "../screenshot/screenshot-lifecycle"
 import { bootstrapConfigGetters } from "../startup/bootstrap-config";
 import { bootstrapPermission } from "../permission/bootstrap";
 import { registerPopQuizIpc, registerPopQuizTool } from "../orchestrator/pop-quiz";
+import { createExamPaperStore } from "../learn/exam-paper-store";
+import { createExamDraftStore } from "../learn/exam-draft";
+import { registerExamPaperIpc } from "../learn/exam-paper-ipc";
+import { registerLearnExamPageIpc } from "../learn/exam-page-ipc";
+import { registerLearnExamTools } from "../orchestrator/learn-exam-tools";
 
 import { createIpcScope } from "./ipc-scope";
 import { createShutdownCoordinator } from "./shutdown";
@@ -183,6 +195,7 @@ function listBundledSingleFileLspDirs(root: string): string[] {
 }
 
 async function reconcileUserMemoryIndex(): Promise<void> {
+  if (!isMemoryEnabled()) return;
   if (!isUserMemoryVectorStoreReady()) {
     console.warn("[Memory/RAG] reconciliation skipped: vector store is not writable");
     return;
@@ -198,6 +211,32 @@ async function reconcileUserMemoryIndex(): Promise<void> {
     warn: (message, error) => console.warn(`[Memory/RAG] ${message}:`, error),
   });
   logger.info(LogTag.RAG, "reconciliation:", report);
+}
+
+async function switchMemoryMode(mode: MemoryMode): Promise<void> {
+  if (mode !== "vector") {
+    setMemoryMode(mode);
+    enableSummaryMemoryScheduler(mode === "summary");
+    await enableWikiMemoryScheduler(mode === "wiki");
+    resetReranker();
+    await disposeVectorMemory();
+    return;
+  }
+
+  enableSummaryMemoryScheduler(false);
+  setMemoryMode("vector");
+  await enableWikiMemoryScheduler(false);
+  try {
+    const modelSettings = loadModelSettings();
+    await initVectorMemory("auto", undefined, undefined, modelSettings.embeddingModel, modelSettings.embeddingDimensions);
+    await initReranker(modelSettings.rerankerMode);
+    await reconcileUserMemoryIndex();
+  } catch (error) {
+    setMemoryMode("off");
+    resetReranker();
+    await disposeVectorMemory().catch(() => undefined);
+    throw error;
+  }
 }
 
 /**
@@ -280,7 +319,6 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
     shutdown,
 
     prepare: () => prepareBeforeReady({
-      configureDocumentIndex: () => configureDocumentIndexQueue(runDocumentIndexJob),
       installSingleInstance: (onSecondInstance) => installSingleInstanceGuard(app, onSecondInstance),
       migrateLegacyUserData: () => {
         migrateLegacyUserData({
@@ -360,11 +398,7 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
 
         const llmClient = createLlmClient();
         const ttsSynthesisService = createTtsSynthesisService();
-        const embeddingIndexService = createEmbeddingIndexService();
-        // Moments 配图：贴图 embedding 索引 getter 晚绑定给 moments-service 模块单例（索引未就绪时纯文字降级）
-        registerMomentsMediaMatcher({
-          getStickerIndex: () => embeddingIndexService.getStickerEmbeddingIndex(),
-        });
+        clearLegacyStickerEmbeddingCache(app.getPath("userData"));
         const citaService = createCitaService({ llmClient });
         const socialContextService = createSocialContextService({ llmClient, enqueueLLMTask });
         const proactiveLifecycle = createProactiveLifecycle({
@@ -521,7 +555,6 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           social: socialContextService,
           tts: ttsSynthesisService,
           ttsSession: ttsSessionService,
-          embedding: embeddingIndexService,
           proactive: proactiveLifecycle,
           git,
           checkpoint,
@@ -570,7 +603,31 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
 
       initRag: async () => {
         const modelSettings = loadModelSettings();
-        await initRAG("auto", undefined, undefined, modelSettings.embeddingModel, modelSettings.embeddingDimensions);
+        const knowledgeBase = initializeKnowledgeBase(app.getPath("userData"));
+        setMemoryMode(modelSettings.memoryMode);
+        initializeSummaryMemoryScheduler({
+          userDataRoot: app.getPath("userData"),
+          sessions: chatsStore,
+          onError: (conversationId, error) => logger.warn(LogTag.RAG, "summary memory update failed:", conversationId, error),
+        });
+        enableSummaryMemoryScheduler(isSummaryMemoryEnabled());
+        const wikiMigration = createConversationSessionMigration(app.getPath("userData"));
+        initializeWikiMemoryScheduler({
+          userDataRoot: app.getPath("userData"),
+          sourceReader: createWikiChatSourceReader({
+            transcriptStore: getConversationTranscriptStore(app.getPath("userData")),
+            listSessions: chatsStore.listSessions,
+            ensureConversationMigrated: (id) => wikiMigration.ensureConversationMigrated(id),
+          }),
+          onError: (conversationId, error) => logger.warn(LogTag.RAG, "wiki memory update failed:", conversationId, error),
+        });
+        await enableWikiMemoryScheduler(modelSettings.memoryMode === "wiki");
+        await initWorldbook();
+        if (isMemoryEnabled()) {
+          await initVectorMemory("auto", undefined, undefined, modelSettings.embeddingModel, modelSettings.embeddingDimensions);
+        } else {
+          logger.info(LogTag.RAG, "vector memory disabled by settings");
+        }
         // 注册 RAG 落盘：受控退出在 flushPersistence 阶段刷盘；
         // Windows 会话结束（断电/强制关机）走同步紧急落盘兜底
         shutdown.register({
@@ -579,6 +636,21 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           dispose: async () => { await flushRAGStore(); },
         });
         shutdown.registerEmergencyFlush("rag-store", () => flushRAGStoreSync());
+        shutdown.register({
+          id: "summary-memory",
+          phase: "flushPersistence",
+          dispose: async () => { await flushAllSummaryMemory(); },
+        });
+        shutdown.register({
+          id: "wiki-memory",
+          phase: "flushPersistence",
+          dispose: async () => { await enableWikiMemoryScheduler(false); },
+        });
+        shutdown.register({
+          id: "knowledge-base",
+          phase: "flushPersistence",
+          dispose: async () => { await knowledgeBase.close(); },
+        });
         logger.info(LogTag.RAG, "RAG initialized OK");
       },
 
@@ -593,14 +665,20 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           loadUserProfile,
           toolRegistry,
           skillRegistry,
-          getStickerEmbeddingIndex: () => services.embedding.getStickerEmbeddingIndex(),
-          getEmbeddingProvider,
+          getStickerTextIndex: loadStickerTextIndex,
           broadcastRuntimeStateChanged: () => {
             broadcastToAuxWindows(IPC.RUNTIME_STATE_CHANGED, services.runtimeState.getState());
           },
           citaService: services.cita,
           socialContextScheduler: services.social.scheduler,
           chatsStore,
+          buildSummaryMemoryContext: (conversationId) => loadSummaryMemoryContext({
+            conversationId,
+            userDataRoot: app.getPath("userData"),
+            getSessionRecord: chatsStore.getSessionRecord,
+          }),
+          scheduleSummaryTurn: (input) => scheduleSummaryTurn(input),
+          scheduleWikiTurn: (input) => scheduleWikiTurn(input),
           socialAtomStore: services.social.store,
           buildPluginPromptContext: (input) => pluginPromptRegistry.build(input),
           publishPluginHostEvent: (event, payload) => pluginManager
@@ -674,7 +752,7 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           runtimeStateService: services.runtimeState,
           proactiveLifecycle: services.proactive,
           reconcileUserMemoryIndex,
-          embeddingIndexService: services.embedding,
+          switchMemoryMode,
           syncVolcanoSearchMcp,
           syncPlaywrightMcp,
           syncFilesystemMcp,
@@ -686,8 +764,9 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         registerMemoryUserToolIpc({
           ipc,
           windowManager: shell.windowManager,
-          embeddingIndexService: services.embedding,
         });
+        registerWikiMemoryIpc(ipc);
+        registerKnowledgeBaseIpc(ipc);
 
         // ── TTS IPC ──
         registerTtsIpc({ ipc, ttsSessionService: services.ttsSession });
@@ -704,6 +783,17 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         registerWorkspaceFilesIpc(ipc);
         // 工作区右上角"打开"菜单：本机应用探测 + 打开执行
         registerOpenInAppIpc(ipc);
+        const examPaperStore = createExamPaperStore(app.getPath("userData"));
+        const browserPanel = registerBrowserPanelIpc({
+          ipc,
+          getWindow: () => reactChatWindow,
+          getExamRecord: (examId) => examPaperStore.get(examId),
+        });
+        shutdown.register({
+          id: "browser-panel-session",
+          phase: "flushPersistence",
+          dispose: async () => { await browserPanel.persistSessionForShutdown(); },
+        });
         registerWorkbenchIpc({
           ipc,
           checkpoint: services.checkpoint,
@@ -788,6 +878,17 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
         // pop_quiz 抽查工具：IPC（提交/跳过）与工具注册（learn 模式可见）
         registerPopQuizIpc(ipc);
         registerPopQuizTool();
+        // 正式试卷：答案与评分资料仅由主进程存储；Learn 工具负责出卷、取卷批改与保存结果。
+        const examDraftStore = createExamDraftStore(app.getPath("userData"), examPaperStore);
+        void examDraftStore.deleteExpired().catch((error) => {
+          console.warn("[LearnExam] 清理过期出卷草稿失败:", error);
+        });
+        void examPaperStore.recoverInterruptedGrading().catch((error) => {
+          console.warn("[LearnExam] 恢复中断批改状态失败:", error);
+        });
+        registerExamPaperIpc(examPaperStore, ipc);
+        registerLearnExamPageIpc(examPaperStore, ipc);
+        registerLearnExamTools(examPaperStore, examDraftStore);
         registerCallIpc(ipc);
       },
 
@@ -864,7 +965,7 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
       },
       restoreMcp: (signal) => initMcpManager({ signal }),
       reconcileMemory: async (signal) => {
-        if (signal.aborted) return;
+        if (signal.aborted || !isMemoryEnabled()) return;
         try {
           await reconcileUserMemoryIndex();
         } catch (err) {
@@ -872,13 +973,10 @@ export function createDefaultApplicationDependencies(): ApplicationDependencies 
           throw err;
         }
       },
-      scheduleEmbeddingRefresh: async () => {
-        core.services.embedding.scheduleStartupRefreshes();
-      },
       initializeReranker: async () => {
+        if (!isMemoryEnabled()) return;
         // initReranker 内部检测模型是否安装，未安装自动降级为 none
         try {
-          const { initReranker } = await import("../rag/reranker");
           const modelSettings = loadModelSettings();
           await initReranker(modelSettings.rerankerMode);
           logger.info(LogTag.Reranker, "initialized with mode:", modelSettings.rerankerMode);

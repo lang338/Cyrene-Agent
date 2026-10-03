@@ -361,6 +361,26 @@
   background: var(--rb-surface-hover);
 }
 
+.cy-composer__attachment.is-web-element {
+  max-width: 290px;
+  border: 1px solid color-mix(in srgb, var(--rb-accent, #e75d87) 42%, transparent);
+  background: color-mix(in srgb, var(--rb-accent, #e75d87) 10%, var(--rb-bg-2, #faf8fa));
+}
+
+.cy-composer__web-element {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  color: var(--rb-accent, #e75d87);
+}
+
+.cy-composer__web-element > span { display: grid; min-width: 0; }
+.cy-composer__web-element strong,
+.cy-composer__web-element small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cy-composer__web-element strong { color: var(--rb-text-primary, #29252a); font-size: 12px; font-weight: 600; }
+.cy-composer__web-element small { color: var(--rb-text-secondary, #777); font-size: 10px; }
+
 .cy-composer__attachment--sticker {
   position: relative;
   display: block;

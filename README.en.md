@@ -95,7 +95,7 @@ CyreneHarness is the core Agent Loop of Cyrene Agent. It chains **model decision
 ### Prerequisites
 
 - **Windows 10 / 11 64-bit**
-- **Node.js 24 LTS** (npm 10+)
+- **Node.js 24 LTS** and **pnpm 10.33.0** (install it with `npm install --global pnpm@10.33.0`)
 - **[Rust stable](https://www.rust-lang.org/tools/install)** + **[Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)** (required for building the screenshot helper from source; selecting the "Desktop development with C++" workload in Build Tools is sufficient)
 
 > Feishu, WeChat iLink, `nut-js` keyboard/mouse automation, and the native screenshot feature depend on the Windows environment.
@@ -108,7 +108,7 @@ CyreneHarness is the core Agent Loop of Cyrene Agent. It chains **model decision
 git clone https://github.com/Playa-Cyrene/Cyrene-Agent.git
 # Or via the Gitee mirror (China): git clone https://gitee.com/playa0/cyrene-agent.git
 cd Cyrene-Agent
-npm ci
+pnpm install --frozen-lockfile
 ```
 
 The first installation downloads Electron, Pixi.js, Live2D, and related dependencies. The time required depends on your network connection.
@@ -118,28 +118,28 @@ The first installation downloads Electron, Pixi.js, Live2D, and related dependen
 When running from source for the first time, you need to build the Rust native screenshot helper:
 
 ```bash
-npm run build:screenshot-helper
-npm run build
-npm start
+pnpm run build:screenshot-helper
+pnpm run build
+pnpm start
 ```
 
 > [!IMPORTANT]
 >
-> The native screenshot helper is not committed to the Git repository as an `.exe` file. You must run `npm run build:screenshot-helper` once after cloning.
+> The native screenshot helper is not committed to the Git repository as an `.exe` file. You must run `pnpm run build:screenshot-helper` once after cloning.
 >
-> **Windows users** can also double-click `setup.bat` in the project root to install dependencies, build, and run `npm link`, then double-click `start.bat` to launch.
+> **Windows users** can also double-click `setup.bat` in the project root to install dependencies, build, and link the global command, then double-click `start.bat` to launch. pnpm 10.33.0 must be installed first.
 
 Development mode:
 
 ```bash
-npm run build:screenshot-helper
-npm run dev
+pnpm run build:screenshot-helper
+pnpm run dev
 ```
 
 Building a distributable Windows version (automatically builds both the Electron app and the Rust screenshot helper):
 
 ```bash
-npm run package:win:dir
+pnpm run package:win:dir
 ```
 
 ### 3. Install BGE-M3 (Recommended)
@@ -154,9 +154,9 @@ Cyrene can chat normally without running a local large language model. However, 
 
 ### 4. Command-line Entry (Optional)
 
-The project ships a `cyrene` command-line entry point. After running `npm run build:cli && npm link`, it can be used from any directory, providing subcommands such as `version` and `run`; see `cyrene --help` for details.
+The project ships a `cyrene` command-line entry point. After running `pnpm run build:cli && pnpm link --global`, it can be used from any directory, providing subcommands such as `version` and `run`; see `cyrene --help` for details.
 
-> `npm run build` already includes `build:cli`, but `npm link` is still required. The production `cyrene desktop` entry will arrive in 1.x.
+> `pnpm run build` already includes `build:cli`, but `pnpm link --global` is still required. The production `cyrene desktop` entry will arrive in 1.x.
 
 ---
 
@@ -498,13 +498,13 @@ Cyrene includes many built-in and extensible tools, primarily covering the follo
 #### 🧪 Unit Tests
 
 - Vitest 5 covers core modules including ASR, TTS, channels, chats, memory, orchestrator, plugins, RAG, and Skills.
-- Use `npm test` for a one-time run or `npm run test:watch` for watch mode.
-- Plugin development: `npm run check:plugin-sdk` validates SDK packaging, and `npm run test:plugin-examples` verifies the official examples end to end.
+- Use `pnpm test` for a one-time run or `pnpm run test:watch` for watch mode.
+- Plugin development: `pnpm run check:plugin-sdk` validates SDK packaging, and `pnpm run test:plugin-examples` verifies the official examples end to end.
 
 #### 🎬 Scenario Simulation
 
-- Use `npm run sim` for the default scenario, or `sim:coffee`, `sim:mix`, and `sim:rescue` for individual scenario debugging; output is written to `sim-result/`.
-- Run `npm run sim:sweep --rewardGain=3,5,7,10` to sweep Worldbook scoring parameters.
+- Use `pnpm run sim` for the default scenario, or `sim:coffee`, `sim:mix`, and `sim:rescue` for individual scenario debugging; output is written to `sim-result/`.
+- Run `pnpm run sim:sweep --rewardGain=3,5,7,10` to sweep Worldbook scoring parameters.
 
 </details>
 

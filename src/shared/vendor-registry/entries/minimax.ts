@@ -18,8 +18,6 @@ export const MINIMAX_REGISTRY = defineVendor({
     thinkingField: "thinking",
     cacheStrategy: "cache_control",
     testStrategy: "text",
-    // M3 原生多模态（image_url / video_url）
-    supportsVision: true,
     // 视觉仍走 OpenAI 兼容入口。
     visionBaseUrl: "https://api.minimaxi.com/v1",
     // 三协议全支持（协议矩阵 2026-08-21）
@@ -33,6 +31,20 @@ export const MINIMAX_REGISTRY = defineVendor({
   },
   reasoningRules: [
     // ── minimax（稀宇科技）──
+    // M3.1-Flash-Preview（2026-09-27 发布，仅 Token Plan / MiniMax Code 可用）：
+    // M3 的日常 Coding 提速款，1M 上下文 + 原生多模态（文本/图片/视频）。
+    // 与 M3 的差异是新增 effort 五档（low/medium/high/xhigh/max）；思考始终开启、
+    // 不能关闭 → supportsDisable=false。官方缺省 max，与 GLM-5.3 / Kimi K3 同属
+    // "思考爆炸"体质，产品默认压到 high。
+    // 必须排在 /^MiniMax-M3/ 之前，否则会被 M3 的 toggle 规则先吞掉。
+    { providerId: "minimax", modelPattern: /^MiniMax-M3\.1/i, capability: {
+      control: "toggle-effort",
+      supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+      defaultEffort: "high",
+      requestStyle: "anthropic-adaptive",
+      supportsDisable: false,
+      autoEffort: "high",
+    } },
     // M3 走 anthropic-adaptive（on=adaptive / off=disabled），不用通用 thinking-type 路径。
     { providerId: "minimax", modelPattern: /^MiniMax-M3/i, capability: {
       control: "toggle",

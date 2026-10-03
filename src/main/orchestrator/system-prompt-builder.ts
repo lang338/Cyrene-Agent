@@ -72,7 +72,7 @@ export function buildToolSystemPrompt(
   _mode: ConversationMode,
   enabledTools: ReadonlyArray<ToolDefinition>,
 ): string {
-  const catalog = buildToolCatalog(enabledTools as ToolDefinition[]);
+  const catalog = buildToolCatalog((enabledTools as ToolDefinition[]).filter((tool) => tool.browserControlPhase !== "active"));
   return [
     "## 当前可用工具",
     catalog,

@@ -272,6 +272,8 @@ export interface HarnessInput {
   initialState?: AgentState;
   /** 普通工具列表（从 registry 获取） */
   tools: ToolDefinition[];
+  /** 当前 run 是否持有浏览器租约；用于按轮生成浏览器工具清单。 */
+  browserControlState?: () => "active" | "inactive";
   /** 厂商适配器 ID（用于 LLM 调用） */
   vendorConfig: import("../vendors/types").VendorConfig;
   /** 配置 */

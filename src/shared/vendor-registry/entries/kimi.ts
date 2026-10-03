@@ -16,8 +16,6 @@ export const KIMI_REGISTRY = defineVendor({
     thinkingField: "thinking",
     cacheStrategy: "prompt_cache_key",
     testStrategy: "text",
-    // k2.7-code 支持 image_url / video_url content block
-    supportsVision: true,
     // 官方仅兼容 Chat Completions（协议矩阵 2026-08-21）
     supportedTransports: ["openai"],
   },

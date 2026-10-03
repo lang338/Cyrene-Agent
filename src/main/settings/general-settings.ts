@@ -1,4 +1,4 @@
-import type { UiTheme } from "../../shared/ui-theme";
+import type { UiThemeChoice } from "../../shared/ui-theme";
 import type { UiIcon } from "../../shared/ui-icon";
 import type { UiLanguage } from "../../shared/ui-language";
 import type { MessageTypography } from "../../shared/message-typography";
@@ -61,7 +61,7 @@ export interface GeneralSettings {
   launchAtLogin: boolean;
   /** 界面语言：已支持中文、英文、日文，其余语言待翻译补齐后开放。 */
   language: UiLanguage;
-  uiTheme: UiTheme;
+  uiTheme: UiThemeChoice;
   /** @deprecated 旧版透明窗口开关，仅保留用于配置兼容。 */
   uiThemeRadius: boolean;
   uiIcon: UiIcon;

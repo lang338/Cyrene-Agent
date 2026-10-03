@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { ChevronDown } from "lucide-react";
 import { useTranslation } from "../../../i18n";
 import {
   buildAskSubmission,
@@ -24,9 +25,19 @@ import moodCompanyUrl from "../../../assets/status-moods/陪伴中.png?url";
 import moodSpoiledUrl from "../../../assets/status-moods/撒娇.png?url";
 import moodLearnUrl from "../../../assets/status-moods/学习.png?url";
 
-function PanelShell({ children, title }: { children: ReactNode; title: string }) {
+function PanelShell({ children, title, onCollapse }: { children: ReactNode; title: string; onCollapse?: () => void }) {
+  const { t } = useTranslation();
   return (
     <section className="cy-interaction-panel" aria-label={title}>
+      <button
+        type="button"
+        className="cy-interaction-panel__collapse"
+        aria-label={t("interaction.collapseCard")}
+        title={t("interaction.collapseCard")}
+        onClick={onCollapse}
+      >
+        <ChevronDown size={16} aria-hidden="true" />
+      </button>
       {children}
     </section>
   );
@@ -76,10 +87,12 @@ function QuestionnaireChoice({
 export function AskUserPanel({
   interaction,
   disabled = false,
+  onCollapse,
   onAnswer,
 }: {
   interaction: AskUserInteraction;
   disabled?: boolean;
+  onCollapse?: () => void;
   onAnswer?: (answer: unknown) => void;
   onIgnore?: () => void;
 }) {
@@ -92,9 +105,11 @@ export function AskUserPanel({
   }];
   const [page, setPage] = useState(0);
   const [drafts, setDrafts] = useState(() => createAskDrafts(questions));
+  const [additionalContext, setAdditionalContext] = useState("");
   useEffect(() => {
     setPage(0);
     setDrafts(createAskDrafts(questions));
+    setAdditionalContext("");
   }, [interaction.id]);
   const current = questions[Math.min(page, questions.length - 1)];
   const currentDraft = drafts[current.id] ?? { source: null, optionIds: [], customText: "" };
@@ -102,12 +117,13 @@ export function AskUserPanel({
   const submit = () => {
     if (!canSubmit) return;
     if (interaction.responseKind === "submission") {
-      onAnswer?.(buildAskSubmission(interaction, drafts));
+      onAnswer?.(buildAskSubmission(interaction, drafts, additionalContext));
       return;
     }
     if (interaction.responseKind === "clarification") {
       onAnswer?.({
         requestId: interaction.id,
+        ...(additionalContext.trim() ? { additionalContext: additionalContext.trim() } : {}),
         answers: questions.map((question) => {
           const draft = drafts[question.id];
           return draft.source === "custom"
@@ -121,7 +137,7 @@ export function AskUserPanel({
   };
 
   return (
-    <PanelShell title={t("interaction.askingTitle")}>
+    <PanelShell title={t("interaction.askingTitle")} onCollapse={onCollapse}>
       <img src={moodWarmUrl} className="cy-interaction-panel__mood-bottom-left" alt="" />
       <div className="cy-interaction-panel__heading">
         <span className="cy-interaction-panel__status"><img src={moodCompanyUrl} alt="" />{t("interaction.askingTitle")}</span>
@@ -187,6 +203,18 @@ export function AskUserPanel({
           })}
         </div>
       )}
+      {interaction.allowAdditionalContext && (
+        <label className="cy-interaction-panel__additional-context">
+          <span>{t("interaction.additionalContextLabel")}</span>
+          <textarea
+            value={additionalContext}
+            disabled={disabled}
+            rows={3}
+            placeholder={t("interaction.additionalContextPlaceholder")}
+            onChange={(event) => setAdditionalContext(event.target.value)}
+          />
+        </label>
+      )}
       <div className="cy-interaction-panel__actions">
         <button type="button" className="is-primary" disabled={disabled || !canSubmit} onClick={submit}>{questions.length > 1 ? t("interaction.submitAll") : t("interaction.submit")}</button>
       </div>
@@ -202,10 +230,12 @@ export function AskUserPanel({
 export function PlanApprovalPanel({
   interaction,
   disabled = false,
+  onCollapse,
   onAnswer,
 }: {
   interaction: AskUserInteraction;
   disabled?: boolean;
+  onCollapse?: () => void;
   onAnswer?: (answer: unknown) => void;
 }) {
   const { t } = useTranslation();
@@ -238,7 +268,7 @@ export function PlanApprovalPanel({
   };
 
   return (
-    <PanelShell title={t("interaction.planApprovalTitle")}>
+    <PanelShell title={t("interaction.planApprovalTitle")} onCollapse={onCollapse}>
       <div className="cy-interaction-panel__heading">
         <span className="cy-interaction-panel__status"><img src={moodCompanyUrl} alt="" />{t("interaction.planApprovalTitle")}</span>
       </div>
@@ -299,15 +329,17 @@ export function PlanApprovalPanel({
 export function PermissionPanel({
   interaction,
   disabled = false,
+  onCollapse,
   onDecision,
 }: {
   interaction: PermissionInteraction;
   disabled?: boolean;
+  onCollapse?: () => void;
   onDecision?: (allowed: boolean) => void;
 }) {
   const { t } = useTranslation();
   return (
-    <PanelShell title={t("interaction.permissionTitle")}>
+    <PanelShell title={t("interaction.permissionTitle")} onCollapse={onCollapse}>
       <img src={moodWarmUrl} className="cy-interaction-panel__mood-bottom-left" alt="" />
       <div className="cy-interaction-panel__heading">
         <span className="cy-interaction-panel__status"><img src={moodSpoiledUrl} alt="" />{t("interaction.permissionTitle")}</span>
@@ -382,11 +414,13 @@ function describeQuizAnswerValue(
 export function PopQuizPanel({
   interaction,
   disabled = false,
+  onCollapse,
   onSubmit,
   onSkip,
 }: {
   interaction: PopQuizInteraction;
   disabled?: boolean;
+  onCollapse?: () => void;
   /** 提交作答：主进程本地判分，返回 graded 后切展示态。 */
   onSubmit?: (submission: PopQuizSubmission) => Promise<{ ok: boolean; error?: string; graded?: PopQuizGradedQuestion[] }>;
   /** 跳过整次抽查：主进程结算 skipped 后由广播清卡。 */
@@ -459,7 +493,7 @@ export function PopQuizPanel({
   if (phase === "graded") {
     const gradedById = new Map(graded.map((item) => [item.questionId, item]));
     return (
-      <PanelShell title={t("interaction.quizTitle")}>
+      <PanelShell title={t("interaction.quizTitle")} onCollapse={onCollapse}>
         <img src={moodWarmUrl} className="cy-interaction-panel__mood-bottom-left" alt="" />
         <div className="cy-interaction-panel__heading">
           <span className="cy-interaction-panel__status"><img src={moodLearnUrl} alt="" />{t("interaction.quizGradedTitle")}</span>
@@ -512,7 +546,7 @@ export function PopQuizPanel({
 
   // ── 作答态：逐题作答，全部答完才能提交 ──
   return (
-    <PanelShell title={t("interaction.quizTitle")}>
+    <PanelShell title={t("interaction.quizTitle")} onCollapse={onCollapse}>
       <img src={moodWarmUrl} className="cy-interaction-panel__mood-bottom-left" alt="" />
       <div className="cy-interaction-panel__heading">
         <span className="cy-interaction-panel__status"><img src={moodLearnUrl} alt="" />{t("interaction.quizTitle")}</span>

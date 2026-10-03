@@ -9,8 +9,7 @@ import {
   reactChatWindow,
 } from "../windows/window-state";
 import type { RuntimeStateService } from "../orchestrator/runtime-state-service";
-import type { EmbeddingIndexService } from "../services/embedding/embedding-index-service";
-import { initReranker, getRerankerInstallStatus } from "../rag/reranker";
+import { initReranker, getRerankerInstallStatus, resetReranker } from "../rag/reranker";
 import { switchEmbeddingModel } from "../rag";
 import { testVendorConnection } from "../orchestrator/vendors/test-connection";
 import { getAdapterForConfig } from "../orchestrator/vendors";
@@ -21,6 +20,8 @@ import { getTimeoutSettings, saveTimeoutSettings } from "../timeout-manager";
 import type { syncVolcanoSearchMcp } from "./general-settings-lifecycle";
 import type { syncPlaywrightMcp, syncFilesystemMcp } from "../sync-mcp-builtin";
 import { broadcastChatsChanged } from "../chats/chats-ipc";
+import { normalizeMemoryMode, type MemoryMode } from "../memory/memory-mode";
+import { getEffectiveUiTheme, watchSystemUiTheme } from "../system-ui-theme";
 
 export interface SettingsIpcDependencies {
   get windowManager(): WindowManager | null;
@@ -31,7 +32,7 @@ export interface SettingsIpcDependencies {
   runtimeStateService: RuntimeStateService;
   proactiveLifecycle: { getProactiveChatService: () => { invalidate: () => void } | null };
   reconcileUserMemoryIndex: () => Promise<void>;
-  embeddingIndexService: EmbeddingIndexService;
+  switchMemoryMode?: (mode: MemoryMode) => Promise<void>;
   syncVolcanoSearchMcp: typeof syncVolcanoSearchMcp;
   syncPlaywrightMcp: typeof syncPlaywrightMcp;
   syncFilesystemMcp: typeof syncFilesystemMcp;
@@ -52,7 +53,7 @@ export function registerSettingsIpc(deps: SettingsIpcDependencies): void {
     runtimeStateService,
     proactiveLifecycle,
     reconcileUserMemoryIndex,
-    embeddingIndexService,
+    switchMemoryMode,
     syncVolcanoSearchMcp,
     syncPlaywrightMcp,
     syncFilesystemMcp,
@@ -60,6 +61,11 @@ export function registerSettingsIpc(deps: SettingsIpcDependencies): void {
   // 注意：windowManager 不解构，统一用 deps.windowManager 实时读取 getter。
   // registerSettingsIpc 在模块加载阶段调用，那时 windowManager 仍为 null，
   // 解构会捕获 null 并导致后续 ?. 永远短路（设置里的打开侧边栏/日程等会失效）。
+
+  watchSystemUiTheme(
+    () => getGeneralSettings().uiTheme,
+    (theme) => deps.windowManager?.broadcast(IPC.UI_THEME_CHANGED, theme),
+  );
 
   function broadcastToAuxWindows(channel: string, payload: unknown): void {
     const win = reactChatWindow;
@@ -115,7 +121,7 @@ export function registerSettingsIpc(deps: SettingsIpcDependencies): void {
     saveTimeoutSettings(settings),
   );
 
-  ipc.handle(IPC.UI_THEME_GET, () => getGeneralSettings().uiTheme);
+  ipc.handle(IPC.UI_THEME_GET, () => getEffectiveUiTheme(getGeneralSettings().uiTheme));
 
   ipc.handle(IPC.UI_THEME_RADIUS_GET, () => getGeneralSettings().uiThemeRadius);
 
@@ -186,8 +192,24 @@ export function registerSettingsIpc(deps: SettingsIpcDependencies): void {
 
   ipc.handle(IPC.RUNTIME_STATE_GET, () => runtimeStateService.getState());
 
-  ipc.handle(IPC.SETTINGS_SAVE_CONFIG, (_event, settings: Partial<ModelSettings>) => {
-    const saved = saveModelSettings(settings);
+  ipc.handle(IPC.SETTINGS_SAVE_CONFIG, async (_event, settings: Partial<ModelSettings>) => {
+    const previousMode = normalizeMemoryMode(getModelSettings().memoryMode);
+    const nextMode = normalizeMemoryMode(settings.memoryMode ?? previousMode);
+    const modeChanged = nextMode !== previousMode;
+    let saved: ModelSettings;
+    try {
+      if (modeChanged) await switchMemoryMode?.(nextMode);
+      saved = saveModelSettings({ ...settings, memoryMode: nextMode });
+    } catch (error) {
+      if (modeChanged) {
+        try {
+          await switchMemoryMode?.(previousMode);
+        } catch (rollbackError) {
+          console.error("[Settings] failed to restore memory mode after config update failure:", rollbackError);
+        }
+      }
+      throw error;
+    }
     broadcastModelConfigChanged(saved);
     return saved;
   });
@@ -241,8 +263,6 @@ export function registerSettingsIpc(deps: SettingsIpcDependencies): void {
         await reconcileUserMemoryIndex();
         saveModelSettings({ embeddingModel: "bgem3" });
         broadcastModelConfigChanged();
-        embeddingIndexService.invalidateStickerEmbeddingIndex();
-        embeddingIndexService.refreshStickerEmbeddingIndex("embedding-model-switch");
       }
       return result;
     } catch (err) {
@@ -255,7 +275,8 @@ export function registerSettingsIpc(deps: SettingsIpcDependencies): void {
   ipc.handle(IPC.RERANKER_SET_MODE, async (_event, mode: "standard" | "none") => {
     const current = getModelSettings();
     saveModelSettings({ ...current, rerankerMode: mode });
-    await initReranker(mode);
+    if (normalizeMemoryMode(current.memoryMode) === "vector") await initReranker(mode);
+    else resetReranker();
     console.log("[Cyrene] reranker mode switched to", mode);
     return true;
   });

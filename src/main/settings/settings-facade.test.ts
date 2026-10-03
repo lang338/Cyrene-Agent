@@ -40,6 +40,13 @@ describe("general window state persistence setting", () => {
   });
 });
 
+describe("general theme choice persistence", () => {
+  it("keeps the system choice while preserving the legacy light default", () => {
+    expect(normalizeGeneralSettings({}).uiTheme).toBe("pearl-white");
+    expect(normalizeGeneralSettings({ uiTheme: "system" }).uiTheme).toBe("system");
+  });
+});
+
 describe("general LSP settings", () => {
   it("keeps valid user server overrides and safely drops malformed settings", () => {
     const settings = normalizeGeneralSettings({

@@ -17,8 +17,6 @@ export const CHATGPT_REGISTRY = defineVendor({
     thinkingField: "reasoning_content",
     cacheStrategy: "auto",
     testStrategy: "text",
-    // model 由用户填，保守 false；门控会按 supportsVision 拦截
-    supportsVision: false,
     // 双协议：Chat Completions + Responses（Responses 为官方主推）
     supportedTransports: ["openai", "responses"],
     // 端点级标记：仅 OpenAI 官方端点支持 encrypted reasoning 回放
@@ -29,6 +27,19 @@ export const CHATGPT_REGISTRY = defineVendor({
   reasoningRules: [
     // ── chatgpt（OpenAI）──
     // 按具体型号拆分。
+    // GPT-6.1 Sol（2026-09-29 发布）：GPT-6 Sol 的升级款，定位在旗舰 Astra 之下，
+    // 1.1M 上下文，agentic coding / 文档密集任务接近 Astra 水平而成本低得多。
+    // effort 与 Sol 相同（可关闭 → supportsDisable=true），pro mode 同样支持。
+    // 必须排在 /^gpt-6/（Astra 兜底，禁关思考）之前：/^gpt-6-/ 匹配不到 "gpt-6.1-"，
+    // 不前置会被 Astra 规则误吞。
+    { providerId: "chatgpt", modelPattern: /^gpt-6\.1/i, capability: {
+      control: "effort",
+      supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+      defaultEffort: "medium",
+      requestStyle: "openai-effort",
+      supportsDisable: true,
+      supportsProMode: true,
+    } },
     // GPT-6 Sol / Luna（2026-09-22 发布）：Astra 能力下放的日常工作款。官方模型页
     // effort 支持 none/low/medium(默认)/high/xhigh/max —— 与 Astra 不同，可关闭
     // 思考（off → reasoning_effort:"none"）；pro mode 与 GPT-6 系一致支持。

@@ -15,7 +15,6 @@ export const DOUBAO_REGISTRY = defineVendor({
     thinkingField: "reasoning_content",
     cacheStrategy: "none",
     testStrategy: "text",
-    supportsVision: true,
     // 火山方舟三格式全兼容（官方文档）
     supportedTransports: ["openai", "anthropic", "responses"],
   },

@@ -596,8 +596,8 @@ state，避免每次启动重复尝试。
 ## 验证
 
 ```bash
-npx vitest run src/plugins src/main/plugin-llm.test.ts src/main/channels/manager.test.ts
-npm run build
+pnpm exec vitest run src/plugins src/main/plugin-llm.test.ts src/main/channels/manager.test.ts
+pnpm run build
 ```
 
 建议人工验收：

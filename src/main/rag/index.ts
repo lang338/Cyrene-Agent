@@ -9,22 +9,84 @@ import { HybridRetriever } from "./retriever";
 import { WorldbookManager } from "./worldbook";
 import { logger, LogTag } from "../logger";
 export { INJECTION_HEADER, INJECTION_PREAMBLE } from "./worldbook-constants";
-import { chunkText } from "./chunk";
 import { feedEntityNamesToJieba } from "../memory/entity-graph";
 import { isL2LocallyRecallable } from "../memory/memory-types";
-import type { DocumentImportControl } from "./file-ingest";
 import { findPromptPath } from "../external-content-paths";
+import { isMemoryEnabled } from "../memory/memory-mode";
 
 // ── Global RAG instances ──
 let store: JsonVectorStore | null = null;
 let retriever: HybridRetriever | null = null;
 let worldbook: WorldbookManager | null = null;
 let provider: EmbeddingProvider | null = null;
+let activeVectorOperations = 0;
+const vectorOperationsDrained = new Set<() => void>();
 // 每轮对话递增，用于 DMAE repeatWindow 统计（worldbook 状态不持久化，重启回 0 可接受）
 let worldbookTurnCounter = 0;
 
 function getDataDir(): string {
   return path.join(app.getPath("userData"), "rag-data");
+}
+
+function stripImportedDocumentEntries(filePath: string): number {
+  if (!fs.existsSync(filePath)) return 0;
+  const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+  if (!Array.isArray(parsed)) return 0;
+  const filtered = parsed.filter((entry) =>
+    !entry || typeof entry !== "object" || (entry as { source?: unknown }).source !== "imported_doc",
+  );
+  const deleted = parsed.length - filtered.length;
+  if (deleted === 0) return 0;
+  const temporaryPath = `${filePath}.cleanup`;
+  fs.writeFileSync(temporaryPath, JSON.stringify(filtered, null, 2), "utf8");
+  fs.renameSync(temporaryPath, filePath);
+  return deleted;
+}
+
+async function removeImportedDocumentData(dataDir: string): Promise<number> {
+  let removed = 0;
+
+  for (const filePath of [
+    path.join(dataDir, "memory-store.json"),
+    path.join(dataDir, "memory-store.json.tmp"),
+  ]) {
+    try {
+      removed += stripImportedDocumentEntries(filePath);
+    } catch (error) {
+      logger.warn(LogTag.RAG, "failed to remove imported document vectors from pending store:", filePath, error);
+    }
+  }
+
+  for (const filePath of [
+    path.join(dataDir, "memory-store.json.tmp.cleanup"),
+    path.join(dataDir, "document-cache.json"),
+    path.join(dataDir, "document-cache.json.tmp"),
+  ]) {
+    try {
+      fs.rmSync(filePath, { force: true });
+    } catch (error) {
+      logger.warn(LogTag.RAG, "failed to remove imported document cache:", filePath, error);
+    }
+  }
+
+  const backupDir = path.join(path.dirname(dataDir), "memory-reconcile-backups");
+  try {
+    for (const name of fs.readdirSync(backupDir)) {
+      if (!name.startsWith("memory-store.") || !name.endsWith(".json")) continue;
+      const filePath = path.join(backupDir, name);
+      try {
+        removed += stripImportedDocumentEntries(filePath);
+      } catch (error) {
+        logger.warn(LogTag.RAG, "failed to remove imported document vectors from backup:", filePath, error);
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger.warn(LogTag.RAG, "failed to scan memory reconciliation backups:", error);
+    }
+  }
+
+  return removed;
 }
 
 // ── Init ──
@@ -35,13 +97,59 @@ export async function initRAG(
   embeddingModel?: string,
   cloudDimensions?: number,
 ): Promise<void> {
+  if (isMemoryEnabled()) {
+    await initVectorMemory(ragMode, cloudBaseUrl, cloudApiKey, embeddingModel, cloudDimensions);
+  }
+  await initWorldbook();
+}
+
+async function trackVectorOperation<T>(operation: () => Promise<T>): Promise<T> {
+  activeVectorOperations++;
+  try {
+    return await operation();
+  } finally {
+    activeVectorOperations--;
+    if (activeVectorOperations === 0) {
+      for (const resolve of vectorOperationsDrained) resolve();
+      vectorOperationsDrained.clear();
+    }
+  }
+}
+
+async function waitForVectorOperations(): Promise<void> {
+  if (activeVectorOperations === 0) return;
+  await new Promise<void>((resolve) => { vectorOperationsDrained.add(resolve); });
+}
+
+export async function initVectorMemory(
+  ragMode: "auto" | "local" | "cloud" = "auto",
+  cloudBaseUrl?: string,
+  cloudApiKey?: string,
+  embeddingModel?: string,
+  cloudDimensions?: number,
+): Promise<void> {
   const dataDir = getDataDir();
   provider = getEmbeddingProvider(ragMode, cloudBaseUrl, cloudApiKey, embeddingModel, cloudDimensions);
+  const removedImportedDocumentVectors = await removeImportedDocumentData(dataDir);
   store = new JsonVectorStore(dataDir);
+  if (removedImportedDocumentVectors > 0) {
+    logger.info(LogTag.RAG, `removed ${removedImportedDocumentVectors} imported document vectors`);
+  }
   // 只有 provider 存在时才创建 retriever（向量检索依赖 embedding）
   if (provider) {
     retriever = new HybridRetriever(store, provider);
   }
+  logger.info(
+    LogTag.RAG,
+    "vector memory initialized. Mode:", ragMode,
+    "Provider:", provider?.name ?? "none",
+    "Dims:", provider?.dims ?? "N/A",
+    "Memories:", store.stats.total,
+    provider ? "" : " [Vector retrieval disabled]"
+  );
+}
+
+export async function initWorldbook(): Promise<void> {
   worldbook = new WorldbookManager(
     findPromptPath("worldbook") ?? path.join(app.getPath("userData"), "empty-worldbook"),
     { stateFile: path.join(app.getPath("userData"), "worldbook-state.json") }
@@ -51,15 +159,17 @@ export async function initRAG(
   // 把实体图谱中的已有实体名灌入 jieba 自定义词典
   // 防止 "昔涟"、"小鹿" 等 AI 伴侣核心名词被错误切分
   await feedEntityNamesToJieba();
+  logger.info(LogTag.RAG, "worldbook initialized");
+}
 
-  logger.info(
-    LogTag.RAG,
-    "initialized. Mode:", ragMode,
-    "Provider:", provider?.name ?? "none",
-    "Dims:", provider?.dims ?? "N/A",
-    "Memories:", store.stats.total,
-    provider ? "" : " [Vector retrieval disabled]"
-  );
+/** 关闭向量记忆并释放当前进程持有的索引和嵌入模型引用；不删除磁盘数据。 */
+export async function disposeVectorMemory(): Promise<void> {
+  await waitForVectorOperations();
+  await store?.flush();
+  store = null;
+  retriever = null;
+  provider = null;
+  resetEmbeddingProvider();
 }
 
 /** 受控退出（before-quit 链路）时调用：把防抖中的记忆数据刷盘。 */
@@ -74,6 +184,7 @@ export function flushRAGStoreSync(): void {
 
 // ── Switch embedding model (hot-swap) ──
 export async function switchEmbeddingModel(modelKey: string): Promise<{ ok: boolean; clearedEntries: number; error?: string }> {
+  if (!isMemoryEnabled()) return { ok: false, clearedEntries: 0, error: "记忆模式已关闭" };
   try {
     // Switch the embedding pipeline first
     switchModel(modelKey);
@@ -159,9 +270,14 @@ export async function addMemory(
   source = "user_memory",
   metadata?: Record<string, unknown>
 ): Promise<string> {
+  if (!isMemoryEnabled()) throw new Error("记忆模式已关闭");
   if (!store || !provider) throw new Error("RAG not initialized");
-  const entry = await store.add(text, source, provider, metadata);
-  return entry.id;
+  const currentStore = store;
+  const currentProvider = provider;
+  return trackVectorOperation(async () => {
+    const entry = await currentStore.add(text, source, currentProvider, metadata);
+    return entry.id;
+  });
 }
 
 export async function addL2MemoryVector(
@@ -169,10 +285,15 @@ export async function addL2MemoryVector(
   l2Id: string,
   metadata?: Record<string, unknown>,
 ): Promise<string> {
+  if (!isMemoryEnabled()) throw new Error("记忆模式已关闭");
   if (!store || !provider) throw new Error("RAG not initialized");
   if (!l2Id.trim()) throw new Error("l2Id is required");
-  const entry = await store.addUnique(text, "user_memory", provider, { ...metadata, l2Id });
-  return entry.id;
+  const currentStore = store;
+  const currentProvider = provider;
+  return trackVectorOperation(async () => {
+    const entry = await currentStore.addUnique(text, "user_memory", currentProvider, { ...metadata, l2Id });
+    return entry.id;
+  });
 }
 
 // ── Memory search ──
@@ -191,6 +312,16 @@ export async function searchMemoryEntries(
   source?: string,
   topK = 5,
   options?: { recordRecall?: boolean }
+): Promise<Array<{ id: string; text: string; createdAt: number; score: number; metadata?: Record<string, unknown> }>> {
+  if (!isMemoryEnabled()) return [];
+  return trackVectorOperation(() => searchMemoryEntriesEnabled(query, source, topK, options));
+}
+
+async function searchMemoryEntriesEnabled(
+  query: string,
+  source?: string,
+  topK = 5,
+  options?: { recordRecall?: boolean },
 ): Promise<Array<{ id: string; text: string; createdAt: number; score: number; metadata?: Record<string, unknown> }>> {
   if (!retriever) return [];
   let allowedEntryIds: string[] | undefined;
@@ -249,14 +380,17 @@ export async function searchHistoryEntries(
   query: string,
   topK = 5
 ): Promise<Array<{ text: string; createdAt: number; score: number; metadata?: Record<string, unknown> }>> {
-  if (!retriever) return [];
-  const results = await retriever.retrieve(query, "chat_history", topK);
-  return results.map((r) => ({
-    text: r.entry.text,
-    createdAt: r.entry.createdAt,
-    score: r.score,
-    metadata: r.entry.metadata,
-  }));
+  if (!isMemoryEnabled()) return [];
+  return trackVectorOperation(async () => {
+    if (!retriever) return [];
+    const results = await retriever.retrieve(query, "chat_history", topK);
+    return results.map((r) => ({
+      text: r.entry.text,
+      createdAt: r.entry.createdAt,
+      score: r.score,
+      metadata: r.entry.metadata,
+    }));
+  });
 }
 
 // ── Worldbook DMAE：每轮打分（本轮用户输入 + 上轮模型回复）──
@@ -304,104 +438,6 @@ export function getKeywordMatchedWorldbookEntries(text: string): string[] {
     });
 }
 
-// ── Import document ──
-export type ImportedDocumentResult = {
-  importId: string;
-  chunkCount: number;
-};
-
-export type ImportedDocumentChunk = {
-  text: string;
-  score: number;
-  fileName?: string;
-  chunkIndex?: number;
-  importId?: string;
-};
-
-export type PreparedDocumentEmbedding = {
-  text: string;
-  chunkIndex: number;
-  embedding: number[];
-};
-
-export async function appendPreparedDocumentBatch(
-  fileName: string,
-  importId: string,
-  prepared: PreparedDocumentEmbedding[],
-): Promise<void> {
-  if (!store) throw new Error("RAG not initialized");
-  const added = store.addPreparedBatch(prepared.map((entry) => ({
-    text: entry.text,
-    embedding: entry.embedding,
-    source: "imported_doc",
-    metadata: { fileName, chunkIndex: entry.chunkIndex, importId },
-  })));
-  // 后台预热新条目的 BM25 分词，避免首次检索才付出冷启动成本；不阻塞导入返回
-  void retriever?.warmupBm25Tokens(added);
-}
-
-export async function importPreparedDocumentForTurn(
-  fileName: string,
-  prepared: PreparedDocumentEmbedding[],
-): Promise<ImportedDocumentResult> {
-  if (!store) throw new Error("RAG not initialized");
-  const id = typeof crypto !== "undefined" && crypto.randomUUID
-    ? crypto.randomUUID()
-    : Math.random().toString(36).slice(2, 8);
-  const importId = `import-${Date.now()}-${id}`;
-  await appendPreparedDocumentBatch(fileName, importId, prepared);
-  // 导入是高成本操作（全部 chunk 已完成嵌入），立即落盘保证持久性
-  await store.flush();
-  return { importId, chunkCount: prepared.length };
-}
-
-export async function importDocumentForTurn(
-  text: string,
-  fileName: string,
-  control?: DocumentImportControl,
-): Promise<ImportedDocumentResult> {
-  if (!store || !provider) throw new Error("RAG not initialized");
-  const chunks = chunkText(text, "doc_" + fileName);
-  control?.onProgress?.({ status: "chunking", completedChunks: chunks.length, totalChunks: chunks.length });
-  if (control?.isCancelled?.()) throw new Error("cancelled");
-  const id = typeof crypto !== "undefined" && crypto.randomUUID
-    ? crypto.randomUUID()
-    : Math.random().toString(36).slice(2, 8);
-  const importId = `import-${Date.now()}-${id}`;
-  control?.onProgress?.({ status: "embedding", completedChunks: 0, totalChunks: chunks.length });
-  const added = await store.addBatch(
-    chunks.map((c) => ({ text: c.text, source: "imported_doc", metadata: { fileName, chunkIndex: c.index, importId } })),
-    provider,
-    { isCancelled: control?.isCancelled },
-  );
-  // 导入是高成本操作（全部 chunk 已完成嵌入），立即落盘保证持久性
-  await store.flush();
-  // 后台预热新条目的 BM25 分词，避免首次检索才付出冷启动成本；不阻塞导入返回
-  void retriever?.warmupBm25Tokens(added);
-  return { importId, chunkCount: chunks.length };
-}
-
-export async function importDocument(text: string, fileName: string): Promise<number> {
-  const result = await importDocumentForTurn(text, fileName);
-  return result.chunkCount;
-}
-
-export async function searchImportedDocumentChunksForImportIds(
-  query: string,
-  importIds: string[],
-  topK = 6,
-): Promise<ImportedDocumentChunk[]> {
-  if (!retriever || !query.trim() || importIds.length === 0) return [];
-  const results = await retriever.retrieve(query, "imported_doc", topK, { importIds });
-  return results.map((result) => ({
-    text: result.entry.text,
-    score: result.score,
-    fileName: typeof result.entry.metadata?.fileName === "string" ? result.entry.metadata.fileName : undefined,
-    chunkIndex: typeof result.entry.metadata?.chunkIndex === "number" ? result.entry.metadata.chunkIndex : undefined,
-    importId: typeof result.entry.metadata?.importId === "string" ? result.entry.metadata.importId : undefined,
-  }));
-}
-
 // ── Build memory context (legacy, kept for compatibility) ──
 // 注意：单参签名无 modelText，故 model 奖励不触发（降级行为）。
 // 主流程已改用 orchestrator 的 buildAlwaysOnContext（会传上轮模型回复）。
@@ -415,13 +451,7 @@ export async function buildMemoryContext(userInput: string): Promise<string> {
     parts.push("\u3010\u76f8\u5173\u80cc\u666f\u3011\n" + wbResults.join("\n\n"));
   }
 
-  // 2. Imported docs
-  const docResults = await searchMemory(userInput, "imported_doc", 5);
-  if (docResults.length > 0) {
-    parts.push("\u3010\u76f8\u5173\u6587\u4ef6\u7247\u6bb5\u3011\n" + docResults.map((m) => "- " + m).join("\n"));
-  }
-
-  // 3. User memory
+  // 2. User memory
   const memResults = await searchMemory(userInput, "user_memory", 3);
   if (memResults.length > 0) {
     parts.push("\u3010\u5173\u4e8e\u7528\u6237\u7684\u8bb0\u5fc6\u3011\n" + memResults.map((m) => "- " + m).join("\n"));
@@ -461,13 +491,4 @@ export function getEntriesBySource(source: string): Array<{ id: string; text: st
 export function deleteUserMemoryVectors(ragIds: string[]): number {
   if (!store) throw new Error("RAG not initialized");
   return store.deleteEntriesByIds(ragIds, "user_memory");
-}
-
-export function deleteImportedDoc(importId: string, fileName?: string): number {
-  if (!store) throw new Error("RAG not initialized");
-  return store.deleteImportedDoc(importId, fileName);
-}
-
-export function hasImportedDocumentChunks(importId: string): boolean {
-  return store?.hasImportedDocumentChunks(importId) ?? false;
 }

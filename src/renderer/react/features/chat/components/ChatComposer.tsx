@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, t
 import { useTranslation } from "../../../i18n";
 import { useUserCallPreference } from "../../../hooks/useUserNickname";
 import { resolveAsset } from "../../../../../shared/renderer-base";
+import type { BrowserElementSelection } from "../../../../../shared/browser-panel-types";
 import type { ContextUsageSnapshot } from "../../../../../shared/context-usage";
 import type { ModelFailureInfo } from "../../../../../shared/model-error";
 import { ContextUsageRing } from "./ContextUsageRing";
@@ -79,6 +80,7 @@ export interface ComposerAttachment {
   status?: string;
   reason?: string;
   imageSendMode?: "direct" | "caption";
+  element?: BrowserElementSelection;
 }
 
 const WELCOME_IMAGE_BY_MODE: Record<string, string> = {
@@ -454,8 +456,13 @@ export function ChatComposer({
         header={hasComposerHeader ? (
           <div className="cy-composer__attachments" aria-label={t("composer.attachmentsLabel")}>
             {attachments.map((attachment, index) => (
-              <div className={`cy-composer__attachment ${attachment.kind === "image" && attachment.previewUrl ? "is-image" : ""}`} key={`${attachment.filePath ?? attachment.name}-${index}`}>
-                {attachment.kind === "image" && attachment.previewUrl ? (
+              <div className={`cy-composer__attachment ${attachment.kind === "image" && attachment.previewUrl ? "is-image" : ""}${attachment.kind === "web-element" ? " is-web-element" : ""}`} key={`${attachment.filePath ?? attachment.name}-${index}`}>
+                {attachment.kind === "web-element" && attachment.element ? (
+                  <span className="cy-composer__web-element" title={attachment.element.snapshotLine}>
+                    <ScanLine size={15} />
+                    <span><strong>{attachment.element.name}</strong><small>{attachment.element.pageTitle || attachment.element.pageUrl}</small></span>
+                  </span>
+                ) : attachment.kind === "image" && attachment.previewUrl ? (
                   <img src={attachment.previewUrl} alt="" draggable={false} />
                 ) : (
                   <span title={attachment.name}>{attachment.name}</span>

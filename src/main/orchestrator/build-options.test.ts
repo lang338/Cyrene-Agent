@@ -804,9 +804,8 @@ describe("build-options", () => {
       runtimeState: { status: "陪伴中", feeling: "温柔", expression: 0, updatedAt: 0 },
       feelingToExpression: { "温柔": 0 },
       setRuntimeState: () => {},
-      stickerEmbeddingIndex: null,
-      getEmbeddingProvider: () => null,
-      matchSticker: async () => null,
+      stickerTextIndex: [],
+      matchSticker: () => null,
       loadStickerSettings: () => ({}),
       broadcastRuntimeStateChanged: () => {},
       observeRuntimeState: async () => {},
@@ -823,10 +822,10 @@ describe("build-options", () => {
     })
   })
 
-  it("uses the latest sticker embedding index when agent run finishes", async () => {
-    const matchSticker = vi.fn(async () => ({ id: "hugtight" }))
-    const latestIndex = [{ id: "hugtight", embedding: [1, 0] }]
-    const deps: OnRunFinishedDeps & { getStickerEmbeddingIndex: () => unknown } = {
+  it("uses the latest sticker text index when agent run finishes", async () => {
+    const matchSticker = vi.fn(() => ({ id: "hugtight" }))
+    const latestIndex = [{ id: "hugtight", text: "抱抱你 拥抱 安慰" }]
+    const deps: OnRunFinishedDeps & { getStickerTextIndex: () => typeof latestIndex } = {
       loadModelSettings: () => ({
         provider: "test",
         baseUrl: "",
@@ -841,9 +840,8 @@ describe("build-options", () => {
       runtimeState: { status: "陪伴中", feeling: "温柔", expression: 0, updatedAt: 0 },
       feelingToExpression: { "温柔": 0 },
       setRuntimeState: () => {},
-      stickerEmbeddingIndex: null,
-      getStickerEmbeddingIndex: () => latestIndex,
-      getEmbeddingProvider: () => ({ embed: async () => [1, 0] }),
+      stickerTextIndex: [],
+      getStickerTextIndex: () => latestIndex,
       matchSticker,
       loadStickerSettings: () => ({}),
       broadcastRuntimeStateChanged: () => {},
@@ -855,17 +853,16 @@ describe("build-options", () => {
 
     expect(matchSticker).toHaveBeenCalledWith(
       "来，抱抱你\n今天好累",
-      expect.anything(),
       latestIndex,
       0.55,
     )
     expect(effects).toEqual({ sticker: "hugtight" })
   })
 
-  it("does not send document model context into memory or sticker embedding side effects", async () => {
+  it("does not send document model context into memory or sticker matching side effects", async () => {
     const scheduleMemoryWrite = vi.fn()
-    const matchSticker = vi.fn(async () => null)
-    const latestIndex = [{ id: "thinking", embedding: [1, 0] }]
+    const matchSticker = vi.fn(() => null)
+    const latestIndex = [{ id: "thinking", text: "思考 理解 分析" }]
     const hugeDoc = "超长文档内容".repeat(1000)
     const latestUserText = [
       "帮我总结这个 md",
@@ -887,8 +884,7 @@ describe("build-options", () => {
       runtimeState: { status: "陪伴中", feeling: "温柔", expression: 0, updatedAt: 0 },
       feelingToExpression: { "温柔": 0 },
       setRuntimeState: () => {},
-      stickerEmbeddingIndex: latestIndex,
-      getEmbeddingProvider: () => ({ embed: async () => [1, 0] }),
+      stickerTextIndex: latestIndex,
       matchSticker,
       loadStickerSettings: () => ({}),
       broadcastRuntimeStateChanged: () => {},
@@ -901,14 +897,55 @@ describe("build-options", () => {
     expect(scheduleMemoryWrite).toHaveBeenCalledWith("帮我总结这个 md", "总结好了", undefined)
     expect(matchSticker).toHaveBeenCalledWith(
       "总结好了\n帮我总结这个 md",
-      expect.anything(),
       latestIndex,
       0.55,
     )
   })
 
-  it("skips sticker embedding when reply and user content contain only code or math", async () => {
-    const matchSticker = vi.fn(async () => ({ id: "hugtight" }))
+  it("does not schedule memory writes when memory mode is off", async () => {
+    const scheduleMemoryWrite = vi.fn()
+    const scheduleSummaryTurn = vi.fn()
+    const scheduleWikiTurn = vi.fn()
+    const deps: OnRunFinishedDeps = {
+      loadModelSettings: () => ({
+        provider: "test",
+        baseUrl: "",
+        model: "",
+        apiKey: "",
+        runtimeSync: "off",
+        memoryMode: "off",
+      }),
+      scheduleMemoryWrite,
+      scheduleSummaryTurn,
+      scheduleWikiTurn,
+      inferRuntimeState: () => ({ status: "陪伴中" }),
+      runtimeState: { status: "陪伴中", feeling: "温柔", expression: 0, updatedAt: 0 },
+      feelingToExpression: { "温柔": 0 },
+      setRuntimeState: () => {},
+      stickerTextIndex: [],
+      matchSticker: () => null,
+      loadStickerSettings: () => ({}),
+      broadcastRuntimeStateChanged: () => {},
+      observeRuntimeState: async () => {},
+      recordRelationshipTurn: async () => {},
+    }
+
+    await onAgentRunFinished(
+      { reply: "记住了", toolResults: [] },
+      "记住这个信息",
+      deps,
+      undefined,
+      "conversation-a",
+      { assistantEntryId: "assistant-a", userTurnId: "user-a" },
+    )
+
+    expect(scheduleMemoryWrite).not.toHaveBeenCalled()
+    expect(scheduleSummaryTurn).not.toHaveBeenCalled()
+    expect(scheduleWikiTurn).not.toHaveBeenCalled()
+  })
+
+  it("skips sticker matching when reply and user content contain only code or math", async () => {
+    const matchSticker = vi.fn(() => ({ id: "hugtight" }))
     const deps: OnRunFinishedDeps = {
       loadModelSettings: () => ({ provider: "test", baseUrl: "", model: "", apiKey: "", runtimeSync: "off", stickerEnabled: true }),
       scheduleMemoryWrite: () => {},
@@ -916,8 +953,7 @@ describe("build-options", () => {
       runtimeState: { status: "陪伴中", feeling: "温柔", expression: 0, updatedAt: 0 },
       feelingToExpression: { "温柔": 0 },
       setRuntimeState: () => {},
-      stickerEmbeddingIndex: [{ id: "hugtight", embedding: [1, 0] }],
-      getEmbeddingProvider: () => ({ embed: async () => [1, 0] }),
+      stickerTextIndex: [{ id: "hugtight", text: "抱抱你" }],
       matchSticker,
       loadStickerSettings: () => ({}),
       broadcastRuntimeStateChanged: () => {},
@@ -947,9 +983,8 @@ describe("build-options", () => {
       runtimeState: { status: "陪伴中", feeling: "温柔", expression: 0, updatedAt: 0 },
       feelingToExpression: { "温柔": 0 },
       setRuntimeState: () => {},
-      stickerEmbeddingIndex: null,
-      getEmbeddingProvider: () => null,
-      matchSticker: async () => null,
+      stickerTextIndex: [],
+      matchSticker: () => null,
       loadStickerSettings: () => ({}),
       broadcastRuntimeStateChanged: () => {},
       observeRuntimeState,

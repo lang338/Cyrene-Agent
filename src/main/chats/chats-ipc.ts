@@ -46,6 +46,10 @@ import type { ContextUsageSnapshot } from "../../shared/context-usage";
 import { getRunReviewTracker } from "../orchestrator/review/run-review-tracker";
 import { activeChatTargetRegistry } from "../plugin-host/active-chat-target";
 import { getTaskSessionStore } from "../tasks/task-session-store";
+import { cancelSummaryMemorySession, releaseSummaryMemorySessionCancellation } from "../memory/summary-memory-scheduler";
+import { cancelWikiMemorySession, getWikiMemoryStore, releaseWikiMemorySessionCancellation } from "../memory/wiki-memory-scheduler";
+import { resolveSummaryMemoryPaths } from "../memory/summary-memory-paths";
+import { deleteSummaryFile } from "../memory/summary-memory-store";
 import type { LlmClient } from "../services/llm/llm-client";
 import { enqueueLLMTask } from "../llm-queue";
 import { assertValidPresentationPatch, type TranscriptPresentationPatch } from "../orchestrator/conversation-transcript-types";
@@ -375,8 +379,57 @@ export function registerChatsIpc(
 
   ipc.handle(IPC.CHATS_DELETE, async (event, id: string) => {
     if (!id) return false;
-    const ok = chatsStore.deleteSession(id);
+    const sessionRecord = chatsStore.getSessionRecord(id);
+    await cancelSummaryMemorySession(id);
+    await cancelWikiMemorySession(id);
+    const wikiStore = fs.existsSync(path.join(app.getPath("userData"), "memory", "wiki"))
+      ? getWikiMemoryStore() : null;
+    try {
+      await wikiStore?.tombstoneConversation(id);
+    } catch (error) {
+      releaseSummaryMemorySessionCancellation(id);
+      releaseWikiMemorySessionCancellation(id);
+      console.error("[ChatsIpc] failed to tombstone wiki sources", error);
+      return false;
+    }
+    let summaryMemoryTarget: { filePath: string; allowedRoot: string } | null = null;
+    if (sessionRecord) {
+      try {
+        const paths = resolveSummaryMemoryPaths({ conversationId: id, userDataRoot: app.getPath("userData"), session: sessionRecord });
+        const allowedRoot = paths.workspacePath
+          ? sessionRecord.workspaceBinding!.workspaceRoot
+          : app.getPath("userData");
+        summaryMemoryTarget = { filePath: paths.sessionPath, allowedRoot };
+      } catch (error) {
+        console.warn("[ChatsIpc] failed to resolve session summary memory path:", id, error);
+      }
+    }
+    let ok: boolean;
+    try {
+      ok = chatsStore.deleteSession(id);
+      if (!ok) await wikiStore?.untombstoneConversation(id);
+    } catch (error) {
+      await wikiStore?.untombstoneConversation(id).catch((rollbackError) =>
+        console.error("[ChatsIpc] failed to restore wiki sources after delete failure", rollbackError));
+      throw error;
+    } finally {
+      releaseSummaryMemorySessionCancellation(id);
+      releaseWikiMemorySessionCancellation(id);
+    }
     if (ok) {
+      try {
+        await wikiStore?.reconcileConversationSources(id, []);
+      } catch (error) {
+        // The durable tombstone hides deleted sources until a later reconciliation.
+        console.error("[ChatsIpc] failed to reconcile deleted wiki sources", error);
+      }
+      if (summaryMemoryTarget) {
+        try {
+          await deleteSummaryFile(summaryMemoryTarget.filePath, summaryMemoryTarget.allowedRoot);
+        } catch (error) {
+          console.warn("[ChatsIpc] failed to delete session summary memory:", id, error);
+        }
+      }
       // 删除当前活动目标会话时使语音输入租约目标失效（登记表内部判断是否命中）
       activeChatTargetRegistry.notifySessionDeleted(id);
       try {

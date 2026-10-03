@@ -33,7 +33,7 @@ function makeResponse(text = "done"): ChatResponse {
 const adapter: ChatVendorAdapter = {
   id: "chatgpt",
   transport: "openai",
-  capability: { id: "chatgpt", displayName: "OpenAI", transport: "openai", baseUrl: "https://example.test/v1", authStyle: "bearer", defaultModel: "m", supportsTools: true, supportsThinking: true, thinkingField: null, cacheStrategy: "none", testStrategy: "text", supportsVision: true },
+  capability: { id: "chatgpt", displayName: "OpenAI", transport: "openai", baseUrl: "https://example.test/v1", authStyle: "bearer", defaultModel: "m", supportsTools: true, supportsThinking: true, thinkingField: null, cacheStrategy: "none", testStrategy: "text" },
   buildRequest: (request) => ({ url: "https://example.test/v1/chat/completions", method: "POST", headers: {}, body: JSON.stringify(request) }),
   buildStreamRequest: (request) => ({ url: "https://example.test/v1/chat/completions", method: "POST", headers: {}, body: JSON.stringify(request) }),
   parseResponse: (raw) => makeResponse(typeof (raw as { text?: unknown })?.text === "string" ? String((raw as { text: string }).text) : "summary"),
@@ -65,6 +65,17 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("callLLM retries", () => {
+  it("retries a MiniMax-style 529 even when its vendor code is classified as unknown", async () => {
+    const minimax529 = new AgentRuntimeError("E_MODEL_REQUEST_FAILED", "HTTP 529 server_error", {
+      modelFailure: { provider: "minimax", model: "MiniMax-M3", category: "UNKNOWN", status: 529, vendorCode: "server_error" },
+    });
+    fakeStreamChat.mockRejectedValueOnce(Object.assign(minimax529, { retryAfterMs: 0 })).mockResolvedValueOnce(makeResponse("recovered"));
+
+    await expect(callLLM({ ...vendorConfig, provider: "minimax", model: "MiniMax-M3" }, promptLayers, messages, [], harnessConfig))
+      .resolves.toMatchObject({ text: "recovered" });
+    expect(fakeStreamChat).toHaveBeenCalledTimes(2);
+  });
+
   it("retries a zero-output server error and records usage only for the successful response", async () => {
     fakeStreamChat.mockRejectedValueOnce(transientError()).mockResolvedValueOnce(makeResponse("recovered"));
     const statuses: ModelRetryStatus[] = [];
@@ -121,13 +132,16 @@ describe("summarizeHistory retries", () => {
     expect(statuses.map((status) => status.phase)).toEqual(["waiting", "attempting", "cleared"]);
   });
 
-  it("does not retry an explicit quota business code under HTTP 429", async () => {
+  it("retries an explicit quota business code under HTTP 429 within the configured budget", async () => {
     globalThis.fetch = vi.fn(async () => new Response('{"error":{"code":"organization_usage_limit_exceeded"}}', {
       status: 429,
       headers: { "content-type": "application/json", "retry-after": "0" },
     })) as unknown as typeof fetch;
 
-    await expect(summarizeHistory(vendorConfig, "system", messages, [], undefined, harnessConfig)).rejects.toThrow("HTTP 429");
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    await expect(summarizeHistory(vendorConfig, "system", messages, [], undefined, {
+      maxRetries: harnessConfig.modelRequestMaxRetries,
+      idleTimeoutMs: harnessConfig.modelRequestIdleTimeoutMs,
+    })).rejects.toThrow("HTTP 429");
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
   });
 });

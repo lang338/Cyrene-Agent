@@ -15,8 +15,6 @@ export const QWEN_REGISTRY = defineVendor({
     thinkingField: "reasoning_content",
     cacheStrategy: "auto",
     testStrategy: "text",
-    // 视觉版是 qwen-vl 系列，默认 qwen-max 不支持
-    supportsVision: false,
     // 官方 OpenAI 兼容；Responses 由阿里云百炼中转（协议矩阵 2026-08-21）
     supportedTransports: ["openai", "responses"],
   },

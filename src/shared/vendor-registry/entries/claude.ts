@@ -15,8 +15,6 @@ export const CLAUDE_REGISTRY = defineVendor({
     thinkingField: "thinking",
     cacheStrategy: "cache_control",
     testStrategy: "text",
-    // Claude 支持多模态 image content block
-    supportsVision: true,
     // 自家协议 only
     supportedTransports: ["anthropic"],
   },

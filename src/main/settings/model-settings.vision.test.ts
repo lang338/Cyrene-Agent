@@ -25,11 +25,11 @@ const COMPLETE_VISION: LegacyVision = {
   model: "MiniMax-M3",
 };
 
-describe("normalizeModelSettings 旧配置一次性迁移（schemaVersion 1 → 4）", () => {
+describe("normalizeModelSettings 旧配置一次性迁移（schemaVersion 1 → 5）", () => {
   it("旧配置无 multimodal 字段 + 独立视觉模型齐全 → multimodal 落 false（不静默旁路），并升级 schema", () => {
     const s = normalizeModelSettings({ ...MINIMAX_BASE, vision: COMPLETE_VISION });
     expect(s.multimodal).toBe(false);
-    expect(s.schemaVersion).toBe(4);
+    expect(s.schemaVersion).toBe(5);
   });
 
   it("旧配置 syncWithMain=true → multimodal 落 true（与主模型同步）", () => {
@@ -38,7 +38,7 @@ describe("normalizeModelSettings 旧配置一次性迁移（schemaVersion 1 → 
       vision: { ...COMPLETE_VISION, syncWithMain: true },
     });
     expect(s.multimodal).toBe(true);
-    expect(s.schemaVersion).toBe(4);
+    expect(s.schemaVersion).toBe(5);
   });
 
   it("旧配置无视觉模型 → multimodal 维持默认 true", () => {
@@ -69,7 +69,7 @@ describe("normalizeModelSettings 旧配置一次性迁移（schemaVersion 1 → 
       vision: { ...COMPLETE_VISION, syncWithMain: true },
     } as Partial<ModelSettings>);
     expect(s.multimodal).toBe(false);
-    expect(s.schemaVersion).toBe(4);
+    expect(s.schemaVersion).toBe(5);
   });
 
   it("schemaVersion: 2 且无 multimodal 字段 → 缺省 true，不被视觉模型配置旁路", () => {

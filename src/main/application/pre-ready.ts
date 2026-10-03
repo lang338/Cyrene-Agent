@@ -7,7 +7,6 @@
 import type { WindowActivationBroker } from "./window-activation";
 
 export interface PreReadyDependencies {
-  configureDocumentIndex(): void;
   installSingleInstance(onSecondInstance: () => void): boolean;
   /** 旧 userData 目录（live2d-cyrene）数据迁移到当前目录（Cyrene）。 */
   migrateLegacyUserData(): void;
@@ -23,7 +22,6 @@ export interface PreReadyResult {
 }
 
 export function prepareBeforeReady(deps: PreReadyDependencies): PreReadyResult {
-  deps.configureDocumentIndex();
 
   const isPrimary = deps.installSingleInstance(() => {
     deps.activation.request({ kind: "chat" });

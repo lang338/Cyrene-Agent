@@ -27,7 +27,6 @@ const chatgptCap: ProviderCapability = {
   thinkingField: "reasoning_content",
   cacheStrategy: "auto",
   testStrategy: "text",
-  supportsVision: false,
 };
 
 const claudeCap: ProviderCapability = {
@@ -42,7 +41,6 @@ const claudeCap: ProviderCapability = {
   thinkingField: "thinking",
   cacheStrategy: "cache_control",
   testStrategy: "text",
-  supportsVision: true,
   disabled: true,
 };
 
@@ -58,7 +56,6 @@ const mimoCap: ProviderCapability = {
   thinkingField: "reasoning_content",
   cacheStrategy: "auto",
   testStrategy: "text",
-  supportsVision: true,
   visionBaseUrl: "https://api.xiaomimimo.com/v1",
 };
 
@@ -195,7 +192,6 @@ describe("G4 cfg.reasoning 改动 → JSON body 改动（契约：adapter 必须
       thinkingField: "thinking",
       cacheStrategy: "cache_control",
       testStrategy: "text",
-      supportsVision: true,
       visionBaseUrl: "https://api.minimaxi.com/v1",
     };
     const adapter = new AnthropicAdapter("minimax", miniMaxCap);
@@ -237,7 +233,6 @@ describe("G4 cfg.reasoning 改动 → JSON body 改动（契约：adapter 必须
       thinkingField: "reasoning_content",
       cacheStrategy: "auto",
       testStrategy: "text",
-      supportsVision: false,
     };
     const adapter = new OpenAICompatAdapter("deepseek", dsCap);
 
@@ -272,7 +267,6 @@ describe("G5 5+ 关键 capability 形态端到端", () => {
       thinkingField: "thinking",
       cacheStrategy: "prompt_cache_key",
       testStrategy: "text",
-      supportsVision: true,
     };
     const adapter = new OpenAICompatAdapter("kimi", kimiCap);
     const http = adapter.buildRequest(
@@ -296,7 +290,6 @@ describe("G5 5+ 关键 capability 形态端到端", () => {
       thinkingField: "thinking",
       cacheStrategy: "prompt_cache_key",
       testStrategy: "text",
-      supportsVision: true,
     };
     const adapter = new OpenAICompatAdapter("kimi", kimiCap);
     const http = adapter.buildRequest(
@@ -324,7 +317,6 @@ describe("G5 5+ 关键 capability 形态端到端", () => {
       thinkingField: "reasoning_content",
       cacheStrategy: "auto",
       testStrategy: "text",
-      supportsVision: false,
     };
     const adapter = new OpenAICompatAdapter("qwen", qwenCap);
     const http = adapter.buildRequest(
@@ -349,7 +341,6 @@ describe("G5 5+ 关键 capability 形态端到端", () => {
       thinkingField: "reasoning_content",
       cacheStrategy: "none",
       testStrategy: "text",
-      supportsVision: true,
     };
     const adapter = new OpenAICompatAdapter("doubao", doubaoCap);
     const http = adapter.buildRequest(

@@ -1,21 +1,6 @@
-import type { ModelErrorCategory, ModelFailureInfo } from "../../../shared/model-error";
-
-const TRANSIENT_CATEGORIES = new Set<ModelErrorCategory>([
-  "NETWORK", "TIMEOUT", "RATE_LIMIT", "OVERLOADED", "SERVER_ERROR", "UNAVAILABLE",
-]);
-const TERMINAL_CATEGORIES = new Set<ModelErrorCategory>([
-  "AUTH", "PERMISSION", "BILLING", "QUOTA", "INVALID_REQUEST", "NOT_FOUND",
-  "CONTEXT_LIMIT", "PAYLOAD_TOO_LARGE", "CONTENT_POLICY", "CONFLICT", "CANCELLED", "UNKNOWN",
-]);
 const INITIAL_BACKOFF_MS = 2_000;
 const MAX_BACKOFF_MS = 60_000;
 export const MAX_RETRY_AFTER_MS = 5 * 60_000;
-
-export function shouldRetryModelFailure(info: ModelFailureInfo): boolean {
-  if (TERMINAL_CATEGORIES.has(info.category)) return false;
-  if (info.retryable === false || info.retryable === "conditional") return false;
-  return TRANSIENT_CATEGORIES.has(info.category);
-}
 
 export function nextModelRetryDelayMs(
   retryNumber: number,
@@ -23,8 +8,8 @@ export function nextModelRetryDelayMs(
   random: () => number = Math.random,
 ): number | undefined {
   if (retryAfterMs !== undefined) {
-    if (!Number.isFinite(retryAfterMs) || retryAfterMs < 0 || retryAfterMs > MAX_RETRY_AFTER_MS) return undefined;
-    return retryAfterMs;
+    if (!Number.isFinite(retryAfterMs) || retryAfterMs < 0) return undefined;
+    return Math.min(retryAfterMs, MAX_RETRY_AFTER_MS);
   }
   const exponent = Math.max(0, Math.trunc(retryNumber) - 1);
   const baseDelay = Math.min(MAX_BACKOFF_MS, INITIAL_BACKOFF_MS * (2 ** exponent));

@@ -33,7 +33,7 @@ describe("UserAvatar profile dialog", () => {
       user: {
         getProfile: vi.fn(async () => ({
           nickname: "小昔", gender: "female", callPreference: "阿澄", birthday: "2000-06-18",
-          defaultCity: "上海", timezone: "Asia/Shanghai",
+          defaultCity: "上海", timezone: "Asia/Shanghai", replyLanguage: "en",
         })),
         getAvatar: vi.fn(async () => null),
         onProfileChanged: vi.fn(() => () => {}),
@@ -76,7 +76,7 @@ describe("UserAvatar profile dialog", () => {
     await act(async () => { save!.click(); });
     expect((window as typeof window & { user: { saveProfile: ReturnType<typeof vi.fn> } }).user.saveProfile).toHaveBeenCalledWith({
       nickname: "小昔", gender: "female", callPreference: "阿澄", birthday: "2000-06-18",
-      defaultCity: "上海", timezone: "Asia/Tokyo",
+      defaultCity: "上海", timezone: "Asia/Tokyo", replyLanguage: "en",
     });
   });
 });

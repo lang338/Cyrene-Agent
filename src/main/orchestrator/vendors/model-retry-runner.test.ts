@@ -16,6 +16,30 @@ function transientError(retryAfterMs = 0) {
 }
 
 describe("runModelRequestWithRetry", () => {
+  it("在预算内重试各类请求错误，包括 MiniMax 风格 529、鉴权失败和未知异常", async () => {
+    const { runModelRequestWithRetry } = await loadRunner();
+    const errors = [
+      new AgentRuntimeError("E_MODEL_REQUEST_FAILED", "HTTP 529 server_error", {
+        modelFailure: { provider: "minimax", model: "MiniMax-M3", category: "UNKNOWN", status: 529, vendorCode: "server_error" },
+      }),
+      new AgentRuntimeError("E_MODEL_REQUEST_FAILED", "API key invalid", {
+        modelFailure: { provider: "minimax", model: "MiniMax-M3", category: "AUTH", retryable: false },
+      }),
+      new Error("unclassified request failure"),
+    ];
+
+    for (const error of errors) {
+      Object.assign(error, { retryAfterMs: 0 });
+      let calls = 0;
+      await expect(runModelRequestWithRetry(async () => {
+        calls += 1;
+        if (calls === 1) throw error;
+        return "recovered";
+      }, { provider: "minimax", model: "MiniMax-M3", maxRetries: 1, idleTimeoutMs: 1_000 })).resolves.toBe("recovered");
+      expect(calls).toBe(2);
+    }
+  });
+
   it("最多执行首次请求加用户配置的额外次数", async () => {
     const { runModelRequestWithRetry } = await loadRunner();
     let calls = 0;

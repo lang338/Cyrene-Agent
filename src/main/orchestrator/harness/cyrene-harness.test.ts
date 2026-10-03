@@ -852,6 +852,7 @@ describe("CyreneHarness completion", () => {
         safetyMarginTokens: 0,
         compactionThreshold: 0.3,
         compactionRetainRatio: 0.16,
+        modelRequestMaxRetries: 0,
       },
       onCheckpoint: (checkpoint) => checkpoints.push(checkpoint),
     });

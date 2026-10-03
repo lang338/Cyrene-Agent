@@ -1,4 +1,4 @@
-import { dialog } from "electron";
+import { app, dialog } from "electron";
 import * as fs from "fs";
 import * as path from "path";
 import { IPC } from "../../shared/ipc-channels";
@@ -6,7 +6,6 @@ import { createIpcScope, type IpcScope } from "../application/ipc-scope";
 import { getStickerManagerConfig, setStickerEnabled } from "../orchestrator/sticker-settings";
 import { addUserSticker, deleteUserSticker } from "../sticker-storage";
 import { loadMemoryPanelData } from "./panel";
-import { deleteImportedDoc } from "../rag";
 import { CYRENE_AVATAR_EXTENSIONS, findCyreneAvatarPath, getCyreneAvatarPath, loadUserProfile, saveUserProfile, getAvatarPath } from "../settings-store";
 import { addMcpServer, removeMcpServer, listMcpServers, listMcpServerConfigs } from "../orchestrator/mcp-manager";
 import { toolRegistry } from "../orchestrator/tools/registry/tool-registry";
@@ -19,15 +18,17 @@ import {
   reactChatWindow,
   stickerManagerWindow,
 } from "../windows/window-state";
-import type { EmbeddingIndexService } from "../services/embedding/embedding-index-service";
 import { memoryStore } from "./memory-store";
 import { exportMemoryToObsidianVault, syncToBoundVault } from "./obsidian-exporter";
 import { loadObsidianVaultConfig, saveObsidianVaultConfig, unbindVault } from "./obsidian-vault-config";
 import { startVaultWatcher, stopVaultWatcher } from "./obsidian-importer";
+import { activeConversationRegistry } from "../chats/active-conversation-registry";
+import * as chatsStore from "../chats/chats-store";
+import { loadSummaryMemoryContext } from "./summary-memory-context";
+import { isSummaryMemoryEnabled } from "./memory-mode";
 
 export interface MemoryUserToolIpcDependencies {
   get windowManager(): WindowManager | null;
-  embeddingIndexService: EmbeddingIndexService;
   /** 传入共享 scope 以便退出时统一注销；缺省时使用独立 scope。 */
   ipc?: IpcScope;
 }
@@ -43,7 +44,6 @@ const L0_EDITABLE_KEYS = ["preferredName", "occupation", "longTermInterests", "l
 const L1_EDITABLE_KEYS = ["recentGoals", "recentPreferences", "currentProject"];
 
 export function registerMemoryUserToolIpc(deps: MemoryUserToolIpcDependencies): void {
-  const { embeddingIndexService } = deps;
   const ipc = deps.ipc ?? createIpcScope();
   // 注意：windowManager 不解构，统一用 deps.windowManager 实时读取 getter。
   // registerMemoryUserToolIpc 在模块加载阶段调用，那时 windowManager 仍为 null，
@@ -90,8 +90,6 @@ export function registerMemoryUserToolIpc(deps: MemoryUserToolIpcDependencies): 
     };
     try {
       await addUserSticker(sourcePath, id, description, phrases);
-      embeddingIndexService.invalidateStickerEmbeddingIndex();
-      embeddingIndexService.refreshStickerEmbeddingIndex("user-sticker-add");
     } catch (err) {
       console.error("[stickers] add failed:", err);
       throw err;
@@ -102,8 +100,6 @@ export function registerMemoryUserToolIpc(deps: MemoryUserToolIpcDependencies): 
   ipc.handle(IPC.STICKERS_DELETE, async (_event, id: string) => {
     try {
       await deleteUserSticker(id);
-      embeddingIndexService.invalidateStickerEmbeddingIndex();
-      embeddingIndexService.refreshStickerEmbeddingIndex("user-sticker-delete");
     } catch (err) {
       console.error("[stickers] delete failed:", err);
       throw err;
@@ -152,10 +148,16 @@ export function registerMemoryUserToolIpc(deps: MemoryUserToolIpcDependencies): 
 
   // Memory panel
   ipc.handle(IPC.MEMORY_PANEL_GET_DATA, () => loadMemoryPanelData());
-
-  ipc.handle(IPC.MEMORY_PANEL_DELETE_IMPORTED_DOC, (_event, payload: { importId: string; fileName?: string }) => {
-    const deleted = deleteImportedDoc(payload.importId, payload.fileName);
-    return { ok: true, deleted };
+  ipc.handle(IPC.MEMORY_PANEL_GET_SUMMARY, async () => {
+    if (!isSummaryMemoryEnabled()) return null;
+    const sessionId = activeConversationRegistry.getMostRecent()?.sessionId ?? chatsStore.getLatestSessionId();
+    if (!sessionId) return null;
+    const context = await loadSummaryMemoryContext({
+      conversationId: sessionId,
+      userDataRoot: app.getPath("userData"),
+      getSessionRecord: chatsStore.getSessionRecord,
+    });
+    return { sessionId, ...context };
   });
 
   ipc.handle(IPC.MEMORY_PANEL_SAVE_L0, async (_event, raw: Record<string, unknown>) => {

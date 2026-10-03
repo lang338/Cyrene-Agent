@@ -19,8 +19,6 @@ export const GEMINI_REGISTRY = defineVendor({
     // Gemini 隐式缓存：服务端自动命中折扣，无需显式参数
     cacheStrategy: "auto",
     testStrategy: "text",
-    // 原生多模态，官方支持 image_url 图像输入
-    supportsVision: true,
     // 官方 OpenAI 兼容层已核实；原生 Gemini API 不属于三种内置协议
     supportedTransports: ["openai"],
   },

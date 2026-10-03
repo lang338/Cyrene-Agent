@@ -61,7 +61,7 @@ export function resolveTaskTools(
 ): ToolDefinition[] {
   const allowed = profile.allowedToolIds === "inherit" ? null : new Set(profile.allowedToolIds);
   return parentTools.filter((tool) => {
-    if (CHILD_BLOCKED_TOOL_IDS.has(tool.id) || (allowed !== null && !allowed.has(tool.id))) return false;
+    if (tool.browserControlPhase || CHILD_BLOCKED_TOOL_IDS.has(tool.id) || (allowed !== null && !allowed.has(tool.id))) return false;
     if (accessMode !== "read_only") return true;
     // 动态副作用分类在模型提供真实参数前无法证明只读，保守地不暴露给只读子任务。
     return tool.effectKind === "read" && tool.effectResolver === undefined;

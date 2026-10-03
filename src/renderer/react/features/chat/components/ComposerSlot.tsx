@@ -1,4 +1,6 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { ChevronUp } from "lucide-react";
+import { useTranslation } from "../../../i18n";
 import { AskUserPanel, PermissionPanel, PlanApprovalPanel, PopQuizPanel } from "./InteractionPanel";
 import { resolveComposerSlot, type ComposerInteraction } from "./run-presentation";
 import type { PopQuizGradedQuestion, PopQuizSubmission } from "../../../../../shared/pop-quiz";
@@ -21,75 +23,116 @@ export interface ComposerInteractionCallbacks {
 export interface ComposerInteractionProps extends ComposerInteractionCallbacks {
   interaction?: ComposerInteraction;
   interactionBusy?: boolean;
+  /** 折叠状态受控传入（ComposerSlot 需要同步外层样式时用）；不传则组件自持状态 */
+  collapsed?: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
 }
 
 /**
  * 只有交互卡、没有输入框的版本。
  * 给"卡片不在输入框位置"的宿主用（工作台把审批卡停靠在中栏底部）；
  * 无卡片时返回 null，宿主可以直接铺在布局里。
+ * 卡片支持收起：收起后显示一条"待处理"提示条，点开恢复。
  */
 export function ComposerInteractionPanel({
   interaction,
   interactionBusy = false,
+  collapsed: collapsedProp,
+  onCollapsedChange,
   ...callbacks
 }: ComposerInteractionProps) {
+  const { t } = useTranslation();
+  const [localCollapsed, setLocalCollapsed] = useState(false);
+  const collapsed = collapsedProp ?? localCollapsed;
+  const setCollapsed = (value: boolean) => {
+    setLocalCollapsed(value);
+    onCollapsedChange?.(value);
+  };
+
+  useEffect(() => {
+    setLocalCollapsed(false);
+    onCollapsedChange?.(false);
+    // 换一张卡（id 或种类变化）时恢复展开
+  }, [interaction?.id, interaction?.kind]);
+
   if (!interaction) return null;
 
   return (
-    <div className="cy-composer-slot__interaction">
-      {interaction.kind === "ask" && (
-        interaction.cardMode === "plan_approval" ? (
-          <PlanApprovalPanel
+    <>
+      {collapsed ? (
+        <button
+          type="button"
+          className="cy-composer-slot__collapsed"
+          aria-label={t("interaction.reopenCard")}
+          onClick={() => setCollapsed(false)}
+        >
+          <span className="cy-composer-slot__collapsed-dot" aria-hidden="true" />
+          <span>{t("interaction.pendingCard")}</span>
+          <ChevronUp size={15} aria-hidden="true" />
+        </button>
+      ) : null}
+      <div className="cy-composer-slot__interaction" aria-hidden={collapsed || undefined}>
+        {interaction.kind === "ask" && (
+          interaction.cardMode === "plan_approval" ? (
+            <PlanApprovalPanel
+              interaction={interaction}
+              disabled={interactionBusy}
+              onCollapse={() => setCollapsed(true)}
+              onAnswer={(answer) => callbacks.onAnswer?.(interaction.id, answer)}
+            />
+          ) : (
+            <AskUserPanel
+              interaction={interaction}
+              disabled={interactionBusy}
+              onCollapse={() => setCollapsed(true)}
+              onAnswer={(answer) => callbacks.onAnswer?.(interaction.id, answer)}
+              onIgnore={() => callbacks.onIgnore?.(interaction.id)}
+            />
+          )
+        )}
+        {interaction.kind === "permission" && (
+          <PermissionPanel
             interaction={interaction}
             disabled={interactionBusy}
-            onAnswer={(answer) => callbacks.onAnswer?.(interaction.id, answer)}
+            onCollapse={() => setCollapsed(true)}
+            onDecision={(allowed) => callbacks.onPermissionDecision?.(interaction.id, allowed)}
           />
-        ) : (
-          <AskUserPanel
+        )}
+        {interaction.kind === "quiz" && (
+          <PopQuizPanel
             interaction={interaction}
             disabled={interactionBusy}
-            onAnswer={(answer) => callbacks.onAnswer?.(interaction.id, answer)}
-            onIgnore={() => callbacks.onIgnore?.(interaction.id)}
+            onCollapse={() => setCollapsed(true)}
+            onSubmit={callbacks.onQuizSubmit}
+            onSkip={callbacks.onQuizSkip}
           />
-        )
-      )}
-      {interaction.kind === "permission" && (
-        <PermissionPanel
-          interaction={interaction}
-          disabled={interactionBusy}
-          onDecision={(allowed) => callbacks.onPermissionDecision?.(interaction.id, allowed)}
-        />
-      )}
-      {interaction.kind === "quiz" && (
-        <PopQuizPanel
-          interaction={interaction}
-          disabled={interactionBusy}
-          onSubmit={callbacks.onQuizSubmit}
-          onSkip={callbacks.onQuizSkip}
-        />
-      )}
-    </div>
+        )}
+      </div>
+    </>
   );
 }
 
-/** 输入框 + 交互卡同槽：卡片出现时输入框淡出，两者叠在同一位置。 */
+/** 输入框 + 交互卡同槽：卡片出现时输入框淡出，两者叠在同一位置；卡片可收起成待处理提示条。 */
 export function ComposerSlot({
   composer,
-  interaction,
-  interactionBusy = false,
-  ...callbacks
+  ...rest
 }: ComposerInteractionProps & { composer: ReactNode }) {
-  const slot = resolveComposerSlot(interaction);
+  const slot = resolveComposerSlot(rest.interaction);
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    setCollapsed(false);
+  }, [rest.interaction?.id, rest.interaction?.kind]);
 
   return (
-    <div className={`cy-composer-slot is-${slot}`}>
-      <div className="cy-composer-slot__composer" aria-hidden={interaction ? true : undefined}>
+    <div className={`cy-composer-slot is-${slot}${collapsed ? " is-collapsed" : ""}`}>
+      <div className="cy-composer-slot__composer" aria-hidden={rest.interaction ? true : undefined}>
         {composer}
       </div>
       <ComposerInteractionPanel
-        interaction={interaction}
-        interactionBusy={interactionBusy}
-        {...callbacks}
+        {...rest}
+        collapsed={collapsed}
+        onCollapsedChange={setCollapsed}
       />
     </div>
   );

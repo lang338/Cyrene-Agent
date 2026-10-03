@@ -30,6 +30,7 @@ import { prepareHarnessRun } from "./harness/adapter/run-preparation";
 import { prepareToolRuntime } from "./harness/adapter/tool-runtime";
 import { getTimeoutSettings } from "../timeout-manager";
 import { resolveModelRequestTimeoutMs } from "./config/model-timeout";
+import { getBrowserPanelController } from "../browser/browser-panel-runtime";
 
 const LOG_PREFIX = "[HarnessAdapter]";
 export { filterToolsForConversationMode } from "./harness/adapter/run-preparation";
@@ -100,6 +101,7 @@ export async function runHarnessWithAdapter(
     includeInteractiveTools: options.harnessInteractiveTools,
     planState,
     toolContext,
+    browserControlState: () => getBrowserPanelController()?.getControlState(toolContext.conversationId, runId) ?? "inactive",
     toolOutputStore,
     executionLedger: options.executionLedger,
     checkPermission,

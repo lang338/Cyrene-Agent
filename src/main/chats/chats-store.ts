@@ -31,6 +31,7 @@ import {
   type PendingWithdrawalState,
 } from "../../shared/chat-types";
 import type { ContextUsageSnapshot } from "../../shared/context-usage";
+import { normalizeBrowserElementSelection } from "../../shared/browser-panel-types";
 
 const ROOT_DIR_NAME = "cyrene-chats";
 const SESSIONS_SUBDIR = "sessions";
@@ -160,6 +161,18 @@ function readSessionRecordFile(id: string): ChatSessionRecord | null {
         || typeof (parsed as ChatSessionRecordV2).messageCount !== "number") return null;
     } else if (parsed.schemaVersion !== 1 || !Array.isArray((parsed as ChatSession).messages)) {
       return null;
+    }
+    const rawProgress = (parsed as ChatSessionRecordV2).summaryMemoryProgress;
+    if (rawProgress && typeof rawProgress === "object" && Array.isArray(rawProgress.pendingTurns)) {
+      rawProgress.pendingTurns = rawProgress.pendingTurns.filter((turn) => (
+        turn && typeof turn === "object"
+        && typeof turn.assistantEntryId === "string"
+        && typeof turn.userText === "string"
+        && typeof turn.assistantText === "string"
+      ));
+      if (typeof rawProgress.lastProcessedAssistantId !== "string") delete rawProgress.lastProcessedAssistantId;
+    } else {
+      delete (parsed as ChatSessionRecordV2).summaryMemoryProgress;
     }
     parsed.mode = normalizePersistedMode(parsed.mode, parsed.purpose);
     delete (parsed as ChatSession & { codeSession?: unknown }).codeSession;
@@ -320,6 +333,46 @@ export function getSession(id: string): ChatSession | null {
 /** 同步读取磁盘元数据；v2 记录没有正式 messages。 */
 export function getSessionRecord(id: string): ChatSessionRecord | null {
   return readSessionRecordFile(id);
+}
+
+export function getSummaryMemoryProgress(id: string): ChatSession["summaryMemoryProgress"] {
+  const progress = readSessionRecordFile(id)?.summaryMemoryProgress;
+  return progress ? { ...progress, pendingTurns: progress.pendingTurns.map((turn) => ({ ...turn })) } : undefined;
+}
+
+export function appendSummaryMemoryTurn(
+  id: string,
+  turn: NonNullable<ChatSession["summaryMemoryProgress"]>["pendingTurns"][number],
+): boolean {
+  if (!turn.assistantEntryId) return false;
+  const record = readSessionRecordFile(id);
+  if (!record) return false;
+  const progress = record.summaryMemoryProgress ?? { pendingTurns: [] };
+  if (progress.pendingTurns.some((item) => item.assistantEntryId === turn.assistantEntryId)
+    || progress.lastProcessedAssistantId === turn.assistantEntryId) return true;
+  if (turn.userTurnId) {
+    progress.pendingTurns = progress.pendingTurns.filter((item) => item.userTurnId !== turn.userTurnId);
+  }
+  progress.pendingTurns.push({ ...turn });
+  record.summaryMemoryProgress = progress;
+  writeWritableSession(record);
+  return true;
+}
+
+/** Advance only through the IDs included in a successful summary write. */
+export function markSummaryMemoryProcessed(id: string, processedTurns: Array<{ assistantEntryId: string }>): boolean {
+  if (processedTurns.length === 0) return false;
+  const record = readSessionRecordFile(id);
+  if (!record) return false;
+  const current = record.summaryMemoryProgress ?? { pendingTurns: [] };
+  const throughId = processedTurns[processedTurns.length - 1].assistantEntryId;
+  const processed = new Set(processedTurns.map((turn) => turn.assistantEntryId));
+  record.summaryMemoryProgress = {
+    lastProcessedAssistantId: throughId,
+    pendingTurns: current.pendingTurns.filter((turn) => !processed.has(turn.assistantEntryId)),
+  };
+  writeWritableSession(record);
+  return true;
 }
 
 /** 迁移器的原子提交点：只接受 v1 → v2 的一次性元数据改写。 */
@@ -737,8 +790,12 @@ export type PendingChatMessageInput = Omit<PendingChatMessage, "enqueuedAt">;
 function normalizePendingAttachment(value: unknown): PendingChatAttachment | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Partial<PendingChatAttachment>;
-  const kind = raw.kind === "image" || raw.kind === "document" ? raw.kind : null;
+  const kind = raw.kind === "image" || raw.kind === "document" || raw.kind === "web-element" ? raw.kind : null;
   if (!kind || typeof raw.name !== "string" || !raw.name.trim()) return null;
+  if (kind === "web-element") {
+    const element = normalizeBrowserElementSelection(raw.element);
+    return element ? { kind, name: raw.name.trim(), element } : null;
+  }
   if (typeof raw.filePath !== "string" || !raw.filePath.trim()) return null;
   return {
     kind,
@@ -914,10 +971,14 @@ function pendingUserMessageFromSnapshot(snapshot: PendingDispatchUserSnapshot): 
     at: snapshot.at,
     ...(snapshot.sticker ? { sticker: snapshot.sticker } : {}),
     ...(snapshot.attachments && snapshot.attachments.length > 0 ? {
-      attachments: snapshot.attachments.map((attachment) => attachment.kind === "image" ? {
+      attachments: snapshot.attachments.map((attachment) => attachment.kind === "web-element" ? {
+        kind: "web-element" as const,
+        name: attachment.name,
+        element: attachment.element!,
+      } : attachment.kind === "image" ? {
         kind: "image" as const,
         name: attachment.name,
-        filePath: attachment.filePath,
+        filePath: attachment.filePath!,
         mime: attachment.mime ?? "application/octet-stream",
         caption: attachment.caption,
         status: "pending" as const,
@@ -925,7 +986,7 @@ function pendingUserMessageFromSnapshot(snapshot: PendingDispatchUserSnapshot): 
       } : {
         kind: "document" as const,
         name: attachment.name,
-        filePath: attachment.filePath,
+        filePath: attachment.filePath!,
         status: "pending" as const,
       }),
     } : {}),

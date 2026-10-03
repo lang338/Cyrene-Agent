@@ -17,12 +17,6 @@ import { resolveVendorRuntimeSettings } from "../orchestrator/vendors/runtime-se
 import { resolveTransport } from "../orchestrator/vendors/transport-detector";
 import { getSession, getSessionRecord } from "./chats-store";
 import { describePendingAttachment } from "../rag/file-ingest";
-import { processDocumentIndexRequest } from "../rag/document-index-ipc";
-import {
-  enqueueDocumentIndexJob,
-  cancelDocumentIndexJob,
-} from "../rag/document-index-queue";
-import { retrieveQueuedDocumentChunks } from "../rag/document-index-worker";
 import { captionImageSafe, buildImageCaptionPrompt, validateCaptionImagePath } from "../chat/image-caption";
 import { resolveCaptionVisionConfig, resolveImageRoute } from "../orchestrator/image-router";
 import type { WindowManager } from "../windows/window-manager";
@@ -32,6 +26,7 @@ import {
   parseActiveTargetPayload,
 } from "../plugin-host/active-chat-target";
 import { activeConversationRegistry } from "./active-conversation-registry";
+import { flushSummaryMemory } from "../memory/summary-memory-scheduler";
 
 export interface ChatUiIpcDependencies {
   live2dWindowLifecycle: { getDiagnostics(): unknown };
@@ -49,7 +44,11 @@ export function getActiveChatSessionId(): string | null {
 }
 
 activeChatTargetRegistry.onInvalidated((_reason, affected) => {
-  if (affected) activeConversationRegistry.clearWindow(affected.webContentsId);
+  if (!affected) return;
+  activeConversationRegistry.clearWindow(affected.webContentsId);
+  void flushSummaryMemory(affected.sessionId).catch((error) => {
+    console.warn("[SummaryMemory] flush on chat window invalidation failed:", affected.sessionId, error);
+  });
 });
 
 export function registerChatUiIpc(deps: ChatUiIpcDependencies): void {
@@ -177,28 +176,6 @@ export function registerChatUiIpc(deps: ChatUiIpcDependencies): void {
     }
   });
 
-  ipc.handle(IPC.CHAT_PROCESS_DOCUMENTS, async (event, payload: unknown) => {
-    const filePaths = payload && typeof payload === "object" && Array.isArray((payload as { filePaths?: unknown }).filePaths)
-      ? (payload as { filePaths: unknown[] }).filePaths.filter((p): p is string => typeof p === "string")
-      : [];
-    if (filePaths.length === 0) return [];
-    const query = typeof (payload as { query?: unknown }).query === "string"
-      ? (payload as { query: string }).query
-      : "";
-    return processDocumentIndexRequest({
-      filePaths,
-      query,
-      sender: event.sender,
-      enqueue: enqueueDocumentIndexJob,
-      retrieve: retrieveQueuedDocumentChunks,
-    });
-  });
-
-  ipc.handle(IPC.CHAT_CANCEL_DOCUMENT_INDEX, (_event, payload: unknown) => {
-    const jobId = payload && typeof payload === "object" ? (payload as { jobId?: unknown }).jobId : undefined;
-    return typeof jobId === "string" && cancelDocumentIndexJob(jobId);
-  });
-
   ipc.handle(IPC.CHAT_CAPTION_IMAGE, async (_event, payload: unknown) => {
     const filePath = payload && typeof payload === "object"
       ? (payload as { filePath?: unknown }).filePath
@@ -274,6 +251,7 @@ export function registerChatUiIpc(deps: ChatUiIpcDependencies): void {
       return false;
     }
     let activeSessionId: string | null = null;
+    const previousSessionId = activeConversationRegistry.get(event.sender.id)?.sessionId ?? null;
     if (payload == null) {
       activeChatTargetRegistry.clearActive(event.sender);
       activeConversationRegistry.clearWindow(event.sender.id);
@@ -284,6 +262,11 @@ export function registerChatUiIpc(deps: ChatUiIpcDependencies): void {
         activeConversationRegistry.set(event.sender.id, parsed.sessionId, parsed.mode);
         activeSessionId = parsed.sessionId;
       }
+    }
+    if (previousSessionId && previousSessionId !== activeSessionId) {
+      void flushSummaryMemory(previousSessionId).catch((error) => {
+        console.warn("[SummaryMemory] flush on session switch failed:", previousSessionId, error);
+      });
     }
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.isDestroyed()) continue;

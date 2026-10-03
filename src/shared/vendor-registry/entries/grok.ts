@@ -18,8 +18,6 @@ export const GROK_REGISTRY = defineVendor({
     // 官方自动 prompt caching：服务端命中即折扣，无需显式 cache key
     cacheStrategy: "auto",
     testStrategy: "text",
-    // grok-4.x 系官方支持 jpg/png 图像输入（≤20MiB），read_image 门控放行
-    supportsVision: true,
     // Chat Completions + Responses 双协议均有官方 quickstart 示例
     supportedTransports: ["openai", "responses"],
   },

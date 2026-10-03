@@ -16,6 +16,7 @@ import type { TodoItem } from "../../../../../../shared/todo-types";
 import { isModelFailureInfo, type ModelFailureInfo } from "../../../../../../shared/model-error";
 import type { ModelRetryStatus } from "../../../../../../shared/model-retry";
 import type { ChatMessageItem } from "../../components/ChatMessageList";
+import { formatBrowserElementSelection } from "../../../../../../shared/browser-panel-types";
 import type { ComposerAttachment } from "../../components/ChatComposer";
 import {
   isFormalAnswerCommitted,
@@ -388,22 +389,30 @@ export class AgentRunController {
           turnId: this.input.userMessageId,
           text: (() => {
             const message = this.input.session.messages.find((item) => item.id === this.input.userMessageId);
-            return message?.modelContext?.trim() || message?.content || "";
+            const content = message?.modelContext?.trim() || message?.content || "";
+            const selectedElements = this.input.attachments
+              .filter((attachment) => attachment.kind === "web-element" && attachment.element)
+              .map((attachment) => formatBrowserElementSelection(attachment.element!));
+            return selectedElements.length > 0 ? [content, ...selectedElements].filter(Boolean).join("\n\n") : content;
           })(),
           visibleContent: this.input.visibleContent
             ?? this.input.session.messages.find((item) => item.id === this.input.userMessageId)?.content
             ?? "",
           ...(this.input.attachments.length > 0 ? {
-            attachments: this.input.attachments
-              .filter((attachment): attachment is ComposerAttachment & { filePath: string } => Boolean(attachment.filePath))
-              .map((attachment): PendingChatAttachment => ({
+            attachments: this.input.attachments.flatMap((attachment): PendingChatAttachment[] => {
+              if (attachment.kind === "web-element" && attachment.element) {
+                return [{ kind: "web-element", name: attachment.name, element: attachment.element }];
+              }
+              if (!attachment.filePath) return [];
+              return [{
                 kind: attachment.kind === "image" ? "image" : "document",
                 name: attachment.name,
                 filePath: attachment.filePath,
                 ...(attachment.mime ? { mime: attachment.mime } : {}),
                 ...(attachment.caption ? { caption: attachment.caption } : {}),
                 ...(attachment.hasAnnotations ? { hasAnnotations: true } : {}),
-              })),
+              }];
+            }),
           } : {}),
           ...(() => {
             const sticker = this.input.session.messages.find((item) => item.id === this.input.userMessageId)?.sticker;

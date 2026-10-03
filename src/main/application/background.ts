@@ -5,7 +5,7 @@
  *
  * 依赖组（A–D 并发；组内箭头为严格顺序）：
  *   A: MCP 清理 → 内置同步 → MCP 恢复（30s 屏障）→ channels 启动 → scheduler 启动 → 主动触发器 → 动态反应队列扫描器
- *   B: 记忆协调 → 向量索引刷新 → 重排序器预热
+ *   B: 记忆协调 → 重排序器预热
  *   C: 截图预热
  *   D: 更新检查
  * 全部组结算后推进 ready；失败进入 degradedReasons，不阻塞聊天。
@@ -37,7 +37,6 @@ export interface BackgroundDependencies {
   syncBuiltInMcp(signal: AbortSignal): Promise<void>;
   restoreMcp(signal: AbortSignal): Promise<void>;
   reconcileMemory(signal: AbortSignal): Promise<void>;
-  scheduleEmbeddingRefresh(signal: AbortSignal): Promise<{ dispose(): void } | void>;
   initializeReranker(signal: AbortSignal): Promise<void>;
   prewarmScreenshot(signal: AbortSignal): Promise<void>;
   scheduleUpdateCheck(signal: AbortSignal): Promise<{ dispose(): void } | void>;
@@ -143,7 +142,6 @@ export function startBackground(deps: BackgroundDependencies): BackgroundHandle 
 
   let proactiveTriggerDisposer: OptionalDisposer;
   let updateCheckDisposer: OptionalDisposer;
-  let embeddingRefreshDisposer: OptionalDisposer;
   let momentsScannerDisposer: OptionalDisposer;
 
   const isShuttingDown = (): boolean => {
@@ -207,11 +205,6 @@ export function startBackground(deps: BackgroundDependencies): BackgroundHandle 
     dispose: async () => { scheduler.stop(); },
   });
   shutdown.register({
-    id: "embedding-refresh",
-    phase: "stopProducers",
-    dispose: async () => { disposeOptional(embeddingRefreshDisposer); },
-  });
-  shutdown.register({
     id: "update-check-timer",
     phase: "stopProducers",
     dispose: async () => { disposeOptional(updateCheckDisposer); },
@@ -264,9 +257,6 @@ export function startBackground(deps: BackgroundDependencies): BackgroundHandle 
 
   async function groupB(): Promise<void> {
     await runTracked("memory-reconcile", "memory", (signal) => deps.reconcileMemory(signal));
-    await runTracked("embedding-refresh", "embedding", async (signal) => {
-      embeddingRefreshDisposer = await deps.scheduleEmbeddingRefresh(signal);
-    });
     await runTracked("reranker-init", "reranker", (signal) => deps.initializeReranker(signal));
   }
 

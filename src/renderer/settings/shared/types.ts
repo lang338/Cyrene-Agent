@@ -5,7 +5,7 @@
 
 import type { ApiTransport } from "../../../shared/api-endpoint";
 import type { ReasoningPreference } from "../../../shared/reasoning";
-import type { UiTheme } from "../../../shared/ui-theme";
+import type { UiThemeChoice } from "../../../shared/ui-theme";
 import type { UiIcon } from "../../../shared/ui-icon";
 import type { UiLanguage } from "../../../shared/ui-language";
 import type {
@@ -59,6 +59,7 @@ export interface ModelSettings {
   // 按厂商缓存：切回该厂商时，从这里恢复 baseUrl / model / apiKey
   perProvider?: Record<string, ProviderProfile>;
   runtimeSync: "off" | "local" | "llm";
+  memoryMode: "vector" | "summary" | "wiki" | "off";
   stickerEnabled: boolean;
   stickerSize: "small" | "standard" | "large";
   stickerSimilarityThreshold: number;
@@ -137,7 +138,7 @@ export interface GeneralSettings {
   toastSoundEnabled: boolean;
   launchAtLogin: boolean;
   language: UiLanguage;
-  uiTheme: UiTheme;
+  uiTheme: UiThemeChoice;
   uiThemeRadius: boolean;
   uiIcon: UiIcon;
   defaultChatMode: DefaultChatMode;
@@ -151,7 +152,7 @@ export interface GeneralSettings {
 }
 
 export interface UserApi {
-  getProfile: () => Promise<{ nickname: string; callPreference: string; birthday: string; timezone: string; avatarPath: string; defaultCity: string; gender: string }>;
+  getProfile: () => Promise<{ nickname: string; callPreference: string; birthday: string; timezone: string; avatarPath: string; defaultCity: string; gender: string; replyLanguage: string }>;
   saveProfile: (profile: Record<string, unknown>) => Promise<unknown>;
   uploadAvatar: () => Promise<{ avatarPath: string } | null>;
   getAvatar: () => Promise<string | null>;
@@ -179,12 +180,6 @@ export interface MemoryPanelPayload {
     weight: number;
     createdAt: number;
   }>;
-  importedDocs: Array<{
-    importId: string | null;
-    fileName: string;
-    chunkCount: number;
-    lastImportedAt: number;
-  }>;
   reflections: Array<{
     id: string;
     title: string;
@@ -201,7 +196,13 @@ export interface ObsidianVaultConfig {
 
 export interface MemoryPanelApi {
   getData: () => Promise<MemoryPanelPayload>;
-  deleteImportedDoc: (importId: string, fileName?: string) => Promise<{ ok: boolean; deleted: number }>;
+  getSummaryMemory: () => Promise<MemorySummaryPayload | null>;
+  listWikiPages: (request?: import("../../../shared/wiki-memory-types").WikiPageListRequest) => Promise<import("../../../shared/wiki-memory-types").WikiPageListResult>;
+  searchWiki: (request: import("../../../shared/wiki-memory-types").WikiSearchRequest) => Promise<import("../../../shared/wiki-memory-types").WikiPageListResult>;
+  readWikiPage: (pageId: string) => Promise<import("../../../shared/wiki-memory-types").WikiPageDetail | null>;
+  listWikiConflicts: () => Promise<import("../../../shared/wiki-memory-types").WikiConflict[]>;
+  correctWikiClaim: (request: import("../../../shared/wiki-memory-types").WikiClaimCorrection) => Promise<import("../../../shared/wiki-memory-types").WikiMutationResult>;
+  deleteWikiClaim: (request: import("../../../shared/wiki-memory-types").WikiClaimDeletion) => Promise<import("../../../shared/wiki-memory-types").WikiMutationResult>;
   saveL0: (patch: Record<string, unknown>) => Promise<{ ok: boolean }>;
   saveL1: (patch: Record<string, unknown>) => Promise<{ ok: boolean }>;
   exportToObsidianVault: () => Promise<{
@@ -222,6 +223,18 @@ export interface MemoryPanelApi {
   getVaultConfig: () => Promise<ObsidianVaultConfig>;
   setAutoSync: (autoSync: boolean) => Promise<{ ok: boolean; config: ObsidianVaultConfig }>;
   syncNow: () => Promise<{ ok: boolean; vaultPath?: string; fileCount?: number; error?: string; skipped?: boolean }>;
+}
+
+export interface MemorySummaryPayload {
+  sessionId: string;
+  sessionPath: string;
+  workspacePath?: string;
+  sessionContent: string;
+  workspaceContent?: string;
+  sessionTruncated: boolean;
+  workspaceTruncated: boolean;
+  stablePrompt: string;
+  runtimeContext: string;
 }
 
 /**

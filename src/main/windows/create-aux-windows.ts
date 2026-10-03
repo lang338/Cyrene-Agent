@@ -4,6 +4,7 @@ import { IPC } from "../../shared/ipc-channels";
 import { isDev } from "../env";
 import { DEFAULT_WORKSPACE_WINDOW_SIZE } from "../window-layout";
 import { loadGeneralSettings } from "../settings/settings-facade";
+import { getEffectiveUiTheme } from "../system-ui-theme";
 import { stopCall, setCallWindow } from "../call/call-manager";
 import { attachContextMenu } from "./context-menu";
 import { getWorkspaceInitialBounds } from "./workspace-window-bounds";
@@ -57,7 +58,7 @@ export function createReactChatWindowShell(): BrowserWindow {
   const bounds = getWorkspaceInitialBounds(workArea);
   const { rememberWindowState, uiTheme } = loadGeneralSettings();
   // 非透明窗口：底色跟随主题，避免暗色主题启动瞬间闪白
-  const windowBackgroundColor = uiTheme === "charcoal-pink" ? "#141414" : "#fff8fb";
+  const windowBackgroundColor = getEffectiveUiTheme(uiTheme) === "charcoal-pink" ? "#141414" : "#fff8fb";
   const window = new BrowserWindow({
     ...persistedWindowState("cyrene.workspace", rememberWindowState, true),
     ...bounds,

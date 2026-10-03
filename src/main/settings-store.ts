@@ -12,6 +12,8 @@ export interface UserProfile {
   defaultCity: string;
   /** 性别：secret(保密) | male(男) | female(女) */
   gender: string;
+  /** 回复语言："auto" 表示跟随界面语言，其余为 BCP 47（如 zh-CN / en / ja-JP） */
+  replyLanguage: string;
 }
 
 export const DEFAULT_USER_PROFILE: UserProfile = {
@@ -22,6 +24,7 @@ export const DEFAULT_USER_PROFILE: UserProfile = {
   avatarPath: "",
   defaultCity: "",
   gender: "secret",
+  replyLanguage: "auto",
 };
 
 export function getSettingsPath(): string {

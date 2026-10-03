@@ -47,7 +47,6 @@ const capability: ProviderCapability = {
   thinkingField: null,
   cacheStrategy: "none",
   testStrategy: "text",
-  supportsVision: false,
 };
 
 class FakeAdapter implements ChatVendorAdapter {
@@ -493,7 +492,7 @@ describe("runChatLoop", () => {
     };
 
     await expect(runChatLoop({
-      settings: { provider: "chatgpt", baseUrl: "https://test", model: "m", apiKey: "k", contextWindowTokens: 256000, modelRequestMaxRetries: 5 },
+      settings: { provider: "chatgpt", baseUrl: "https://test", model: "m", apiKey: "k", contextWindowTokens: 256000, modelRequestMaxRetries: 1 },
       adapter,
       messages: [{ role: "user", content: "看这张图" }],
       soulSystemBaseContent: "SOUL_SYSTEM",
@@ -502,7 +501,7 @@ describe("runChatLoop", () => {
       streamChat,
     })).rejects.toThrow("HTTP 429");
 
-    expect(attempts).toBe(1);
+    expect(attempts).toBe(2);
     expect(imageCaptionFallback).not.toHaveBeenCalled();
   });
 
@@ -559,21 +558,21 @@ describe("runChatLoop", () => {
     expect(adapter.requests).toHaveLength(1);
   });
 
-  it("does not retry an authentication failure", async () => {
+  it("retries an authentication failure within the configured budget", async () => {
     const status = 401;
     const adapter = new FakeAdapter("chatgpt");
     globalThis.fetch = vi.fn(async () => new Response("request failed", { status })) as unknown as typeof fetch;
 
     await expect(runChatLoop({
-      settings: { provider: "chatgpt", baseUrl: "https://test", model: "m", apiKey: "k", contextWindowTokens: 256000 },
+      settings: { provider: "chatgpt", baseUrl: "https://test", model: "m", apiKey: "k", contextWindowTokens: 256000, modelRequestMaxRetries: 1 },
       adapter,
       messages: [{ role: "user", content: "在吗" }],
       soulSystemBaseContent: "SOUL_SYSTEM",
       timeoutMs: 30_000,
     })).rejects.toThrow(`HTTP ${status}`);
 
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
-    expect(adapter.requests.map((request) => request.stream)).toEqual([true]);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    expect(adapter.requests.map((request) => request.stream)).toEqual([true, true]);
   });
 
   it.each([429, 500])("retries an empty-output transient HTTP %s and reports progress", async (status) => {
@@ -609,7 +608,7 @@ describe("runChatLoop", () => {
       .toEqual(["waiting", "attempting", "cleared"]);
   });
 
-  it("does not retry an explicit quota failure returned as HTTP 429", async () => {
+  it("retries an explicit quota failure returned as HTTP 429 within the configured budget", async () => {
     const adapter = new FakeAdapter("chatgpt");
     let attempts = 0;
     const streamChat: NonNullable<ChatLoopOptions["streamChat"]> = async () => {
@@ -621,7 +620,7 @@ describe("runChatLoop", () => {
     };
 
     await expect(runChatLoop({
-      settings: { provider: "chatgpt", baseUrl: "https://test", model: "m", apiKey: "k", contextWindowTokens: 256000, modelRequestMaxRetries: 5 },
+      settings: { provider: "chatgpt", baseUrl: "https://test", model: "m", apiKey: "k", contextWindowTokens: 256000, modelRequestMaxRetries: 1 },
       adapter,
       messages: [{ role: "user", content: "在吗" }],
       soulSystemBaseContent: "SOUL_SYSTEM",
@@ -629,7 +628,7 @@ describe("runChatLoop", () => {
       streamChat,
     })).rejects.toThrow("HTTP 429");
 
-    expect(attempts).toBe(1);
+    expect(attempts).toBe(2);
   });
 
   it("does not retry after a reasoning delta became visible", async () => {

@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { Bug, Check, ChevronRight, Globe, Languages, Megaphone, Package, Palette, UserRound } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import packageJson from "../../../../../package.json";
-import { normalizeUiTheme, type UiTheme } from "../../../../shared/ui-theme";
-import { applyUiTheme } from "../../../ui/theme";
+import { normalizeUiThemeChoice, type UiThemeChoice } from "../../../../shared/ui-theme";
+import { applyUiThemeChoice } from "../../../ui/theme";
 import { useAppUpdate } from "../../hooks/useAppUpdate";
 import { useNewsFeed } from "../../hooks/useNewsFeed";
 import { useUserAvatar } from "../../hooks/useUserAvatar";
@@ -29,7 +29,7 @@ export function UserAvatar({ label }: UserAvatarProps) {
   const [newsOpen, setNewsOpen] = useState(false);
   // 弹窗里要标出哪几条是新的，而 markRead 会立刻清掉未读，所以打开时先快照一份
   const [newsUnreadSnapshot, setNewsUnreadSnapshot] = useState<string[]>([]);
-  const [theme, setTheme] = useState<UiTheme>(() => normalizeUiTheme(document.documentElement.dataset.uiTheme));
+  const [theme, setTheme] = useState<UiThemeChoice>(() => normalizeUiThemeChoice(document.documentElement.dataset.uiTheme));
   const displayLabel = (label ?? nickname) || "User";
   const language = normalizeUiLanguage(locale);
   // 公告仓库只有中/英两份文件，日文界面降级看英文；仓库补上日文公告后删掉这行回退
@@ -44,23 +44,30 @@ export function UserAvatar({ label }: UserAvatarProps) {
   const versionTitleKey = resolveVersionTitleKey(version);
 
   useEffect(() => {
-    const root = document.documentElement;
-    const observer = new MutationObserver(() => setTheme(normalizeUiTheme(root.dataset.uiTheme)));
-    observer.observe(root, { attributes: true, attributeFilter: ["data-ui-theme"] });
-    return () => observer.disconnect();
+    let active = true;
+    const refreshThemeChoice = () => {
+      void window.settings?.getGeneral().then((settings) => {
+        if (active) setTheme(normalizeUiThemeChoice(
+          settings && typeof settings === "object" ? (settings as Record<string, unknown>).uiTheme : undefined,
+        ));
+      }).catch(() => {});
+    };
+    refreshThemeChoice();
+    const unsubscribe = window.cyreneTheme?.onChanged(refreshThemeChoice);
+    return () => { active = false; unsubscribe?.(); };
   }, []);
 
-  async function selectTheme(next: UiTheme) {
+  async function selectTheme(next: UiThemeChoice) {
     if (next === theme) return;
     const previous = theme;
     setTheme(next);
-    applyUiTheme(next);
+    applyUiThemeChoice(next);
     try {
       if (!window.settings) throw new Error("Settings API unavailable");
       await window.settings.saveGeneral({ uiTheme: next });
     } catch {
       setTheme(previous);
-      applyUiTheme(previous);
+      applyUiThemeChoice(previous);
     }
   }
 
@@ -122,12 +129,16 @@ export function UserAvatar({ label }: UserAvatarProps) {
               <DropdownMenu.SubTrigger className="cy-user-menu__item">
                 <Palette size={16} aria-hidden="true" />
                 <span>{t("settingsPage.theme")}</span>
-                <span className="cy-user-menu__value">{t(theme === "pearl-white" ? "settingsPage.themePearlWhite" : "settingsPage.themeCharcoalPink")}</span>
+                <span className="cy-user-menu__value">{t(theme === "system" ? "settingsPage.themeSystem" : theme === "pearl-white" ? "settingsPage.themePearlWhite" : "settingsPage.themeCharcoalPink")}</span>
                 <ChevronRight className="cy-user-menu__chevron" size={15} aria-hidden="true" />
               </DropdownMenu.SubTrigger>
               <DropdownMenu.Portal>
                 <DropdownMenu.SubContent className="cy-user-menu cy-user-menu__submenu" sideOffset={6} collisionPadding={12}>
-                  <DropdownMenu.RadioGroup value={theme} onValueChange={(value) => void selectTheme(value as UiTheme)}>
+                  <DropdownMenu.RadioGroup value={theme} onValueChange={(value) => void selectTheme(value as UiThemeChoice)}>
+                    <DropdownMenu.RadioItem className="cy-user-menu__item" value="system">
+                      <DropdownMenu.ItemIndicator className="cy-user-menu__check"><Check size={14} aria-hidden="true" /></DropdownMenu.ItemIndicator>
+                      <span>{t("settingsPage.themeSystem")}</span>
+                    </DropdownMenu.RadioItem>
                     <DropdownMenu.RadioItem className="cy-user-menu__item" value="pearl-white">
                       <DropdownMenu.ItemIndicator className="cy-user-menu__check"><Check size={14} aria-hidden="true" /></DropdownMenu.ItemIndicator>
                       <span>{t("settingsPage.themePearlWhite")}</span>

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Alert, Button, Spin } from "antd";
-import { ArrowLeft, AudioLines, BarChart3, Bot, Boxes, Brain, FileText, Headphones, Heart, Monitor, Palette, Power, Puzzle, Settings2, Smartphone, Sparkles, Type, Wrench } from "lucide-react";
+import { ArrowLeft, AudioLines, BarChart3, BookOpen, Bot, Boxes, Brain, FileText, Globe, Headphones, Heart, Monitor, Palette, Power, Puzzle, Settings2, Smartphone, Sparkles, Type, Wrench } from "lucide-react";
 import { MCP } from "@lobehub/icons";
 import packageJson from "../../../../../package.json";
-import { normalizeUiTheme, type UiTheme } from "../../../../shared/ui-theme";
+import { normalizeUiThemeChoice, type UiThemeChoice } from "../../../../shared/ui-theme";
 import {
   DEFAULT_MESSAGE_TYPOGRAPHY,
   MESSAGE_TYPOGRAPHY_RANGES,
@@ -13,7 +13,7 @@ import {
 import { useTranslation } from "../../i18n";
 import { useCyreneAvatar } from "../../hooks/useCyreneAvatar";
 import { applyMessageTypography } from "../../../ui/message-typography";
-import { applyUiTheme } from "../../../ui/theme";
+import { applyUiThemeChoice } from "../../../ui/theme";
 import { WindowControls } from "../../components/ui/WindowControls";
 import { Card } from "../../components/ui/Card";
 import { SettingsSegmented, SettingsSlider, SettingsSwitch } from "../../components/ui/SettingsControls";
@@ -24,6 +24,7 @@ import { resolveVersionTitleKey } from "./app-update-view";
 import { ModelSettingsPanel } from "./ModelSettingsPanel";
 import { ToolSettingsPanel } from "./ToolSettingsPanel";
 import { MemorySettingsPanel } from "./MemorySettingsPanel";
+import { KnowledgeBaseSettingsPanel } from "./KnowledgeBaseSettingsPanel";
 import { CyreneSettingsPanel } from "./CyreneSettingsPanel";
 import { AsrSettingsPanel } from "./AsrSettingsPanel";
 import { TtsSettingsPanel } from "./TtsSettingsPanel";
@@ -35,12 +36,13 @@ import { SkillSettingsPanel } from "./SkillSettingsPanel";
 import { ToolToggleSettingsPanel } from "./ToolToggleSettingsPanel";
 import { ChannelsSettingsPanel } from "./ChannelsSettingsPanel";
 import { SubagentSettingsPanel } from "./SubagentSettingsPanel";
+import { BrowserControlSettingsPanel } from "./BrowserControlSettingsPanel";
 import settingsLogoUrl from "../../../settings/100.png";
 import "../../components/ui/WindowControls.css";
 import "./AppearanceSettingsPage.css";
 
 interface AppearanceValues {
-  uiTheme: UiTheme;
+  uiTheme: UiThemeChoice;
   messageTypography: MessageTypography;
   petAlwaysOnTop: boolean;
   petVisible: boolean;
@@ -66,7 +68,7 @@ function finiteNumber(value: unknown, fallback: number): number {
 function readAppearance(value: unknown): AppearanceValues {
   const input = objectValue(value);
   return {
-    uiTheme: normalizeUiTheme(input.uiTheme),
+    uiTheme: normalizeUiThemeChoice(input.uiTheme),
     messageTypography: normalizeMessageTypography(input.messageTypography),
     petAlwaysOnTop: typeof input.petAlwaysOnTop === "boolean" ? input.petAlwaysOnTop : defaults.petAlwaysOnTop,
     petVisible: typeof input.petVisible === "boolean" ? input.petVisible : defaults.petVisible,
@@ -75,7 +77,7 @@ function readAppearance(value: unknown): AppearanceValues {
 }
 
 export type SettingsSection =
-  | "appearance" | "preferences" | "models" | "usage" | "general" | "toolToggle" | "tools" | "plugins" | "memory" | "cyrene" | "skill" | "subagents" | "asr" | "tts" | "mcp" | "channels" | "disclaimer";
+  | "appearance" | "preferences" | "models" | "usage" | "general" | "toolToggle" | "tools" | "plugins" | "memory" | "knowledge" | "cyrene" | "skill" | "subagents" | "asr" | "tts" | "mcp" | "channels" | "disclaimer" | "browser";
 
 export interface AppearanceSettingsPageProps {
   section: SettingsSection;
@@ -143,7 +145,13 @@ export function AppearanceSettingsPage({ section, onSelectSection, onBackToWorks
         setLoading(false);
       });
 
-    return () => { disposed = true; };
+    const unsubscribeTheme = window.cyreneTheme?.onChanged(() => {
+      void settingsApi.getGeneral().then((config) => {
+        if (!disposed) setValues((current) => ({ ...current, uiTheme: readAppearance(config).uiTheme }));
+      }).catch(() => {});
+    });
+
+    return () => { disposed = true; unsubscribeTheme?.(); };
   }, []);
 
   async function savePatch(patch: Record<string, unknown>, successMessage = t("settingsPage.saved")) {
@@ -192,13 +200,13 @@ export function AppearanceSettingsPage({ section, onSelectSection, onBackToWorks
     setStatus(t("settingsPage.applyOnRelease"));
   }
 
-  async function selectTheme(uiTheme: UiTheme) {
+  async function selectTheme(uiTheme: UiThemeChoice) {
     const previous = values.uiTheme;
     setValues((current) => ({ ...current, uiTheme }));
-    applyUiTheme(uiTheme);
+    applyUiThemeChoice(uiTheme);
     if (!await savePatch({ uiTheme })) {
       setValues((current) => ({ ...current, uiTheme: previous }));
-      applyUiTheme(previous);
+      applyUiThemeChoice(previous);
     }
   }
 
@@ -251,6 +259,7 @@ export function AppearanceSettingsPage({ section, onSelectSection, onBackToWorks
         <SettingsNavItem section="preferences" currentSection={section} icon={<Monitor size={18} strokeWidth={1.8} />} label={t("settingsPage.preferencesLabel")} onSelect={onSelectSection} />
         <SettingsNavItem section="models" currentSection={section} icon={<Boxes size={18} strokeWidth={1.8} />} label={t("settingsPage.modelSettings.title")} onSelect={onSelectSection} />
         <SettingsNavItem section="usage" currentSection={section} icon={<BarChart3 size={18} strokeWidth={1.8} />} label={t("settingsPage.usage.title")} onSelect={onSelectSection} />
+        <SettingsNavItem section="browser" currentSection={section} icon={<Globe size={18} strokeWidth={1.8} />} label={t("settingsPage.browserControl.navLabel")} onSelect={onSelectSection} />
         <div className="cy-settings-sidebar__group-title cy-settings-sidebar__group-title--spaced">{t("settingsPage.agentAbilities")}</div>
         <SettingsNavItem section="toolToggle" currentSection={section} icon={<Power size={18} strokeWidth={1.8} />} label={t("settingsPage.toolToggle.title")} onSelect={onSelectSection} />
         <SettingsNavItem section="tools" currentSection={section} icon={<Wrench size={18} strokeWidth={1.8} />} label={t("settingsPage.tools.title")} onSelect={onSelectSection} />
@@ -258,6 +267,7 @@ export function AppearanceSettingsPage({ section, onSelectSection, onBackToWorks
         <SettingsNavItem section="plugins" currentSection={section} icon={<Puzzle size={18} strokeWidth={1.8} />} label={t("pluginPanel.title")} onSelect={onSelectSection} />
         <SettingsNavItem section="mcp" currentSection={section} icon={<MCP size={18} />} label={t("settingsPage.mcp.menuLabel")} onSelect={onSelectSection} />
         <SettingsNavItem section="memory" currentSection={section} icon={<Brain size={18} strokeWidth={1.8} />} label={t("settingsPage.memory.title")} onSelect={onSelectSection} />
+        <SettingsNavItem section="knowledge" currentSection={section} icon={<BookOpen size={18} strokeWidth={1.8} />} label={t("settingsPage.knowledgeBase.title")} onSelect={onSelectSection} />
         <SettingsNavItem section="cyrene" currentSection={section} icon={<Heart size={18} strokeWidth={1.8} />} label={t("settingsPage.cyrene.title")} onSelect={onSelectSection} />
         <SettingsNavItem section="skill" currentSection={section} icon={<Sparkles size={18} strokeWidth={1.8} />} label={t("settingsPage.skill.title")} onSelect={onSelectSection} />
         <div className="cy-settings-sidebar__group-title cy-settings-sidebar__group-title--spaced">{t("settingsPage.externalChannels")}</div>
@@ -275,8 +285,8 @@ export function AppearanceSettingsPage({ section, onSelectSection, onBackToWorks
       </aside>
 
       <main className="cy-workspace is-empty cy-settings-content">
-        <div className="cy-settings-content__inner">
-          {section === "preferences" ? <PreferencesSettingsPanel /> : section === "models" ? <ModelSettingsPanel /> : section === "usage" ? <UsageStatsPanel /> : section === "general" ? <GeneralSettingsPanel /> : section === "toolToggle" ? <ToolToggleSettingsPanel /> : section === "tools" ? <ToolSettingsPanel musicSettingsNavigation={musicSettingsNavigation} /> : section === "subagents" ? <SubagentSettingsPanel /> : section === "plugins" ? <PluginSettingsPanel /> : section === "memory" ? <MemorySettingsPanel /> : section === "cyrene" ? <CyreneSettingsPanel /> : section === "skill" ? <SkillSettingsPanel /> : section === "asr" ? <AsrSettingsPanel /> : section === "tts" ? <TtsSettingsPanel /> : section === "mcp" ? <McpSettingsPanel /> : section === "channels" ? <ChannelsSettingsPanel /> : section === "disclaimer" ? <DisclaimerSettingsPanel /> : <>
+        <div className={`cy-settings-content__inner${section === "knowledge" ? " is-knowledge-settings" : ""}`}>
+          {section === "browser" ? <BrowserControlSettingsPanel /> : section === "preferences" ? <PreferencesSettingsPanel /> : section === "models" ? <ModelSettingsPanel /> : section === "usage" ? <UsageStatsPanel /> : section === "general" ? <GeneralSettingsPanel /> : section === "toolToggle" ? <ToolToggleSettingsPanel /> : section === "tools" ? <ToolSettingsPanel musicSettingsNavigation={musicSettingsNavigation} /> : section === "subagents" ? <SubagentSettingsPanel /> : section === "plugins" ? <PluginSettingsPanel /> : section === "memory" ? <MemorySettingsPanel /> : section === "knowledge" ? <KnowledgeBaseSettingsPanel /> : section === "cyrene" ? <CyreneSettingsPanel /> : section === "skill" ? <SkillSettingsPanel /> : section === "asr" ? <AsrSettingsPanel /> : section === "tts" ? <TtsSettingsPanel /> : section === "mcp" ? <McpSettingsPanel /> : section === "channels" ? <ChannelsSettingsPanel /> : section === "disclaimer" ? <DisclaimerSettingsPanel /> : <>
             <h1>{t("settingsPage.appearance")}</h1>
             <p className="cy-settings-intro">{t("settingsPage.description")}</p>
 
@@ -291,7 +301,7 @@ export function AppearanceSettingsPage({ section, onSelectSection, onBackToWorks
                 <Card>
                   <div className="cy-settings-row">
                     <div className="cy-settings-row__copy"><strong>{t("settingsPage.theme")}</strong><span>{t("settingsPage.themeDescription")}</span></div>
-                    <SettingsSegmented value={values.uiTheme} onChange={(value) => void selectTheme(value as UiTheme)} options={[{ label: t("settingsPage.themePearlWhite"), value: "pearl-white" }, { label: t("settingsPage.themeCharcoalPink"), value: "charcoal-pink" }]} />
+                    <SettingsSegmented value={values.uiTheme} onChange={(value) => void selectTheme(value as UiThemeChoice)} options={[{ label: t("settingsPage.themeSystem"), value: "system" }, { label: t("settingsPage.themePearlWhite"), value: "pearl-white" }, { label: t("settingsPage.themeCharcoalPink"), value: "charcoal-pink" }]} />
                   </div>
                   <div className="cy-settings-row">
                     <div className="cy-settings-row__copy"><strong>{t("settingsPage.uiFont")}</strong><span>{t("settingsPage.defaultFont")}</span></div>

@@ -149,7 +149,7 @@ describe("MiniMax Responses 端点迁移", () => {
       }],
     } as never);
 
-    expect(settings.schemaVersion).toBe(4);
+    expect(settings.schemaVersion).toBe(5);
     expect(settings.baseUrl).toBe(officialResponsesBase);
     expect(settings.perProvider?.["MiniMax（稀宇科技）"].baseUrl).toBe(officialResponsesBase);
     expect(settings.modelProfiles?.[0].baseUrl).toBe(officialResponsesBase);

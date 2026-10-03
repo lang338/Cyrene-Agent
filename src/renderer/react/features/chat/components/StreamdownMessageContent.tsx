@@ -198,32 +198,70 @@ function DemoFileNameTableHeader(props: React.ComponentProps<"th">) {
 
 /** 网站链接（http/https）行内卡片：favicon + 文本 + 域名，favicon 失败降级地球图标 */
 function WebLinkAnchor({ href, children }: { href: string; children?: ReactNode }) {
+  const { t } = useTranslation();
+  const { openWebLink } = useContext(FileLinkContext);
   const [iconFailed, setIconFailed] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   let domain = "";
   try {
     domain = new URL(href).hostname.replace(/^www\./, "");
   } catch {
     domain = "";
   }
+  const open = useCallback((destination: "cyrene" | "external") => {
+    setMenu(null);
+    if (openWebLink) {
+      void openWebLink(href, destination);
+    } else if (destination === "external") {
+      void window.system?.openExternal(href);
+    }
+  }, [href, openWebLink]);
+  const openContextMenu = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const { x, y } = clampMenuPosition(event.clientX, event.clientY);
+    setMenu({ x, y });
+  }, []);
+  const menuItems: FileContextMenuItem[] = menu ? [
+    ...(openWebLink ? [{ key: "cyrene", label: t("browserPanel.openInCyrene"), run: () => open("cyrene") }] : []),
+    { key: "external", label: t("browserPanel.openExternal"), run: () => open("external") },
+  ] : [];
   return (
-    <a className="cy-web-link" href={href} target="_blank" rel="noreferrer" title={href}>
-      {iconFailed || !domain ? (
-        <svg className="cy-web-link__icon" viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" strokeWidth="1.2" />
-          <path d="M1.8 8h12.4M8 1.8c2.6 2.6 2.6 7.8 0 12.4M8 1.8c-2.6 2.6-2.6 7.8 0 12.4" fill="none" stroke="currentColor" strokeWidth="1.2" />
-        </svg>
-      ) : (
-        <img
-          className="cy-web-link__favicon"
-          src={`https://${domain}/favicon.ico`}
-          alt=""
-          loading="lazy"
-          onError={() => setIconFailed(true)}
-        />
-      )}
-      <span className="cy-web-link__text">{children}</span>
-      {domain && <span className="cy-web-link__domain">{domain}</span>}
-    </a>
+    <>
+      <a
+        className="cy-web-link"
+        href={href}
+        title={href}
+        onClick={(event) => {
+          event.preventDefault();
+          open(openWebLink ? "cyrene" : "external");
+        }}
+        onAuxClick={(event) => {
+          if (event.button !== 1 || !openWebLink) return;
+          event.preventDefault();
+          open("cyrene");
+        }}
+        onContextMenu={openContextMenu}
+      >
+        {iconFailed || !domain ? (
+          <svg className="cy-web-link__icon" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" strokeWidth="1.2" />
+            <path d="M1.8 8h12.4M8 1.8c2.6 2.6 2.6 7.8 0 12.4M8 1.8c-2.6 2.6-2.6 7.8 0 12.4" fill="none" stroke="currentColor" strokeWidth="1.2" />
+          </svg>
+        ) : (
+          <img
+            className="cy-web-link__favicon"
+            src={`https://${domain}/favicon.ico`}
+            alt=""
+            loading="lazy"
+            onError={() => setIconFailed(true)}
+          />
+        )}
+        <span className="cy-web-link__text">{children}</span>
+        {domain && <span className="cy-web-link__domain">{domain}</span>}
+      </a>
+      {menu && <FileContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />}
+    </>
   );
 }
 
