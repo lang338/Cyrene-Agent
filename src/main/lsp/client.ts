@@ -78,7 +78,8 @@ function readNpmShimEntry(shimPath: string): string | null {
   // 捕获组要连 `..\` 一起带上，交给 path.resolve 去归一。
   // ⚠️ 必须逐个候选看：`%dp0%` 在壳里不止收尾那一处（前面还有 `IF EXIST "%dp0%\node.exe"` 这种探测），
   // 只取第一个匹配就会拿到 node.exe，永远解析不出真正的入口。
-  for (const match of content.matchAll(/"%dp0%\\([^"]+)"/gi)) {
+  // npm 的 cmd-shim 写 `%dp0%`，pnpm 自产的壳写 `%~dp0`（cmd 参数展开形式）——两种都要认。
+  for (const match of content.matchAll(/"%~?dp0%?\\([^"]+)"/gi)) {
     const resolved = path.resolve(path.dirname(shimPath), match[1].replace(/\\/g, path.sep));
     if (isNodeScript(resolved)) return resolved;
   }
