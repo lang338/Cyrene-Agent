@@ -73,6 +73,8 @@ import type { PluginManager } from "../../plugins/manager";
 import { setLive2dWindowSender } from "../orchestrator/tools/built-in-tools";
 import { registerAllTools } from "../orchestrator/tools/registry/tool-registration";
 import { LspManager } from "../lsp/manager";
+import { resolveLspServer } from "../lsp/server-discovery";
+import { createLspServerInstaller } from "../lsp/server-installer";
 import { initSandbox } from "../orchestrator/sandbox/sandbox-exec";
 import {
   encodePlanSessionKey,
@@ -107,6 +109,7 @@ import { registerChatUiIpc, getActiveChatSessionId } from "../chats/chat-ui-ipc"
 import { createToastWindowController } from "../toast/toast-window";
 import { createToastService } from "../toast/toast-service";
 import { toastEvents } from "../toast/toast-events";
+import { synthesizeTaskAnnouncement } from "../toast/task-alert-tts";
 import { createToastWindowShell } from "../windows/create-toast-window";
 import * as chatsStore from "../chats/chats-store";
 import { flush as flushTokenUsage } from "../token-usage-store";

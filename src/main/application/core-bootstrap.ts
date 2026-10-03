@@ -19,7 +19,11 @@ import type { TtsSynthesisService } from "../services/tts/tts-synthesis-service"
 import type { TtsSessionService } from "../tts/tts-session-service";
 import type { ProactiveLifecycle } from "../proactive/proactive-lifecycle";
 import type { GitService } from "../code-git/git-service";
+import type { CheckpointService } from "../code-git/checkpoint-service";
+import type { ChangeLedger } from "../code-git/change-ledger-service";
+import type { WorkspaceFileService } from "../code-git/workspace-files";
 import type { LspManager } from "../lsp/manager";
+import type { LspServerInstaller } from "../lsp/server-installer";
 import type { ScreenshotService } from "../screenshot/screenshot-lifecycle";
 import type { MusicBootstrap } from "../music/bootstrap";
 import type { AppUpdateService } from "../updater/app-update-service";
