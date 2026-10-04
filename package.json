@@ -17,6 +17,8 @@
     "build:main": "node scripts/build/desktop-typescript.mjs main",
     "generate:plugin-schema": "node scripts/plugin-sdk/generate-schema.mjs",
     "check:plugin-schema": "node scripts/plugin-sdk/generate-schema.mjs --check",
+    "generate:adapted-models": "node scripts/models/generate-adapted-models.mjs",
+    "check:adapted-models": "node scripts/models/generate-adapted-models.mjs --check",
     "build:preload": "node scripts/build/desktop-typescript.mjs preload && node scripts/build/learn-exam-preload.mjs",
     "check:main": "tsc -p tsconfig.main.json --noEmit",
     "check:preload": "tsc -p tsconfig.preload.json --noEmit",

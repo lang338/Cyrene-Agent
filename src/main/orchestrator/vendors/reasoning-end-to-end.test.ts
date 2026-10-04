@@ -11,6 +11,7 @@ import { describe, expect, test } from "vitest";
 import { OpenAICompatAdapter } from "./openai-adapter";
 import { AnthropicAdapter } from "./anthropic-adapter";
 import { ResponsesAdapter } from "./responses-adapter";
+import { getCapabilityOrOpenAI } from "./capabilities";
 import type { ProviderCapability, VendorConfig } from "./types";
 import type { ReasoningPreference } from "../../../shared/reasoning";
 import type { ManualReasoningConfig } from "../../../shared/manual-reasoning";
@@ -58,6 +59,20 @@ const mimoCap: ProviderCapability = {
   testStrategy: "text",
   visionBaseUrl: "https://api.xiaomimimo.com/v1",
 };
+
+test("豆包托管 glm-5.3 的实际请求保留强制思考与 high 档位", () => {
+  const cap = getCapabilityOrOpenAI("豆包（火山方舟）");
+  const adapter = new OpenAICompatAdapter("doubao", cap);
+  const model = "glm-5.3";
+  const http = adapter.buildRequest(
+    { model, messages: [{ role: "user", content: "hi" }] },
+    cfgOf(cap, { model, reasoning: { mode: "off" } }),
+  );
+  const body = JSON.parse(http.body);
+  expect(body.thinking).toEqual({ type: "enabled" });
+  expect(body.reasoning_effort).toBe("high");
+  expect(body.enable_thinking).toBeUndefined();
+});
 
 function cfgOf(
   cap: ProviderCapability,
