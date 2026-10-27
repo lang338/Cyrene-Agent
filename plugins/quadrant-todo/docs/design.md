@@ -340,6 +340,8 @@ interface Task {
 
 工具 id 一律带插件前缀 `quadrant-todo_`（宿主校验，事实 #1 语境）。五个工具，全部只操作插件自有数据。
 
+> **实现补记（v0.2 实现期发现）**：宿主 chat 模式（昔涟日常对话）的工具白名单机制——`run-capabilities.ts` 只把 `chatBuiltin === true` 的工具放进模型清单，其余需用户在设置里手动 opt-in。`PluginTool` 端口类型未文档化该字段，但宿主信任边界（`plugin-runtime.ts`）按 `as ToolDefinition` 直转透传，插件工具对象携带 `chatBuiltin: true` 即在官方宿主同效。本插件五个工具全部携带该字段（昔涟人格能力语义，绕过 Chat 工具增强总开关，设置面板正确显示）。
+
 ### 8.1 `quadrant-todo_add_task` —— 登记待办
 
 ```

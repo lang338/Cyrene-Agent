@@ -27,6 +27,16 @@ function makeHarness() {
   return { storage, store, events, tools, byId, call };
 }
 
+describe("工具注册元数据", () => {
+  it("五个工具都带 chatBuiltin: true（chat 会话白名单，缺字段则昔涟对话看不到工具）", () => {
+    const h = makeHarness();
+    expect(h.tools).toHaveLength(5);
+    for (const tool of h.tools) {
+      expect((tool as { chatBuiltin?: boolean }).chatBuiltin).toBe(true);
+    }
+  });
+});
+
 describe("add_task 三要素硬校验", () => {
   it("缺内容 → 拒写并报“缺内容”", async () => {
     const h = makeHarness();

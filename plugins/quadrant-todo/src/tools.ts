@@ -64,6 +64,14 @@ function describeTask(task: Task): string {
   return `「${task.content}」（${quadrant}，截止 ${formatDeadline(task.deadline)}，${status}）`;
 }
 
+/**
+ * 宿主 chat 模式（昔涟日常对话）只把 chatBuiltin === true 的工具放进模型清单
+ * （run-capabilities.ts / build-options.ts 白名单机制），其余插件工具需用户在
+ * 设置里手动 opt-in。PluginTool 端口类型未文档化此字段，但宿主信任边界
+ * （plugin-runtime.ts）按 as 直转透传——交叉类型补字段即可，官方宿主同样生效。
+ */
+type ChatPluginTool = PluginTool & { chatBuiltin?: boolean };
+
 export function buildTools(deps: ToolsDeps): PluginTool[] {
   const now = deps.now ?? Date.now;
   const log = deps.log ?? (() => {});
@@ -80,8 +88,9 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
     return r.task;
   };
 
-  const addTask: PluginTool = {
+  const addTask: ChatPluginTool = {
     id: "quadrant-todo_add_task",
+    chatBuiltin: true,
     name: "登记待办",
     description:
       "把一条待办登记进四象限待办列表。调用前必须完成属性收集：四象限分类只能由用户明确回答（可以建议，不得代答）；时间与内容以用户表述为准，缺什么追问什么，三项属性齐备前不得调用本工具；属性收集过程即确认，调用前不做整体复述。",
@@ -130,8 +139,9 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
     },
   };
 
-  const updateTask: PluginTool = {
+  const updateTask: ChatPluginTool = {
     id: "quadrant-todo_update_task",
+    chatBuiltin: true,
     name: "修改待办属性",
     description:
       "修改一条未完成待办的属性（内容/截止时间/四象限分类/完成状态），至少给出一项。修改截止时间会自动滑回被滑动改写的分类并重置提醒（新一轮）；手动改分类会清除滑动记录。仅用户提出修改需求时调用。",
@@ -205,8 +215,9 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
     },
   };
 
-  const completeTask: PluginTool = {
+  const completeTask: ChatPluginTool = {
     id: "quadrant-todo_complete_task",
+    chatBuiltin: true,
     name: "标记待办完成",
     description: "把一条未完成待办标记为已完成。仅在用户明确告知该任务已完成时调用。",
     enabled: true,
@@ -231,8 +242,9 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
     },
   };
 
-  const deleteTask: PluginTool = {
+  const deleteTask: ChatPluginTool = {
     id: "quadrant-todo_delete_task",
+    chatBuiltin: true,
     name: "删除待办",
     description:
       "从待办列表删除一条记录（纯删除，不新建）。必须是用户明确要求删除的才能调用，禁止自行判断清理。完成态任务删除后如需重做，请走新建流程（反悔）。",
@@ -256,8 +268,9 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
     },
   };
 
-  const listTasks: PluginTool = {
+  const listTasks: ChatPluginTool = {
     id: "quadrant-todo_list_tasks",
+    chatBuiltin: true,
     name: "查询待办列表",
     description:
       "查询四象限待办的实际内容。回答“我有什么要做”或对待办个数/内容有疑问时，必须以本工具返回为准，不以记忆为准（用户可能在界面手动修改过）。",
