@@ -1,33 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { PluginStorage } from "../../../src/plugins/api";
 import { buildTools } from "../src/tools";
 import { TaskStore } from "../src/store";
 import type { Task } from "../src/types";
-
-const NOW = new Date(2026, 9, 28, 12, 0, 0, 0).getTime();
-
-function fmt(ms: number): string {
-  const d = new Date(ms);
-  const p = (n: number): string => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
+import { NOW, fmt, makeStorage } from "./helpers";
 
 const IN_71H = fmt(NOW + 71 * 3_600_000);
 const IN_50H = fmt(NOW + 50 * 3_600_000);
 const IN_7D = fmt(NOW + 7 * 24 * 3_600_000);
-
-/** 内存版 PluginStorage（与宿主 PluginStorage 同形，同步读写） */
-function makeStorage(): PluginStorage & { dump(): Task[] } {
-  const map = new Map<string, unknown>();
-  return {
-    get: <T,>(k: string) => map.get(k) as T | undefined,
-    set: (k, v) => {
-      map.set(k, v);
-    },
-    rootDir: () => "<mock>",
-    dump: () => (map.get("tasks") as Task[] | undefined) ?? [],
-  };
-}
 
 function makeHarness() {
   const storage = makeStorage();

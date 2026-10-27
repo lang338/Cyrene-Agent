@@ -9,6 +9,7 @@
 import { BrowserWindow, ipcMain } from "electron";
 import * as path from "node:path";
 import type { CyrenePlugin, PluginContext } from "../../../src/plugins/api";
+import { buildPromptProvider } from "./prompts";
 import { TaskStore } from "./store";
 import { buildTools } from "./tools";
 
@@ -64,7 +65,7 @@ function createWorkbenchWindow(): void {
 const plugin: CyrenePlugin = {
   register(context: PluginContext): void {
     ctx = context;
-    // 数据层 + 工具面（M1）；prompt 注入（M2）与三路结算（M3）随后装配
+    // 数据层 + 工具面（M1）+ prompt 注入（M2）；三路结算（M3）随后装配
     const store = new TaskStore(ctx.storage);
     for (const tool of buildTools({
       store,
@@ -72,7 +73,8 @@ const plugin: CyrenePlugin = {
     })) {
       ctx.registerTool(tool);
     }
-    ctx.log("四象限待办已注册：5 个工具已装配");
+    ctx.registerPromptProvider(buildPromptProvider({ store }));
+    ctx.log("四象限待办已注册：5 个工具 + prompt 注入已装配");
   },
 
   async open(): Promise<void> {

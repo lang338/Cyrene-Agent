@@ -6,15 +6,7 @@ import {
   settleTask,
 } from "../src/quadrant";
 import type { Task } from "../src/types";
-
-/** 固定"当前时刻"：2026-10-28 12:00 本地时间 */
-const NOW = new Date(2026, 9, 28, 12, 0, 0, 0).getTime();
-
-function fmt(ms: number): string {
-  const d = new Date(ms);
-  const p = (n: number): string => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
+import { NOW, fmt } from "./helpers";
 
 function hoursFromNow(h: number): string {
   return fmt(NOW + h * 3_600_000);
