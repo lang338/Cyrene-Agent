@@ -1,0 +1,18 @@
+{
+  "name": "quadrant-todo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "四象限待办插件工程（开发用；宿主只消费 manifest.json + 构建产物，本文件不进插件 ZIP）",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.5"
+  }
+}

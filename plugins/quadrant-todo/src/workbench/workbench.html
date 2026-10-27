@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>四象限待办</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      background: #fff9fc;
+      color: #4a3b45;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    /* 自绘标题栏：可拖动 + 三键 */
+    #titlebar {
+      height: 36px;
+      flex: none;
+      display: flex;
+      align-items: center;
+      -webkit-app-region: drag;
+      user-select: none;
+      background: #ffeef5;
+      border-bottom: 1px solid #f3d9e4;
+      padding-left: 12px;
+      gap: 8px;
+    }
+    #titlebar .dot { width: 10px; height: 10px; border-radius: 50%; background: #f6a5c0; }
+    #titlebar .title { font-size: 13px; color: #9c6b80; }
+    #titlebar .spacer { flex: 1; }
+    #titlebar button {
+      -webkit-app-region: no-drag;
+      width: 44px; height: 36px;
+      border: none; background: transparent;
+      font-size: 13px; color: #9c6b80; cursor: pointer;
+    }
+    #titlebar button:hover { background: #f6d5e2; }
+    #titlebar button.close:hover { background: #e8555d; color: #fff; }
+    main {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 12px;
+    }
+    main h1 { font-size: 22px; color: #d6567e; }
+    main p { font-size: 13px; color: #a58a95; }
+  </style>
+</head>
+<body>
+  <div id="titlebar">
+    <span class="dot"></span>
+    <span class="title">四象限待办</span>
+    <span class="spacer"></span>
+    <button id="btn-min">&#x2500;</button>
+    <button id="btn-max">&#x25a1;</button>
+    <button id="btn-close" class="close">&#x2715;</button>
+  </div>
+  <main>
+    <h1>四象限待办工作台</h1>
+    <p>M0 骨架占位页——四象限 / 日历 / 已完成列表三形态在 M4 落地</p>
+  </main>
+  <script>
+    const { ipcRenderer } = require("electron");
+    document.getElementById("btn-min").addEventListener("click", () => ipcRenderer.send("plugin:quadrant-todo:win-minimize"));
+    document.getElementById("btn-max").addEventListener("click", () => ipcRenderer.send("plugin:quadrant-todo:win-maximize"));
+    document.getElementById("btn-close").addEventListener("click", () => ipcRenderer.send("plugin:quadrant-todo:win-close"));
+  </script>
+</body>
+</html>

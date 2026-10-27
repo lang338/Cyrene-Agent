@@ -1,0 +1,11 @@
+{
+  "apiVersion": 1,
+  "id": "quadrant-todo",
+  "name": "四象限待办——昔涟帮你处理待办事项",
+  "version": "0.1.0",
+  "description": "按重要×紧急四象限整理你的待办：登记一次长期保存，72 小时自动滑红、24 小时自动提醒、到点自动结算完成状态；独立工作台窗口提供四象限 / 日历 / 已完成列表三种视图。",
+  "author": "lang338",
+  "entry": "index.cjs",
+  "defaultEnabled": false,
+  "deps": ["scheduler"]
+}
