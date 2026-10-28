@@ -445,7 +445,8 @@ describe("syncReminders（预建同步）", () => {
   });
 
   it("回归（用户实测）：授权的提醒任务跨重启被宿主作废 → 开机补检重新声明提醒", async () => {
-    const t = makeTask({ id: "t1", content: "数学作业", deadline: fmt(NOW + 23 * HOUR), quadrant: "red" });
+    // 登记时剩 24h03m：24h 时刻在 3 分钟后（未来）→ 预建
+    const t = makeTask({ id: "t1", content: "数学作业", deadline: fmt(NOW + 24 * HOUR + 3 * 60_000), quadrant: "red" });
     const s = setup([t]);
     // 登记：预建 24h 提醒任务，用户授权
     await syncReminders(s.deps, t);
