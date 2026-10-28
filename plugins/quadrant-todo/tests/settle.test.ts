@@ -10,14 +10,18 @@ import type {
   PluginStorage,
 } from "../../../src/plugins/api";
 import { fmt, makeStorage, NOW } from "./helpers";
+import { parseDeadline } from "../src/quadrant";
 import {
   buildReminderPrompt,
   buildReminderTitle,
   cleanupReminders,
   deliverReminders,
+  reminderMoments,
   ReminderRegistry,
   REMINDER_FIRE_DELAY_MS,
+  removeTodoReminders,
   scanAndSettle,
+  syncReminders,
   type SettleDeps,
 } from "../src/settle";
 import { TaskStore } from "../src/store";
@@ -204,7 +208,9 @@ describe("deliverReminders（提醒 → scheduler 一次性任务）", () => {
     if (input.schedule.kind === "once") {
       expect(Date.parse(input.schedule.runAt)).toBe(NOW + REMINDER_FIRE_DELAY_MS);
     }
-    expect(s.registry.list()).toEqual([{ schedulerTaskId: "st-1", todoId: "t1", kind: "remind-slide" }]);
+    expect(s.registry.list()).toEqual([
+      { schedulerTaskId: "st-1", todoId: "t1", kind: "remind-slide", deadline: t.deadline },
+    ]);
   });
 
   it("remind-24h：提示词说明不足 24 小时", async () => {
@@ -212,7 +218,7 @@ describe("deliverReminders（提醒 → scheduler 一次性任务）", () => {
     const s = setup([t]);
     await deliverReminders(s.deps, t, ["remind-24h"]);
     expect(s.scheduler.createCalls[0]?.prompt).toContain("24 小时");
-    expect(s.registry.list()[0]?.kind).toBe("remind-24h");
+    expect(s.registry.list()[0]).toMatchObject({ kind: "remind-24h", deadline: t.deadline });
   });
 
   it("一轮同时滑红且进入 24h：创建两个提醒任务", async () => {
@@ -238,6 +244,14 @@ describe("deliverReminders（提醒 → scheduler 一次性任务）", () => {
     await expect(deliverReminders(depsNoScheduler, t, ["remind-slide"])).resolves.toBeUndefined();
     expect(s.log).toHaveBeenCalled();
   });
+
+  it("已有同 (待办, 种类, 截止) 的预建条目：不重复创建", async () => {
+    const t = makeTask({ id: "t1", content: "数学作业", deadline: fmt(NOW + 48 * HOUR), quadrant: "green" });
+    const s = setup([t]);
+    s.registry.add({ schedulerTaskId: "st-x", todoId: "t1", kind: "remind-slide", deadline: t.deadline! });
+    await deliverReminders(s.deps, t, ["remind-slide"]);
+    expect(s.scheduler.createCalls).toHaveLength(0);
+  });
 });
 
 describe("cleanupReminders（登记簿回收）", () => {
@@ -245,41 +259,62 @@ describe("cleanupReminders（登记簿回收）", () => {
     const t = makeTask({ id: "t1", content: "数学作业", deadline: fmt(NOW + 48 * HOUR), quadrant: "green" });
     const s = setup([t]);
     await deliverReminders(s.deps, t, ["remind-slide"]);
-    return s;
+    return { s, t };
   }
 
-  it("已触发的提醒任务：删除 scheduler 任务并清映射", async () => {
-    const s = await withReminder();
+  it("已触发且结算标记已记：删除 scheduler 任务并清映射", async () => {
+    const { s, t } = await withReminder();
     s.scheduler.tasks[0]!.lastFiredAt = new Date(NOW).toISOString();
+    const todo = s.store.get("t1")!;
+    s.store.replace({ ...todo, reminded: { slide: t.deadline! } });
     await cleanupReminders(s.deps);
     expect(s.scheduler.tasks).toHaveLength(0);
     expect(s.registry.list()).toHaveLength(0);
   });
 
+  it("已触发但结算标记未记：保留一轮（防删后重复重建）", async () => {
+    const { s } = await withReminder();
+    s.scheduler.tasks[0]!.lastFiredAt = new Date(NOW).toISOString();
+    await cleanupReminders(s.deps);
+    expect(s.scheduler.tasks).toHaveLength(1);
+    expect(s.registry.list()).toHaveLength(1);
+  });
+
   it("在途未触发且待办仍在：保留", async () => {
-    const s = await withReminder();
+    const { s } = await withReminder();
     await cleanupReminders(s.deps);
     expect(s.scheduler.tasks).toHaveLength(1);
     expect(s.registry.list()).toHaveLength(1);
   });
 
   it("待办已删除：回收 scheduler 任务", async () => {
-    const s = await withReminder();
+    const { s } = await withReminder();
     s.store.remove("t1");
     await cleanupReminders(s.deps);
     expect(s.scheduler.tasks).toHaveLength(0);
     expect(s.registry.list()).toHaveLength(0);
   });
 
-  it("scheduler 任务被用户删除：仅清映射，不报错", async () => {
-    const s = await withReminder();
-    await s.scheduler.service.deleteTask("st-1");
+  it("待办已完成：回收提醒任务", async () => {
+    const { s, t } = await withReminder();
+    const todo = s.store.get("t1")!;
+    s.store.replace({ ...todo, status: "done", completedAt: NOW });
+    void t;
     await cleanupReminders(s.deps);
+    expect(s.scheduler.tasks).toHaveLength(0);
     expect(s.registry.list()).toHaveLength(0);
   });
 
+  it("scheduler 任务被用户删除：标记本轮已提醒，不再重建", async () => {
+    const { s, t } = await withReminder();
+    await s.scheduler.service.deleteTask("st-1");
+    await cleanupReminders(s.deps);
+    expect(s.registry.list()).toHaveLength(0);
+    expect(s.store.get("t1")?.reminded?.slide).toBe(t.deadline);
+  });
+
   it("listTasks 失败：跳过清理，保留映射", async () => {
-    const s = await withReminder();
+    const { s } = await withReminder();
     const failing: PluginSchedulerService = {
       ...s.deps.scheduler!,
       listTasks: async () => {
@@ -292,12 +327,110 @@ describe("cleanupReminders（登记簿回收）", () => {
   });
 });
 
+describe("removeTodoReminders（删除待办连带清理）", () => {
+  it("清掉该待办的全部提醒任务与映射，不影响其他待办", async () => {
+    const t1 = makeTask({ id: "t1", content: "甲", deadline: fmt(NOW + 5 * 24 * HOUR), quadrant: "green" });
+    const t2 = makeTask({ id: "t2", content: "乙", deadline: fmt(NOW + 6 * 24 * HOUR), quadrant: "red" });
+    const s = setup([t1, t2]);
+    await syncReminders(s.deps, t1);
+    await syncReminders(s.deps, t2);
+    expect(s.registry.list()).toHaveLength(3); // 绿两个 + 红一个
+    await removeTodoReminders(s.deps, "t1");
+    expect(s.registry.list().map((e) => e.todoId)).toEqual(["t2"]);
+  });
+});
+
+describe("reminderMoments（预建时刻计算）", () => {
+  it("绿任务 72h 外：预建滑红 + 24h 两个时刻", () => {
+    const t = makeTask({ id: "t1", content: "x", deadline: fmt(NOW + 5 * 24 * HOUR), quadrant: "green" });
+    const dl = parseDeadline(t.deadline!)!.getTime();
+    expect(reminderMoments(t, NOW)).toEqual([
+      { kind: "remind-slide", runAt: dl - 72 * HOUR },
+      { kind: "remind-24h", runAt: dl - 24 * HOUR },
+    ]);
+  });
+
+  it("蓝任务：只预建滑红（滑黄后静默）；红任务：只预建 24h", () => {
+    const blue = makeTask({ id: "b", content: "x", deadline: fmt(NOW + 5 * 24 * HOUR), quadrant: "blue" });
+    const dl = parseDeadline(blue.deadline!)!.getTime();
+    expect(reminderMoments(blue, NOW)).toEqual([{ kind: "remind-slide", runAt: dl - 72 * HOUR }]);
+    const red = makeTask({ id: "r", content: "x", deadline: fmt(NOW + 5 * 24 * HOUR), quadrant: "red" });
+    expect(reminderMoments(red, NOW)).toEqual([{ kind: "remind-24h", runAt: dl - 24 * HOUR }]);
+  });
+
+  it("已过的时刻不预建，未来时刻照常预建（绿剩 48h：滑红即时、24h 预建；剩 10h：全即时）", () => {
+    const dl5 = fmt(NOW + 5 * 24 * HOUR);
+    expect(reminderMoments(makeTask({ id: "y", content: "x", deadline: dl5, quadrant: "yellow" }), NOW)).toEqual([]);
+    expect(reminderMoments(makeTask({ id: "n", content: "x", deadline: null, quadrant: "green" }), NOW)).toEqual([]);
+    expect(reminderMoments(makeTask({ id: "d", content: "x", deadline: dl5, quadrant: "green", status: "done" }), NOW)).toEqual([]);
+    const t48 = makeTask({ id: "w", content: "x", deadline: fmt(NOW + 48 * HOUR), quadrant: "green" });
+    const dl48 = parseDeadline(t48.deadline!)!.getTime();
+    expect(reminderMoments(t48, NOW)).toEqual([{ kind: "remind-24h", runAt: dl48 - 24 * HOUR }]);
+    expect(reminderMoments(makeTask({ id: "w2", content: "x", deadline: fmt(NOW + 10 * HOUR), quadrant: "green" }), NOW)).toEqual([]);
+  });
+});
+
+describe("syncReminders（预建同步）", () => {
+  it("绿任务远期：预建两个提醒任务，runAt 为对应提醒时刻", async () => {
+    const t = makeTask({ id: "t1", content: "数学作业", deadline: fmt(NOW + 5 * 24 * HOUR), quadrant: "green" });
+    const s = setup([t]);
+    await syncReminders(s.deps, t);
+    expect(s.scheduler.createCalls).toHaveLength(2);
+    const dl = parseDeadline(t.deadline!)!.getTime();
+    const runs = s.scheduler.createCalls.map((c) =>
+      c.schedule.kind === "once" ? Date.parse(c.schedule.runAt) : Number.NaN,
+    );
+    expect(runs).toEqual([dl - 72 * HOUR, dl - 24 * HOUR]);
+    expect(s.registry.list().map((e) => [e.kind, e.deadline])).toEqual([
+      ["remind-slide", t.deadline],
+      ["remind-24h", t.deadline],
+    ]);
+  });
+
+  it("重复同步幂等：不重复创建", async () => {
+    const t = makeTask({ id: "t1", content: "数学作业", deadline: fmt(NOW + 5 * 24 * HOUR), quadrant: "green" });
+    const s = setup([t]);
+    await syncReminders(s.deps, t);
+    await syncReminders(s.deps, t);
+    expect(s.scheduler.createCalls).toHaveLength(2);
+  });
+
+  it("改期：旧提醒任务删除，按新截止重建", async () => {
+    const t = makeTask({ id: "t1", content: "数学作业", deadline: fmt(NOW + 5 * 24 * HOUR), quadrant: "green" });
+    const s = setup([t]);
+    await syncReminders(s.deps, t);
+    const moved = { ...t, deadline: fmt(NOW + 10 * 24 * HOUR) };
+    await syncReminders(s.deps, moved);
+    expect(s.scheduler.createCalls).toHaveLength(4); // 旧 2 + 新 2
+    expect(s.registry.list()).toHaveLength(2);
+    expect(s.registry.list().every((e) => e.deadline === moved.deadline)).toBe(true);
+  });
+
+  it("绿改黄：两类提醒任务全部清除", async () => {
+    const t = makeTask({ id: "t1", content: "数学作业", deadline: fmt(NOW + 5 * 24 * HOUR), quadrant: "green" });
+    const s = setup([t]);
+    await syncReminders(s.deps, t);
+    await syncReminders(s.deps, { ...t, quadrant: "yellow" });
+    expect(s.scheduler.tasks).toHaveLength(0);
+    expect(s.registry.list()).toHaveLength(0);
+  });
+
+  it("转为完成态：清空全部提醒任务", async () => {
+    const t = makeTask({ id: "t1", content: "数学作业", deadline: fmt(NOW + 5 * 24 * HOUR), quadrant: "green" });
+    const s = setup([t]);
+    await syncReminders(s.deps, t);
+    await syncReminders(s.deps, { ...t, status: "done", completedAt: NOW });
+    expect(s.scheduler.tasks).toHaveLength(0);
+    expect(s.registry.list()).toHaveLength(0);
+  });
+});
+
 describe("ReminderRegistry 持久化", () => {
   it("跨实例共享 storage，remove 落盘", () => {
     const storage = makeStorage();
     const r1 = new ReminderRegistry(storage);
-    r1.add({ schedulerTaskId: "s1", todoId: "t1", kind: "remind-slide" });
-    r1.add({ schedulerTaskId: "s2", todoId: "t1", kind: "remind-24h" });
+    r1.add({ schedulerTaskId: "s1", todoId: "t1", kind: "remind-slide", deadline: "2026-11-01 20:00" });
+    r1.add({ schedulerTaskId: "s2", todoId: "t1", kind: "remind-24h", deadline: "2026-11-01 20:00" });
     const r2 = new ReminderRegistry(storage);
     expect(r2.list()).toHaveLength(2);
     expect(r2.remove("s1")).toBe(true);
@@ -310,7 +443,8 @@ describe("端到端（index.ts 接线同形）：扫描滑红 → 自动注册�
   it("scanAndSettle 的事件出口接 deliverReminders 后产生 scheduler 任务", async () => {
     const storage = makeStorage();
     const store = new TaskStore(storage);
-    store.add(makeTask({ id: "t1", content: "数学作业", deadline: fmt(NOW + 48 * HOUR), quadrant: "green" }));
+    const deadline = fmt(NOW + 48 * HOUR);
+    store.add(makeTask({ id: "t1", content: "数学作业", deadline, quadrant: "green" }));
     const { service, createCalls } = makeScheduler();
     const registry = new ReminderRegistry(storage);
     const deps: SettleDeps = {
@@ -324,6 +458,6 @@ describe("端到端（index.ts 接线同形）：扫描滑红 → 自动注册�
     };
     scanAndSettle(deps);
     await vi.waitFor(() => expect(createCalls).toHaveLength(1));
-    expect(registry.list()).toEqual([{ schedulerTaskId: "st-1", todoId: "t1", kind: "remind-slide" }]);
+    expect(registry.list()).toEqual([{ schedulerTaskId: "st-1", todoId: "t1", kind: "remind-slide", deadline }]);
   });
 });

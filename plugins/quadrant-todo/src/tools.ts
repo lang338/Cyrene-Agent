@@ -22,6 +22,13 @@ export interface ToolsDeps {
   now?: () => number;
   /** 结算事件出口（M3 接 scheduler 提醒；M1 仅日志） */
   onSettleEvents?: (task: Task, events: SettleEvent[]) => void;
+  /**
+   * 提醒任务同步（M3 v0.3 预建口径）：登记/修改/完成时把提醒任务与当前
+   * 状态对齐（预建未来时刻、清掉失效任务），把授权时点提前到登记时刻
+   */
+  syncReminders?: (task: Task) => void;
+  /** 待办删除时连带清掉其提醒任务 */
+  onTaskRemoved?: (todoId: string) => void;
   log?: (...args: unknown[]) => void;
 }
 
@@ -132,6 +139,7 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
         status: "pending",
         createdAt: now(),
       };
+      deps.syncReminders?.(task);
       deps.store.add(task);
       const settled = settleAndPersist(task);
       log(`登记待办: ${settled.content}`);
@@ -209,6 +217,7 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
 
       if (next === task) return "没有需要修改的属性，请至少给出一项。";
 
+      deps.syncReminders?.(next);
       const settled = settleAndPersist(next, { deadlineChanged });
       log(`修改待办: ${settled.content}`);
       return `已修改待办：${describeTask(settled)}`;
@@ -236,7 +245,9 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
       if (!task) return "未找到该待办，可用 quadrant-todo_list_tasks 查看现有列表。";
       if (task.status === "done") return "该待办此前已被标记为已完成。";
       if (task.status === "auto-done") return "该待办已到点自动转为默认完成，无需再标记。";
-      const settled = settleAndPersist({ ...task, status: "done", completedAt: now() });
+      const next: Task = { ...task, status: "done", completedAt: now() };
+      deps.syncReminders?.(next);
+      const settled = settleAndPersist(next);
       log(`完成待办: ${settled.content}`);
       return `已完成：${describeTask(settled)}`;
     },
@@ -263,6 +274,7 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
       const task = deps.store.get(id);
       if (!task) return "未找到该待办，可用 quadrant-todo_list_tasks 查看现有列表。";
       deps.store.remove(id);
+      deps.onTaskRemoved?.(id);
       log(`删除待办: ${task.content}`);
       return `已删除待办：${describeTask(task)}`;
     },

@@ -13,13 +13,16 @@ import { buildPromptProvider } from "./prompts";
 import { TaskStore } from "./store";
 import {
   cleanupReminders,
+  deliverReminders,
   ReminderRegistry,
+  removeTodoReminders,
   SCAN_INTERVAL_MS,
   scanAndSettle,
-  deliverReminders,
+  syncReminders,
   type SettleDeps,
 } from "./settle";
 import { buildTools } from "./tools";
+import type { Task } from "./types";
 
 let ctx: PluginContext | null = null;
 let win: BrowserWindow | null = null;
@@ -89,6 +92,13 @@ const plugin: CyrenePlugin = {
     for (const tool of buildTools({
       store,
       onSettleEvents: settleDeps.onSettleEvents,
+      // v0.3 预建口径：登记/修改/完成时同步提醒任务，删除时连带清理
+      syncReminders: (task) => {
+        void syncReminders(settleDeps, task);
+      },
+      onTaskRemoved: (todoId) => {
+        void removeTodoReminders(settleDeps, todoId);
+      },
       log: (...args: unknown[]) => ctx?.log(...args),
     })) {
       ctx.registerTool(tool);
