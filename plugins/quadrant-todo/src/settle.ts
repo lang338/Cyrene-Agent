@@ -149,6 +149,13 @@ export async function syncReminders(deps: SettleDeps, task: Task): Promise<void>
   for (const entry of mine()) {
     const still = desired.some((d) => d.kind === entry.kind && entry.deadline === task.deadline);
     if (still) continue;
+    // 本轮提醒已声明（结算标记 = 该轮截止）且截止未变：任务是写时/扫描事件路径
+    // 建的在途提醒（时刻已过、不进 desired），删了会静默丢提醒——保留到触发后由扫描回收
+    const stored = deps.store.get(task.id);
+    const flag = entry.kind === "remind-slide" ? stored?.reminded?.slide : stored?.reminded?.due24;
+    if (task.status === "pending" && flag === entry.deadline && entry.deadline === task.deadline) {
+      continue;
+    }
     try {
       await scheduler.deleteTask(entry.schedulerTaskId);
     } catch (err) {
@@ -160,7 +167,7 @@ export async function syncReminders(deps: SettleDeps, task: Task): Promise<void>
     if (mine().some((e) => e.kind === d.kind && e.deadline === task.deadline)) continue;
     try {
       const created = await scheduler.createTask({
-        title: buildReminderTitle(task),
+        title: buildReminderTitle(task, d.kind),
         prompt: buildReminderPrompt(task, d.kind),
         schedule: { kind: "once", runAt: new Date(d.runAt).toISOString() },
         mode: "chat",
@@ -194,8 +201,9 @@ export async function removeTodoReminders(deps: SettleDeps, todoId: string): Pro
 }
 
 /** 提醒任务标题（宿主"定时任务"界面展示用，授权时用户看到的就是它） */
-export function buildReminderTitle(task: Task): string {
-  return `待办提醒：${truncateContent(task.content)}`;
+export function buildReminderTitle(task: Task, kind: ReminderKind): string {
+  // 两条提醒可能同时挂在授权列表里，标题带上种类免得看起来像重复任务
+  return `${kind === "remind-slide" ? "待办滑红提醒" : "待办截止提醒"}：${truncateContent(task.content)}`;
 }
 
 /** 提醒任务提示词：注入该轮 chat 会话的"用户消息"，说明提醒缘由与发送要求 */
@@ -231,7 +239,7 @@ export async function deliverReminders(deps: SettleDeps, task: Task, events: rea
     }
     try {
       const created = await scheduler.createTask({
-        title: buildReminderTitle(task),
+        title: buildReminderTitle(task, kind),
         prompt: buildReminderPrompt(task, kind),
         schedule: {
           kind: "once",

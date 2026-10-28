@@ -174,10 +174,11 @@ describe("scanAndSettle（定时扫描/开机补检共用单轮逻辑）", () =>
 describe("buildReminderTitle / buildReminderPrompt", () => {
   const task = makeTask({ id: "t1", content: "写实验报告", deadline: fmt(NOW + 10 * HOUR), quadrant: "red" });
 
-  it("标题含事项内容，超长截断", () => {
-    expect(buildReminderTitle(task)).toBe("待办提醒：写实验报告");
+  it("标题含种类与事项内容，超长截断（同内容两条提醒在授权列表里可区分）", () => {
+    expect(buildReminderTitle(task, "remind-slide")).toBe("待办滑红提醒：写实验报告");
+    expect(buildReminderTitle(task, "remind-24h")).toBe("待办截止提醒：写实验报告");
     const long = makeTask({ id: "t2", content: "一二三四五六七八九十一二三四五六七八九十一", deadline: null, quadrant: "red" });
-    expect(buildReminderTitle(long)).toBe("待办提醒：一二三四五六七八九十一二三四五六七八九十…");
+    expect(buildReminderTitle(long, "remind-slide")).toBe("待办滑红提醒：一二三四五六七八九十一二三四五六七八九十…");
   });
 
   it("滑红提醒说明 72 小时缘由；24h 提醒说明不足 24 小时", () => {
@@ -413,6 +414,21 @@ describe("syncReminders（预建同步）", () => {
     await syncReminders(s.deps, { ...t, quadrant: "yellow" });
     expect(s.scheduler.tasks).toHaveLength(0);
     expect(s.registry.list()).toHaveLength(0);
+  });
+
+  it("回归：登记绿剩 13h（写时滑红+即时提醒）后用户改回绿——在途提醒不被误删", async () => {
+    const t = makeTask({ id: "t1", content: "早上起来跑步", deadline: fmt(NOW + 13 * HOUR), quadrant: "green" });
+    const s = setup([t]);
+    // 登记写时结算：滑红 + 两类提醒即时声明（事件路径建任务、记标记）
+    await deliverReminders(s.deps, t, ["remind-slide", "remind-24h"]);
+    expect(s.scheduler.tasks).toHaveLength(2);
+    const stored = s.store.get("t1")!;
+    s.store.replace({ ...stored, quadrant: "red", reminded: { slide: t.deadline!, due24: t.deadline! } });
+    // 用户要求改回绿：update 流程先跑 syncReminders（此刻任务状态还是绿、时刻已过不进 desired）
+    await syncReminders(s.deps, { ...t, quadrant: "green" });
+    expect(s.scheduler.tasks).toHaveLength(2); // 已声明的在途提醒保留（修复前此处为 0，提醒静默丢失）
+    expect(s.registry.list()).toHaveLength(2);
+    // 随后结算按 72h 规则翻回红，标记已记 → 不重复建任务
   });
 
   it("转为完成态：清空全部提醒任务", async () => {
