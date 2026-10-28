@@ -1,20 +1,29 @@
 /**
  * 四象限待办——昔涟帮你处理待办事项
  *
- * 里程碑 M0：工程骨架。
- * register 装配工具/结算器/prompt（后续里程碑逐步填入），open 创建
- * 独立工作台窗口（自绘标题栏先例：%APPDATA%\Cyrene\plugins\system-status），
- * unregister 关窗清理。关闭窗口不卸载插件。
+ * 入口装配：register 注册工具面（M1）+ prompt 注入（M2）+ 结算编排
+ * （M3：开机补检 + 定时扫描 + 提醒经 scheduler 派发，见 settle.ts），
+ * open 创建独立工作台窗口（自绘标题栏先例：%APPDATA%\Cyrene\plugins
+ * \system-status），unregister 停扫描、关窗清理。关闭窗口不卸载插件。
  */
 import { BrowserWindow, ipcMain } from "electron";
 import * as path from "node:path";
 import type { CyrenePlugin, PluginContext } from "../../../src/plugins/api";
 import { buildPromptProvider } from "./prompts";
 import { TaskStore } from "./store";
+import {
+  cleanupReminders,
+  ReminderRegistry,
+  SCAN_INTERVAL_MS,
+  scanAndSettle,
+  deliverReminders,
+  type SettleDeps,
+} from "./settle";
 import { buildTools } from "./tools";
 
 let ctx: PluginContext | null = null;
 let win: BrowserWindow | null = null;
+let scanTimer: ReturnType<typeof setInterval> | null = null;
 
 // 自绘标题栏的窗口控制通道；与先例一致直接挂 ipcMain，前缀足够唯一
 const CH_MIN = "plugin:quadrant-todo:win-minimize";
@@ -65,16 +74,37 @@ function createWorkbenchWindow(): void {
 const plugin: CyrenePlugin = {
   register(context: PluginContext): void {
     ctx = context;
-    // 数据层 + 工具面（M1）+ prompt 注入（M2）；三路结算（M3）随后装配
+    // 数据层 + 提醒登记簿；结算事件唯一出口（扫描路与写时结算共用）
     const store = new TaskStore(ctx.storage);
+    const settleDeps: SettleDeps = {
+      store,
+      registry: new ReminderRegistry(ctx.storage),
+      scheduler: ctx.deps.scheduler,
+      log: (...args: unknown[]) => ctx?.log(...args),
+      onSettleEvents: (task, events) => {
+        // remind-* → scheduler 一次性提醒任务（§9.2）；异步派发不阻断结算
+        void deliverReminders(settleDeps, task, events);
+      },
+    };
     for (const tool of buildTools({
       store,
+      onSettleEvents: settleDeps.onSettleEvents,
       log: (...args: unknown[]) => ctx?.log(...args),
     })) {
       ctx.registerTool(tool);
     }
     ctx.registerPromptProvider(buildPromptProvider({ store }));
-    ctx.log("四象限待办已注册：5 个工具 + prompt 注入已装配");
+
+    // 定时扫描（§9.2，每 5 分钟）+ 开机补检（§9.3：register 即先跑一轮，
+    // 离线期间跨过滑动/默认完成/提醒时刻的任务在这里按正常流程补结算补提醒）
+    const runPass = async (): Promise<void> => {
+      await cleanupReminders(settleDeps);
+      scanAndSettle(settleDeps);
+    };
+    void runPass();
+    scanTimer = setInterval(() => void runPass(), SCAN_INTERVAL_MS);
+
+    ctx.log("四象限待办已注册：5 个工具 + prompt 注入 + 结算扫描/提醒派发已装配");
   },
 
   async open(): Promise<void> {
@@ -86,6 +116,10 @@ const plugin: CyrenePlugin = {
   },
 
   unregister(): void {
+    if (scanTimer) {
+      clearInterval(scanTimer);
+      scanTimer = null;
+    }
     if (win && !win.isDestroyed()) win.close();
     win = null;
     ctx?.log("四象限待办已卸载");
