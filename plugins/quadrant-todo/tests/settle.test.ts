@@ -314,6 +314,19 @@ describe("cleanupReminders（登记簿回收）", () => {
     expect(s.store.get("t1")?.reminded?.slide).toBe(t.deadline);
   });
 
+  it("作废的提醒任务（宿主重启归一化：nextFireAt=null 且未触发）：回收并清该轮提醒标记", async () => {
+    const t = makeTask({ id: "t1", content: "数学作业", deadline: fmt(NOW + 23 * HOUR), quadrant: "red" });
+    const s = setup([t]);
+    await deliverReminders(s.deps, t, ["remind-24h"]);
+    const stored = s.store.get("t1")!;
+    s.store.replace({ ...stored, reminded: { due24: t.deadline! } });
+    s.scheduler.tasks[0]!.nextFireAt = null; // 模拟宿主引擎 skipped 归一化
+    await cleanupReminders(s.deps);
+    expect(s.scheduler.tasks).toHaveLength(0);
+    expect(s.registry.list()).toHaveLength(0);
+    expect(s.store.get("t1")?.reminded?.due24).toBeUndefined();
+  });
+
   it("listTasks 失败：跳过清理，保留映射", async () => {
     const { s } = await withReminder();
     const failing: PluginSchedulerService = {
@@ -429,6 +442,30 @@ describe("syncReminders（预建同步）", () => {
     expect(s.scheduler.tasks).toHaveLength(2); // 已声明的在途提醒保留（修复前此处为 0，提醒静默丢失）
     expect(s.registry.list()).toHaveLength(2);
     // 随后结算按 72h 规则翻回红，标记已记 → 不重复建任务
+  });
+
+  it("回归（用户实测）：授权的提醒任务跨重启被宿主作废 → 开机补检重新声明提醒", async () => {
+    const t = makeTask({ id: "t1", content: "数学作业", deadline: fmt(NOW + 23 * HOUR), quadrant: "red" });
+    const s = setup([t]);
+    // 登记：预建 24h 提醒任务，用户授权
+    await syncReminders(s.deps, t);
+    expect(s.scheduler.tasks).toHaveLength(1);
+    s.scheduler.tasks[0]!.enabled = true;
+    // 关机期间错过触发时刻：宿主引擎归一化 → 记 skipped、清授权、nextFireAt=null
+    s.scheduler.tasks[0]!.enabled = false;
+    s.scheduler.tasks[0]!.nextFireAt = null;
+    // 重启开机补检：cleanup + scan 同轮（index.ts pass 顺序），事件路径重发提醒
+    await cleanupReminders(s.deps);
+    scanAndSettle(s.deps);
+    await deliverReminders(s.deps, t, ["remind-24h"]);
+    expect(s.scheduler.tasks).toHaveLength(1); // 旧 husk 已回收，新任务在列
+    const fresh = s.scheduler.tasks[0]!;
+    expect(fresh.enabled).toBe(false); // 停用待授权
+    expect(Date.parse((fresh.schedule as { kind: "once"; runAt: string }).runAt)).toBe(NOW + REMINDER_FIRE_DELAY_MS);
+    expect(s.registry.list()).toEqual([
+      { schedulerTaskId: fresh.id, todoId: "t1", kind: "remind-24h", deadline: t.deadline },
+    ]);
+    // 用户再授权 → 时刻已过 → 引擎立即补跑（宿主语义，插件侧无需处理）
   });
 
   it("转为完成态：清空全部提醒任务", async () => {

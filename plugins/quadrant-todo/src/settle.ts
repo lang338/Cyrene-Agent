@@ -310,6 +310,19 @@ export async function cleanupReminders(deps: SettleDeps): Promise<void> {
       deps.registry.remove(entry.schedulerTaskId);
       continue;
     }
+    // 宿主重启归一化（normalizeOverdueTasks）会把"关机期间错过触发时刻的
+    // 已启用一次性任务"记 skipped 并清授权（pluginUserEnabled=false、
+    // nextFireAt=null）——插件侧特征：nextFireAt 为 null 且从未触发。
+    // 这条任务永远不会再跑，回收它并清该轮提醒标记，让同轮扫描重新声明
+    // 提醒（新建任务需用户再授权一次，授权后引擎对过期时刻立即补跑）。
+    if (scheduled.nextFireAt === null && !scheduled.lastFiredAt) {
+      await drop();
+      const key = entry.kind === "remind-slide" ? "slide" : "due24";
+      if (todo.reminded?.[key] === entry.deadline) {
+        deps.store.replace({ ...todo, reminded: { ...todo.reminded, [key]: undefined } });
+      }
+      continue;
+    }
     const fired = Boolean(scheduled.lastFiredAt);
     const flagMarked = entry.kind === "remind-slide"
       ? todo.reminded?.slide === entry.deadline
