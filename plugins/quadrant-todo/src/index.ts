@@ -95,7 +95,7 @@ const plugin: CyrenePlugin = {
     }
     ctx.registerPromptProvider(buildPromptProvider({ store }));
 
-    // 定时扫描（§9.2，每 5 分钟）+ 开机补检（§9.3：register 即先跑一轮，
+    // 定时扫描（§9.2，每小时）+ 开机补检（§9.3：register 即先跑一轮，
     // 离线期间跨过滑动/默认完成/提醒时刻的任务在这里按正常流程补结算补提醒）
     const runPass = async (): Promise<void> => {
       await cleanupReminders(settleDeps);

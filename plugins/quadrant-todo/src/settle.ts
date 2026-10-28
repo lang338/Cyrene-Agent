@@ -2,7 +2,7 @@
  * 结算器编排层（§9.2/§9.3）。三路结算中的两路在这里：
  * - 开机补检：register 时先跑一轮 scanAndSettle（§9.3：与在线触发完全同形，
  *   离线期间跨过滑动/默认完成/提醒时刻的任务在这里被补结算、补提醒）
- * - 定时扫描：index.ts 挂 setInterval 每 5 分钟一轮，本文件只提供单轮逻辑
+ * - 定时扫描：index.ts 挂 setInterval 每小时一轮，本文件只提供单轮逻辑
  * （第三路写时结算在 tools.ts settleAndPersist，M1 已落地。）
  *
  * 提醒发送通道（§9.2）：结算产生 remind-slide / remind-24h 事件后，经 scheduler
@@ -17,8 +17,8 @@ import { settleAll, type SettleEvent } from "./quadrant";
 import type { TaskStore } from "./store";
 import type { Task } from "./types";
 
-/** 定时扫描间隔（§9.2：默认 5 分钟，实现层可调） */
-export const SCAN_INTERVAL_MS = 5 * 60_000;
+/** 定时扫描间隔：每小时一轮（2026-10-28 用户定稿；写时结算与开机补检为主，扫描兜底） */
+export const SCAN_INTERVAL_MS = 60 * 60_000;
 /** 提醒任务的触发时刻 = 判定时刻 + 本延迟（宿主校验 once 任务必须晚于当前时间） */
 export const REMINDER_FIRE_DELAY_MS = 2 * 60_000;
 /** 提醒任务标题里事项内容的最长展示字符数 */
