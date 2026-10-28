@@ -15,6 +15,10 @@ describe("prompt provider", () => {
     expect(text).toContain("缺时间/缺内容/缺分类");
     expect(text).toContain("无明确截止时间");
     expect(text).toContain("重要紧急");
+    // 体验约束（v0.2 验收补强）：术语转译 + 聊天式追问
+    expect(text).toContain("重不重要、急不着急");
+    expect(text).toContain("禁止把\"象限/分类/四象限/属性\"这类插件术语直接抛给用户");
+    expect(text).toContain("像聊天不像表单");
     expect(text).toContain("必须追问");
     expect(text).toContain("是否要记入待办列表");
     expect(text).toContain("明确要求删除");
