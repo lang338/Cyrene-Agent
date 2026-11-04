@@ -56,4 +56,28 @@ describe("prompt provider", () => {
     expect(withTask).toContain("未完成 1 条");
     expect(withTask).toContain("重要不紧急 1");
   });
+
+  it("全部完成时概览仍报已完成计数（CodeRabbit 评审）", () => {
+    const storage = makeStorage();
+    const store = new TaskStore(storage);
+    store.add({
+      id: "t1",
+      content: "写周报",
+      deadline: fmt(NOW + 71 * 3_600_000),
+      quadrant: "green",
+      status: "done",
+      createdAt: NOW,
+      completedAt: NOW,
+    });
+    const provider = buildPromptProvider({ store });
+    const text = provider.provide({
+      source: "conversation",
+      mode: "chat",
+      userText: "测试",
+      signal: new AbortController().signal,
+    }) as string;
+    expect(text).toContain("未完成 0 条");
+    expect(text).toContain("已完成保存 1 条");
+    expect(text).not.toContain("列表为空");
+  });
 });

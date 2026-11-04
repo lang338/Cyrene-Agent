@@ -24,20 +24,24 @@ rmSync(join(root, "workbench"), { recursive: true, force: true });
 
 const require = createRequire(import.meta.url);
 const esbuildBin = require.resolve("esbuild/bin/esbuild");
+// Windows 下 esbuild/bin/esbuild 是 JS shim，须用 node 执行；其他平台是原生
+// 可执行文件，直接作为子进程命令（用 node 执行原生二进制会报错，CodeRabbit 评审）
+const isWin = process.platform === "win32";
+const flags = [
+  esbuildBin,
+  "--bundle",
+  join(root, "src", "index.ts"),
+  `--outfile=${join(root, "index.cjs")}`,
+  "--platform=node",
+  "--format=cjs",
+  "--target=node20",
+  "--external:electron",
+  "--charset=utf8",
+  "--log-level=info",
+];
 const result = spawnSync(
-  process.execPath,
-  [
-    esbuildBin,
-    "--bundle",
-    join(root, "src", "index.ts"),
-    `--outfile=${join(root, "index.cjs")}`,
-    "--platform=node",
-    "--format=cjs",
-    "--target=node20",
-    "--external:electron",
-    "--charset=utf8",
-    "--log-level=info",
-  ],
+  isWin ? process.execPath : esbuildBin,
+  isWin ? flags : flags.slice(1),
   { stdio: "inherit" },
 );
 if (result.status !== 0) {

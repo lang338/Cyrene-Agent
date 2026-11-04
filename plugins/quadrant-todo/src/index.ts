@@ -84,11 +84,16 @@ function createWorkbenchWindow(): void {
 /** 打开（或聚焦）工作台窗口；宿主 open() 钩子与通知点击共用 */
 function openWorkbench(): void {
   if (win && !win.isDestroyed()) {
+    // focus 对最小化窗口无效，先还原（CodeRabbit 评审）
+    if (win.isMinimized()) win.restore();
     win.focus();
     return;
   }
   createWorkbenchWindow();
 }
+
+/** 未关闭的 Notification 引用：Windows 上对象被过早 GC 会让 click 事件失效（CodeRabbit 评审） */
+const liveNotifications = new Set<Notification>();
 
 /** 系统通知发送（Electron 胶水）：环境不支持时记日志跳过，点击通知打开工作台 */
 function makeNotifier(log: (...args: unknown[]) => void): (notice: { title: string; body: string }) => void {
@@ -99,7 +104,14 @@ function makeNotifier(log: (...args: unknown[]) => void): (notice: { title: stri
         return;
       }
       const n = new Notification({ title: notice.title, body: notice.body });
-      n.on("click", () => openWorkbench());
+      liveNotifications.add(n);
+      const drop = () => liveNotifications.delete(n);
+      n.on("click", () => {
+        drop();
+        openWorkbench();
+      });
+      n.on("close", drop);
+      n.on("failed", drop);
       n.show();
     } catch (err) {
       log(`四象限待办：系统通知发送失败：${err instanceof Error ? err.message : String(err)}`);
@@ -133,10 +145,17 @@ const plugin: CyrenePlugin = {
     ctx.registerPromptProvider(buildPromptProvider({ store }));
 
     // 单轮：扫描结算 → 重排计时器；开机补检（register 即先跑一轮）与
-    // 兜底扫描（每小时）共用，到点触发的计时器也走它（§8.1/§8.2）
+    // 兜底扫描（每小时）共用，到点触发的计时器也走它（§8.1/§8.2）。
+    // 结算含同步 IO，出错（磁盘/权限）不能炸主进程回调，且重排必须在
+    // finally 里执行——否则一次失败就让提醒窗口失守（CodeRabbit 评审）。
     const runPass = (): void => {
-      scanAndSettle(settleDeps);
-      timers?.rearm();
+      try {
+        scanAndSettle(settleDeps);
+      } catch (err) {
+        log(`四象限待办：结算扫描失败：${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        timers?.rearm();
+      }
     };
     timers = new ReminderTimers({ store, onFire: runPass, log });
 

@@ -20,9 +20,11 @@ export class TaskStore {
     return Array.isArray(raw) ? raw : [];
   }
 
-  private persist(): void {
-    this.storage.set(STORAGE_KEY, this.tasks);
-  }
+  /**
+   * 落盘成功后才更新内存缓存（CodeRabbit 评审）：若 set 抛错（磁盘满/权限），
+   * 内存态与存储态保持一致，不会出现"未成功登记的任务滞留缓存、被后续写入
+   * 顺带持久化"的错位。
+   */
 
   list(): readonly Task[] {
     return this.tasks;
@@ -34,25 +36,25 @@ export class TaskStore {
 
   /** 追加一条（假定已完成工具面校验与结算） */
   add(task: Task): void {
-    this.tasks.push(task);
-    this.persist();
+    const next = [...this.tasks, task];
+    this.storage.set(STORAGE_KEY, next);
+    this.tasks = next;
   }
 
   /** 按 id 整体替换（结算/更新后的新对象） */
   replace(task: Task): void {
-    const i = this.tasks.findIndex((t) => t.id === task.id);
-    if (i >= 0) {
-      this.tasks[i] = task;
-      this.persist();
-    }
+    if (!this.tasks.some((t) => t.id === task.id)) return;
+    const next = this.tasks.map((t) => (t.id === task.id ? task : t));
+    this.storage.set(STORAGE_KEY, next);
+    this.tasks = next;
   }
 
   /** 纯删除；返回是否真的删了 */
   remove(id: string): boolean {
-    const i = this.tasks.findIndex((t) => t.id === id);
-    if (i < 0) return false;
-    this.tasks.splice(i, 1);
-    this.persist();
+    if (!this.tasks.some((t) => t.id === id)) return false;
+    const next = this.tasks.filter((t) => t.id !== id);
+    this.storage.set(STORAGE_KEY, next);
+    this.tasks = next;
     return true;
   }
 }

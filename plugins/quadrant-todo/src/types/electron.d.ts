@@ -24,6 +24,8 @@ declare module "electron" {
   export class BrowserWindow {
     constructor(options?: BrowserWindowConstructorOptions);
     isDestroyed(): boolean;
+    isMinimized(): boolean;
+    restore(): void;
     focus(): void;
     minimize(): void;
     maximize(): void;
@@ -34,6 +36,24 @@ declare module "electron" {
     on(event: "closed", listener: () => void): this;
     once(event: "closed", listener: () => void): this;
   }
+
+  export interface NotificationOptions {
+    title: string;
+    body?: string;
+  }
+
+  export class Notification {
+    constructor(options?: NotificationOptions);
+    show(): void;
+    on(event: "click" | "close" | "failed", listener: (...args: unknown[]) => void): this;
+    static isSupported(): boolean;
+  }
+
+  export interface App {
+    setAppUserModelId(id: string): void;
+  }
+
+  export const app: App;
 
   export interface IpcMainEvent {
     readonly sender: unknown;

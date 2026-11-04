@@ -29,10 +29,11 @@ export function buildPromptProvider(deps: { store: TaskStore }): PluginPromptPro
       const pending = tasks.filter((t) => t.status === "pending");
       const counts = { red: 0, green: 0, yellow: 0, blue: 0 };
       for (const t of pending) counts[t.quadrant] += 1;
+      // 全部完成时也要报已完成计数（设计 §7.3：两个计数都须在概览中）
       const overview =
-        pending.length === 0
+        tasks.length === 0
           ? "当前待办概览：列表为空。"
-          : `当前待办概览：未完成 ${pending.length} 条（重要紧急 ${counts.red}、重要不紧急 ${counts.green}、不重要紧急 ${counts.yellow}、不重要不紧急 ${counts.blue}），已完成保存 ${tasks.length - pending.length} 条。具体内容与 id 以 quadrant-todo_list_tasks 查询为准。`;
+          : `当前待办概览：未完成 ${pending.length} 条${pending.length > 0 ? `（重要紧急 ${counts.red}、重要不紧急 ${counts.green}、不重要紧急 ${counts.yellow}、不重要不紧急 ${counts.blue}）` : ""}，已完成保存 ${tasks.length - pending.length} 条。具体内容与 id 以 quadrant-todo_list_tasks 查询为准。`;
       return `${RULES}\n\n${overview}`;
     },
   };

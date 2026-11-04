@@ -107,6 +107,13 @@ describe("add_task 三要素硬校验", () => {
     expect(out).toContain("缺分类");
   });
 
+  it("分类传入原型链键（constructor）→ 不得绕过硬校验（CodeRabbit 评审）", async () => {
+    const h = makeHarness();
+    const out = await h.call("add_task", { content: "写周报", deadline: "2026-11-01", quadrant: "constructor" });
+    expect(out).toContain("缺分类");
+    expect(h.storage.dump()).toHaveLength(0);
+  });
+
   it("“无明确截止时间”合法录入，deadline=null", async () => {
     const h = makeHarness();
     const out = await h.call("add_task", {
