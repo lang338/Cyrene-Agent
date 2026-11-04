@@ -1,37 +1,33 @@
 /**
  * 四象限待办——昔涟帮你处理待办事项
  *
- * 入口装配：register 注册工具面（M1）+ prompt 注入（M2）+ 结算编排
- * （M3：开机补检 + 定时扫描 + 提醒经 scheduler 派发，见 settle.ts），
- * open 创建独立工作台窗口（自绘标题栏先例：%APPDATA%\Cyrene\plugins
- * \system-status），unregister 停扫描、关窗清理。关闭窗口不卸载插件。
+ * 入口装配：register 注册工具面 + prompt 注入 + 结算编排（§8.1：写时结算
+ * + 开机补检 + 每小时兜底扫描）+ 提醒通道（§8.2 插件自建：Electron 原生
+ * 系统通知 + 自管精确计时器，不经宿主定时任务、零授权），open 创建独立
+ * 工作台窗口（自绘标题栏），unregister 停扫描与计时、关窗清理。
+ * 关闭窗口不卸载插件。
  */
-import { BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, Notification, ipcMain } from "electron";
 import * as path from "node:path";
 import type { CyrenePlugin, PluginContext } from "../../../src/plugins/api";
 import { buildPromptProvider } from "./prompts";
+import { notifySettleEvents, ReminderTimers } from "./reminders";
+import { SCAN_INTERVAL_MS, scanAndSettle, type SettleDeps } from "./settle";
 import { TaskStore } from "./store";
-import {
-  cleanupReminders,
-  deliverReminders,
-  ReminderRegistry,
-  removeTodoReminders,
-  SCAN_INTERVAL_MS,
-  scanAndSettle,
-  syncReminders,
-  type SettleDeps,
-} from "./settle";
 import { buildTools } from "./tools";
-import type { Task } from "./types";
 
 let ctx: PluginContext | null = null;
 let win: BrowserWindow | null = null;
 let scanTimer: ReturnType<typeof setInterval> | null = null;
+let timers: ReminderTimers | null = null;
 
 // 自绘标题栏的窗口控制通道；与先例一致直接挂 ipcMain，前缀足够唯一
 const CH_MIN = "plugin:quadrant-todo:win-minimize";
 const CH_MAX = "plugin:quadrant-todo:win-maximize";
 const CH_CLOSE = "plugin:quadrant-todo:win-close";
+
+/** Windows 原生通知需要进程级 AppUserModelID；宿主未设置（§四 #9），幂等代设一次 */
+const AUMID = "com.cyrene.quadrant-todo";
 
 function createWorkbenchWindow(): void {
   win = new BrowserWindow({
@@ -74,55 +70,82 @@ function createWorkbenchWindow(): void {
   void win.loadFile(path.join(__dirname, "workbench", "workbench.html"));
 }
 
+/** 打开（或聚焦）工作台窗口；宿主 open() 钩子与通知点击共用 */
+function openWorkbench(): void {
+  if (win && !win.isDestroyed()) {
+    win.focus();
+    return;
+  }
+  createWorkbenchWindow();
+}
+
+function ensureAppUserModelId(): void {
+  try {
+    // register 只调一次；重复设置同值无害，无需读回（宿主 Electron 类型未暴露 getter）
+    app.setAppUserModelId(AUMID);
+  } catch {
+    // 个别环境设置 AUMID 可能失败：忽略——通知仍可能可用，失败时发送路再兜
+  }
+}
+
+/** 系统通知发送（Electron 胶水）：环境不支持时记日志跳过，点击通知打开工作台 */
+function makeNotifier(log: (...args: unknown[]) => void): (notice: { title: string; body: string }) => void {
+  return (notice) => {
+    try {
+      if (!Notification.isSupported()) {
+        log("四象限待办：当前环境不支持系统通知，提醒跳过");
+        return;
+      }
+      const n = new Notification({ title: notice.title, body: notice.body });
+      n.on("click", () => openWorkbench());
+      n.show();
+    } catch (err) {
+      log(`四象限待办：系统通知发送失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+}
+
 const plugin: CyrenePlugin = {
   register(context: PluginContext): void {
     ctx = context;
-    // 数据层 + 提醒登记簿；结算事件唯一出口（扫描路与写时结算共用）
+    ensureAppUserModelId();
+    const log = (...args: unknown[]) => ctx?.log(...args);
     const store = new TaskStore(ctx.storage);
+    const notify = makeNotifier(log);
+
+    // 结算事件唯一出口：remind-* → 系统通知（§8.2）
     const settleDeps: SettleDeps = {
       store,
-      registry: new ReminderRegistry(ctx.storage),
-      scheduler: ctx.deps.scheduler,
-      log: (...args: unknown[]) => ctx?.log(...args),
-      onSettleEvents: (task, events) => {
-        // remind-* → scheduler 一次性提醒任务（§9.2）；异步派发不阻断结算
-        void deliverReminders(settleDeps, task, events);
-      },
+      log,
+      onSettleEvents: (task, events) => notifySettleEvents({ notify, log }, task, events),
     };
     for (const tool of buildTools({
       store,
       onSettleEvents: settleDeps.onSettleEvents,
-      // v0.3 预建口径：登记/修改/完成时同步提醒任务，删除时连带清理
-      syncReminders: (task) => {
-        void syncReminders(settleDeps, task);
-      },
-      onTaskRemoved: (todoId) => {
-        void removeTodoReminders(settleDeps, todoId);
-      },
-      log: (...args: unknown[]) => ctx?.log(...args),
+      // 提醒计时器随任何数据变更重排（§8.2）
+      onStoreChanged: () => timers?.rearm(),
+      log,
     })) {
       ctx.registerTool(tool);
     }
     ctx.registerPromptProvider(buildPromptProvider({ store }));
 
-    // 定时扫描（§9.2，每小时）+ 开机补检（§9.3：register 即先跑一轮，
-    // 离线期间跨过滑动/默认完成/提醒时刻的任务在这里按正常流程补结算补提醒）
-    const runPass = async (): Promise<void> => {
-      await cleanupReminders(settleDeps);
+    // 单轮：扫描结算 → 重排计时器；开机补检（register 即先跑一轮）与
+    // 兜底扫描（每小时）共用，到点触发的计时器也走它（§8.1/§8.2）
+    const runPass = (): void => {
       scanAndSettle(settleDeps);
+      timers?.rearm();
     };
-    void runPass();
-    scanTimer = setInterval(() => void runPass(), SCAN_INTERVAL_MS);
+    timers = new ReminderTimers({ store, onFire: runPass, log });
 
-    ctx.log("四象限待办已注册：5 个工具 + prompt 注入 + 结算扫描/提醒派发已装配");
+    void runPass();
+    scanTimer = setInterval(runPass, SCAN_INTERVAL_MS);
+
+    ctx.log("四象限待办已注册：5 个工具 + prompt 注入 + 结算扫描 + 自建提醒通道已装配");
   },
 
   async open(): Promise<void> {
-    if (win && !win.isDestroyed()) {
-      win.focus();
-      return;
-    }
-    createWorkbenchWindow();
+    openWorkbench();
   },
 
   unregister(): void {
@@ -130,6 +153,8 @@ const plugin: CyrenePlugin = {
       clearInterval(scanTimer);
       scanTimer = null;
     }
+    timers?.dispose();
+    timers = null;
     if (win && !win.isDestroyed()) win.close();
     win = null;
     ctx?.log("四象限待办已卸载");

@@ -7,5 +7,5 @@
   "author": "lang338",
   "entry": "index.cjs",
   "defaultEnabled": false,
-  "deps": ["scheduler"]
+  "deps": []
 }

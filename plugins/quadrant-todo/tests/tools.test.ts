@@ -37,31 +37,29 @@ describe("工具注册元数据", () => {
   });
 });
 
-describe("提醒任务同步钩子（v0.3 预建口径）", () => {
-  it("登记成功即调 syncReminders；删除即调 onTaskRemoved", async () => {
+describe("数据变更钩子（onStoreChanged → 提醒计时器重排，§8.2）", () => {
+  it("登记成功即调 onStoreChanged；删除也调", async () => {
     const storage = makeStorage();
     const store = new TaskStore(storage);
-    const syncReminders = vi.fn();
-    const onTaskRemoved = vi.fn();
-    const tools = buildTools({ store, now: () => NOW, syncReminders, onTaskRemoved });
+    const onStoreChanged = vi.fn();
+    const tools = buildTools({ store, now: () => NOW, onStoreChanged });
     const call = async (id: string, args: Record<string, unknown>): Promise<string> => {
       const tool = tools.find((t) => t.id === `quadrant-todo_${id}`);
       if (!tool) throw new Error(`工具不存在: ${id}`);
       return tool.execute(args);
     };
     await call("add_task", { content: "数学作业", deadline: IN_7D, quadrant: "重要不紧急" });
-    expect(syncReminders).toHaveBeenCalledTimes(1);
-    expect(syncReminders.mock.calls[0]?.[0]).toMatchObject({ content: "数学作业", quadrant: "green" });
+    expect(onStoreChanged).toHaveBeenCalledTimes(1);
     const id = store.list()[0]!.id;
     await call("delete_task", { id });
-    expect(onTaskRemoved).toHaveBeenCalledWith(id);
+    expect(onStoreChanged).toHaveBeenCalledTimes(2);
   });
 
-  it("标记完成即以完成态调 syncReminders（预建任务应随之清除）", async () => {
+  it("修改属性与标记完成也调 onStoreChanged", async () => {
     const storage = makeStorage();
     const store = new TaskStore(storage);
-    const syncReminders = vi.fn();
-    const tools = buildTools({ store, now: () => NOW, syncReminders });
+    const onStoreChanged = vi.fn();
+    const tools = buildTools({ store, now: () => NOW, onStoreChanged });
     const call = async (id: string, args: Record<string, unknown>): Promise<string> => {
       const tool = tools.find((t) => t.id === `quadrant-todo_${id}`);
       if (!tool) throw new Error(`工具不存在: ${id}`);
@@ -69,10 +67,10 @@ describe("提醒任务同步钩子（v0.3 预建口径）", () => {
     };
     await call("add_task", { content: "数学作业", deadline: IN_7D, quadrant: "重要不紧急" });
     const id = store.list()[0]!.id;
-    syncReminders.mockClear();
+    onStoreChanged.mockClear();
+    await call("update_task", { id, content: "改内容" });
     await call("complete_task", { id });
-    expect(syncReminders).toHaveBeenCalledTimes(1);
-    expect(syncReminders.mock.calls[0]?.[0]).toMatchObject({ status: "done" });
+    expect(onStoreChanged).toHaveBeenCalledTimes(2);
   });
 });
 
