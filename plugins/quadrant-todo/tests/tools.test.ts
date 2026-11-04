@@ -48,7 +48,7 @@ describe("数据变更钩子（onStoreChanged → 提醒计时器重排，§8.2�
       if (!tool) throw new Error(`工具不存在: ${id}`);
       return tool.execute(args);
     };
-    await call("add_task", { content: "数学作业", deadline: IN_7D, quadrant: "重要不紧急" });
+    await call("add_task", { content: "数学作业", deadline: IN_7D, quadrant: "重要不紧急", quadrantConfirmed: true });
     expect(onStoreChanged).toHaveBeenCalledTimes(1);
     const id = store.list()[0]!.id;
     await call("delete_task", { id });
@@ -65,7 +65,7 @@ describe("数据变更钩子（onStoreChanged → 提醒计时器重排，§8.2�
       if (!tool) throw new Error(`工具不存在: ${id}`);
       return tool.execute(args);
     };
-    await call("add_task", { content: "数学作业", deadline: IN_7D, quadrant: "重要不紧急" });
+    await call("add_task", { content: "数学作业", deadline: IN_7D, quadrant: "重要不紧急", quadrantConfirmed: true });
     const id = store.list()[0]!.id;
     onStoreChanged.mockClear();
     await call("update_task", { id, content: "改内容" });
@@ -95,21 +95,42 @@ describe("add_task 三要素硬校验", () => {
     expect(out).toContain("缺时间");
   });
 
-  it("缺分类（字段缺失）→ 拒写并报“缺分类”", async () => {
+  it("缺分类（字段缺失，确认门已放行）→ 拒写并报“缺分类”", async () => {
     const h = makeHarness();
-    const out = await h.call("add_task", { content: "写周报", deadline: "2026-11-01" });
+    const out = await h.call("add_task", { content: "写周报", deadline: "2026-11-01", quadrantConfirmed: true });
     expect(out).toContain("缺分类");
+  });
+
+  it("分类确认门：quadrantConfirmed 缺省 → 拒写并报“分类未获用户确认”", async () => {
+    const h = makeHarness();
+    const out = await h.call("add_task", { content: "写周报", deadline: "2026-11-01", quadrant: "重要紧急" });
+    expect(out).toContain("分类未获用户确认");
+    expect(h.storage.dump()).toHaveLength(0);
+  });
+
+  it("分类确认门：quadrantConfirmed=false → 拒写", async () => {
+    const h = makeHarness();
+    const out = await h.call("add_task", { content: "写周报", deadline: "2026-11-01", quadrant: "重要紧急", quadrantConfirmed: false });
+    expect(out).toContain("分类未获用户确认");
+    expect(h.storage.dump()).toHaveLength(0);
+  });
+
+  it("分类确认门：quadrantConfirmed=true 放行登记", async () => {
+    const h = makeHarness();
+    const out = await h.call("add_task", { content: "写周报", deadline: IN_7D, quadrant: "重要紧急", quadrantConfirmed: true });
+    expect(out).toContain("已登记");
+    expect(h.storage.dump()).toHaveLength(1);
   });
 
   it("分类非四词 → 拒写并报“缺分类”", async () => {
     const h = makeHarness();
-    const out = await h.call("add_task", { content: "写周报", deadline: "2026-11-01", quadrant: "比较紧急" });
+    const out = await h.call("add_task", { content: "写周报", deadline: "2026-11-01", quadrant: "比较紧急", quadrantConfirmed: true });
     expect(out).toContain("缺分类");
   });
 
   it("分类传入原型链键（constructor）→ 不得绕过硬校验（CodeRabbit 评审）", async () => {
     const h = makeHarness();
-    const out = await h.call("add_task", { content: "写周报", deadline: "2026-11-01", quadrant: "constructor" });
+    const out = await h.call("add_task", { content: "写周报", deadline: "2026-11-01", quadrant: "constructor", quadrantConfirmed: true });
     expect(out).toContain("缺分类");
     expect(h.storage.dump()).toHaveLength(0);
   });
@@ -120,6 +141,7 @@ describe("add_task 三要素硬校验", () => {
       content: "整理硬盘",
       deadline: "无明确截止时间",
       quadrant: "重要不紧急",
+      quadrantConfirmed: true,
     });
     expect(out).toContain("已登记");
     expect(out).toContain("无明确截止时间");
@@ -132,6 +154,7 @@ describe("add_task 三要素硬校验", () => {
       content: "交房租",
       deadline: IN_7D,
       quadrant: "重要紧急",
+      quadrantConfirmed: true,
     });
     expect(out).toContain("已登记");
     expect(out).toContain("重要紧急");
@@ -146,6 +169,7 @@ describe("add_task 三要素硬校验", () => {
       content: "过期的事",
       deadline: fmt(NOW - 3_600_000),
       quadrant: "不重要紧急",
+      quadrantConfirmed: true,
     });
     expect(out).toContain("默认完成");
     expect(h.storage.dump()[0]?.status).toBe("auto-done");
@@ -154,7 +178,7 @@ describe("add_task 三要素硬校验", () => {
 
 describe("滑动与滑回（工具路径写时结算）", () => {
   async function addSlidRed(h: ReturnType<typeof makeHarness>) {
-    const out = await h.call("add_task", { content: "写周报", deadline: IN_71H, quadrant: "重要不紧急" });
+    const out = await h.call("add_task", { content: "写周报", deadline: IN_71H, quadrant: "重要不紧急", quadrantConfirmed: true });
     const task = h.storage.dump()[0];
     expect(task?.quadrant).toBe("red");
     expect(task?.slidFrom).toBe("green");
@@ -198,7 +222,7 @@ describe("滑动与滑回（工具路径写时结算）", () => {
 
   it("窗口外手动改分类 → 保持用户指定分类（手动修改不属于滑动）", async () => {
     const h = makeHarness();
-    await h.call("add_task", { content: "写周报", deadline: IN_7D, quadrant: "重要不紧急" });
+    await h.call("add_task", { content: "写周报", deadline: IN_7D, quadrant: "重要不紧急", quadrantConfirmed: true });
     const task = h.storage.dump()[0];
     await h.call("update_task", { id: task?.id, quadrant: "不重要紧急" });
     const after = h.storage.dump()[0];
@@ -216,7 +240,7 @@ describe("update_task 其余校验", () => {
 
   it("一项都没给 → 提示至少一项", async () => {
     const h = makeHarness();
-    await h.call("add_task", { content: "写周报", deadline: IN_7D, quadrant: "重要紧急" });
+    await h.call("add_task", { content: "写周报", deadline: IN_7D, quadrant: "重要紧急", quadrantConfirmed: true });
     const task = h.storage.dump()[0];
     const out = await h.call("update_task", { id: task?.id });
     expect(out).toContain("至少");
@@ -224,7 +248,7 @@ describe("update_task 其余校验", () => {
 
   it("status=done → 记 completedAt；status=auto-done → 拒绝", async () => {
     const h = makeHarness();
-    await h.call("add_task", { content: "写周报", deadline: IN_7D, quadrant: "重要紧急" });
+    await h.call("add_task", { content: "写周报", deadline: IN_7D, quadrant: "重要紧急", quadrantConfirmed: true });
     const task = h.storage.dump()[0];
     await h.call("update_task", { id: task?.id, status: "auto-done" });
     expect(h.storage.dump()[0]?.status).toBe("pending");
@@ -236,7 +260,7 @@ describe("update_task 其余校验", () => {
 
   it("完成态任务不支持修改属性", async () => {
     const h = makeHarness();
-    await h.call("add_task", { content: "写周报", deadline: IN_7D, quadrant: "重要紧急" });
+    await h.call("add_task", { content: "写周报", deadline: IN_7D, quadrant: "重要紧急", quadrantConfirmed: true });
     const task = h.storage.dump()[0];
     await h.call("complete_task", { id: task?.id });
     const out = await h.call("update_task", { id: task?.id, content: "改内容" });
@@ -247,7 +271,7 @@ describe("update_task 其余校验", () => {
 describe("complete_task / delete_task", () => {
   it("标记完成 → 已完成；重复标记 → 提示已完成", async () => {
     const h = makeHarness();
-    await h.call("add_task", { content: "写周报", deadline: IN_7D, quadrant: "重要紧急" });
+    await h.call("add_task", { content: "写周报", deadline: IN_7D, quadrant: "重要紧急", quadrantConfirmed: true });
     const task = h.storage.dump()[0];
     const first = await h.call("complete_task", { id: task?.id });
     expect(first).toContain("已完成");
@@ -257,7 +281,7 @@ describe("complete_task / delete_task", () => {
 
   it("对默认完成任务标记完成 → 提示无需再标记", async () => {
     const h = makeHarness();
-    await h.call("add_task", { content: "过期的事", deadline: fmt(NOW - 1000), quadrant: "不重要紧急" });
+    await h.call("add_task", { content: "过期的事", deadline: fmt(NOW - 1000), quadrant: "不重要紧急", quadrantConfirmed: true });
     const task = h.storage.dump()[0];
     const out = await h.call("complete_task", { id: task?.id });
     expect(out).toContain("默认完成");
@@ -265,7 +289,7 @@ describe("complete_task / delete_task", () => {
 
   it("纯删除 → 从列表移除；不存在 → 提示未找到", async () => {
     const h = makeHarness();
-    await h.call("add_task", { content: "写周报", deadline: IN_7D, quadrant: "重要紧急" });
+    await h.call("add_task", { content: "写周报", deadline: IN_7D, quadrant: "重要紧急", quadrantConfirmed: true });
     const task = h.storage.dump()[0];
     const out = await h.call("delete_task", { id: task?.id });
     expect(out).toContain("已删除");
@@ -278,8 +302,8 @@ describe("complete_task / delete_task", () => {
 describe("list_tasks 查询", () => {
   it("active 默认只列未完成", async () => {
     const h = makeHarness();
-    await h.call("add_task", { content: "任务A", deadline: IN_7D, quadrant: "重要紧急" });
-    await h.call("add_task", { content: "过期B", deadline: fmt(NOW - 1000), quadrant: "不重要紧急" });
+    await h.call("add_task", { content: "任务A", deadline: IN_7D, quadrant: "重要紧急", quadrantConfirmed: true });
+    await h.call("add_task", { content: "过期B", deadline: fmt(NOW - 1000), quadrant: "不重要紧急", quadrantConfirmed: true });
     const out = await h.call("list_tasks", {});
     expect(out).toContain("任务A");
     expect(out).not.toContain("过期B");
@@ -287,8 +311,8 @@ describe("list_tasks 查询", () => {
 
   it("completed 列已完成与默认完成", async () => {
     const h = makeHarness();
-    await h.call("add_task", { content: "任务A", deadline: IN_7D, quadrant: "重要紧急" });
-    await h.call("add_task", { content: "过期B", deadline: fmt(NOW - 1000), quadrant: "不重要紧急" });
+    await h.call("add_task", { content: "任务A", deadline: IN_7D, quadrant: "重要紧急", quadrantConfirmed: true });
+    await h.call("add_task", { content: "过期B", deadline: fmt(NOW - 1000), quadrant: "不重要紧急", quadrantConfirmed: true });
     const taskA = h.storage.dump().find((t) => t.content === "任务A");
     await h.call("complete_task", { id: taskA?.id });
     const out = await h.call("list_tasks", { scope: "completed" });
@@ -306,10 +330,10 @@ describe("list_tasks 查询", () => {
 
   it("all 分未完成/已完成两段", async () => {
     const h = makeHarness();
-    await h.call("add_task", { content: "任务A", deadline: IN_7D, quadrant: "重要紧急" });
+    await h.call("add_task", { content: "任务A", deadline: IN_7D, quadrant: "重要紧急", quadrantConfirmed: true });
     const taskA = h.storage.dump()[0];
     await h.call("complete_task", { id: taskA?.id });
-    await h.call("add_task", { content: "任务C", deadline: "无明确截止时间", quadrant: "不重要不紧急" });
+    await h.call("add_task", { content: "任务C", deadline: "无明确截止时间", quadrant: "不重要不紧急", quadrantConfirmed: true });
     const out = await h.call("list_tasks", { scope: "all" });
     expect(out).toContain("【未完成】");
     expect(out).toContain("【已完成】");

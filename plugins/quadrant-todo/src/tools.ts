@@ -30,6 +30,7 @@ export interface ToolsDeps {
 const ERR_NO_CONTENT = "登记失败：缺内容（事项内容不能为空）";
 const ERR_NO_TIME = "登记失败：缺时间（时间须为“xx年xx月xx日xx小时xx分钟”或“无明确截止时间”二者其一，最低到日期）";
 const ERR_NO_QUADRANT = "登记失败：缺分类（分类只能是“重要紧急/重要不紧急/不重要紧急/不重要不紧急”四词之一，且须由用户明确回答）";
+const ERR_NO_CONFIRM = "登记失败：分类未获用户确认（先用自然的方式问清这件事重不重要、急不着急，得到用户明确回答后重试）";
 
 /** deadline 工具入参 → 存储值；"无明确截止时间"（及宽容别名）归 null，其余须可解析 */
 function parseDeadlineInput(raw: unknown): { ok: true; value: string | null } | { ok: false } {
@@ -117,8 +118,13 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
           enum: ["重要紧急", "重要不紧急", "不重要紧急", "不重要不紧急"],
           description: "四象限分类，必须由用户明确回答",
         },
+        quadrantConfirmed: {
+          type: "boolean",
+          description:
+            "提交前必答自检：是否已获得用户对四象限分类的明确表态（提问卡片点选或文字回答都算）？用户尚未表态时必须传 false（程序将拒绝本次登记），严禁未经询问就传 true",
+        },
       },
-      required: ["content", "deadline", "quadrant"],
+      required: ["content", "deadline", "quadrant", "quadrantConfirmed"],
     },
     async execute(args) {
       const content = typeof args.content === "string" ? args.content.trim() : "";
@@ -126,6 +132,10 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
 
       const deadline = parseDeadlineInput(args.deadline);
       if (!deadline.ok) return ERR_NO_TIME;
+
+      // 分类确认门（§六硬校验）：模型先答"是否已获用户表态"，否/缺省即拒写；
+      // 确认放行后再校验分类取值本身
+      if (args.quadrantConfirmed !== true) return ERR_NO_CONFIRM;
 
       const quadrant = parseQuadrantInput(args.quadrant);
       if (!quadrant) return ERR_NO_QUADRANT;
