@@ -13,8 +13,9 @@
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      font-size: 14px;
     }
-    /* 自绘标题栏：可拖动 + 三键 */
+    /* ── 自绘标题栏：可拖动 + 三键 ── */
     #titlebar {
       height: 36px;
       flex: none;
@@ -38,16 +39,177 @@
     }
     #titlebar button:hover { background: #f6d5e2; }
     #titlebar button.close:hover { background: #e8555d; color: #fff; }
-    main {
-      flex: 1;
+    /* ── 工具行：三形态切换 + 设置 ── */
+    #toolbar {
+      flex: none;
       display: flex;
       align-items: center;
-      justify-content: center;
-      flex-direction: column;
-      gap: 12px;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid #f6e3ec;
+      background: #fffdfd;
     }
-    main h1 { font-size: 22px; color: #d6567e; }
-    main p { font-size: 13px; color: #a58a95; }
+    #toolbar .tab {
+      border: 1px solid #f0cfdd;
+      background: #fff;
+      color: #9c6b80;
+      border-radius: 999px;
+      padding: 4px 14px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    #toolbar .tab.active { background: #f6a5c0; border-color: #f6a5c0; color: #fff; }
+    #toolbar .spacer { flex: 1; }
+    #toolbar .gear {
+      border: none; background: transparent; cursor: pointer;
+      font-size: 16px; color: #9c6b80; padding: 4px 8px; border-radius: 6px;
+    }
+    #toolbar .gear:hover { background: #f6d5e2; }
+    /* ── 主区 ── */
+    main { flex: 1; display: flex; overflow: hidden; }
+    .view { flex: 1; display: none; overflow: hidden; }
+    .view.active { display: flex; }
+    /* 左列表（形态一/二共用） */
+    .list-col {
+      width: 320px; flex: none;
+      display: flex; flex-direction: column;
+      border-right: 1px solid #f6e3ec;
+      overflow: hidden;
+    }
+    .col-head {
+      flex: none; padding: 8px 12px;
+      font-size: 12px; color: #b58a9c;
+      border-bottom: 1px solid #f9edf2;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .col-head .count { background: #f6d5e2; color: #9c6b80; border-radius: 999px; padding: 0 8px; font-size: 11px; }
+    .col-body { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+    .empty { color: #c3a8b4; font-size: 12px; text-align: center; padding: 24px 0; }
+    /* 任务条目 */
+    .task {
+      border: 1px solid #f3dce6; border-radius: 8px;
+      background: #fff;
+      padding: 7px 9px;
+      display: flex; flex-direction: column; gap: 3px;
+    }
+    .task .row1 { display: flex; align-items: flex-start; gap: 6px; }
+    .task .content { flex: 1; word-break: break-all; font-size: 13px; }
+    .task .deadline { font-size: 11px; color: #b58a9c; }
+    .task .ops { display: none; gap: 2px; flex: none; }
+    .task:hover .ops { display: flex; }
+    .task .ops button {
+      border: none; background: transparent; cursor: pointer;
+      font-size: 12px; color: #b58a9c; padding: 1px 4px; border-radius: 4px;
+    }
+    .task .ops button:hover { background: #fbe7ef; color: #7a4a5e; }
+    /* 分类色（未完成 = 分类色，§3.33） */
+    .q-red .content, .q-red.deadline, .q-red { color: #d9536f; }
+    .q-green .content, .q-green { color: #35996b; }
+    .q-yellow .content, .q-yellow { color: #c08f1a; }
+    .q-blue .content, .q-blue { color: #5b7fce; }
+    .task .deadline, .task .ops button { color: #b58a9c; }
+    /* 四象限区 */
+    .quad-col { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; padding: 8px; overflow-y: auto; }
+    .quad-cell {
+      flex: 1 1 44%; min-width: 240px; min-height: 150px;
+      border-radius: 10px; border: 1.5px solid transparent;
+      padding: 8px; display: flex; flex-direction: column; gap: 5px; overflow-y: auto;
+    }
+    .quad-cell.red    { background: #fdf0f3; border-color: #f3c3ce; }
+    .quad-cell.green  { background: #eef8f2; border-color: #c3e2d1; }
+    .quad-cell.yellow { background: #faf5e6; border-color: #e6d5a8; }
+    .quad-cell.blue   { background: #eff3fb; border-color: #c9d5ef; }
+    .quad-cell .cell-title { font-size: 12px; font-weight: bold; }
+    .quad-cell.red .cell-title    { color: #d9536f; }
+    .quad-cell.green .cell-title  { color: #35996b; }
+    .quad-cell.yellow .cell-title { color: #c08f1a; }
+    .quad-cell.blue .cell-title   { color: #5b7fce; }
+    .quad-cell .task { color: inherit; }
+    .quad-cell .task .content { color: inherit; }
+    /* 日历区 */
+    .cal-col { flex: 1; display: flex; flex-direction: column; padding: 10px 14px; overflow-y: auto; }
+    .cal-nav { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .cal-nav .ym { font-size: 15px; font-weight: bold; color: #7a4a5e; }
+    .cal-nav button {
+      border: 1px solid #f0cfdd; background: #fff; color: #9c6b80;
+      border-radius: 6px; width: 26px; height: 26px; cursor: pointer; font-size: 13px;
+    }
+    .cal-nav button:hover { background: #f6d5e2; }
+    .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+    .cal-wd { text-align: center; font-size: 11px; color: #b58a9c; padding: 2px 0; }
+    .cal-day {
+      min-height: 52px; border: 1px solid #f6e8ee; border-radius: 6px;
+      background: #fff; padding: 3px 4px; cursor: pointer;
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .cal-day:hover { border-color: #f6a5c0; }
+    .cal-day.selected { border-color: #f6a5c0; background: #fff0f6; }
+    .cal-day.dim { opacity: 0.45; }
+    .cal-day .dnum { font-size: 11px; color: #7a4a5e; }
+    .cal-day .dots { display: flex; flex-wrap: wrap; gap: 2px; }
+    .cal-day .dots i { width: 6px; height: 6px; border-radius: 50%; }
+    .cal-day .more { font-size: 10px; color: #b58a9c; }
+    /* 24 小时视图 */
+    .day-detail { margin-top: 10px; border-top: 1px dashed #f0cfdd; padding-top: 8px; }
+    .day-detail .dd-title { font-size: 13px; color: #7a4a5e; margin-bottom: 6px; }
+    .dd-item {
+      display: flex; align-items: baseline; gap: 8px;
+      padding: 4px 6px; border-radius: 6px; background: #fff;
+      border: 1px solid #f6e8ee; margin-bottom: 4px;
+    }
+    .dd-item .time { font-size: 12px; color: #b58a9c; flex: none; min-width: 38px; }
+    .dd-item .content { font-size: 13px; }
+    /* 已完成列表（形态三）：亮灰=已完成 暗灰=默认完成，保留原分类信息 */
+    .full-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .task.done .content, .dd-item.done .content { color: #a8a3ad; }
+    .task.auto-done .content, .dd-item.auto-done .content { color: #6e6875; }
+    .task .meta { font-size: 11px; color: #b58a9c; display: flex; gap: 8px; flex-wrap: wrap; }
+    .qtag { border: 1px solid currentColor; border-radius: 999px; padding: 0 6px; font-size: 10px; }
+    /* ── 弹层 ── */
+    .mask {
+      position: fixed; inset: 0; background: rgba(74, 59, 69, 0.35);
+      display: none; align-items: center; justify-content: center; z-index: 10;
+    }
+    .mask.show { display: flex; }
+    .modal {
+      width: 380px; max-width: 92vw;
+      background: #fff; border-radius: 12px;
+      box-shadow: 0 8px 32px rgba(74, 59, 69, 0.25);
+      padding: 16px; display: flex; flex-direction: column; gap: 10px;
+    }
+    .modal h3 { font-size: 15px; color: #7a4a5e; }
+    .modal label { font-size: 12px; color: #9c6b80; display: block; margin-bottom: 3px; }
+    .modal textarea, .modal input[type="text"], .modal input[type="datetime-local"], .modal input[type="password"] {
+      width: 100%; border: 1px solid #f0cfdd; border-radius: 6px;
+      padding: 6px 8px; font-size: 13px; font-family: inherit; color: #4a3b45;
+      background: #fffdfa;
+    }
+    .modal textarea { resize: vertical; min-height: 56px; }
+    .modal .field { margin-bottom: 2px; }
+    .modal .inline { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #9c6b80; }
+    .quad-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .quad-pick label {
+      display: flex; align-items: center; gap: 6px;
+      border: 1px solid #f0cfdd; border-radius: 6px; padding: 6px 8px;
+      font-size: 12px; color: #4a3b45; cursor: pointer; margin: 0;
+    }
+    .quad-pick label:hover { background: #fff0f6; }
+    .quad-pick i { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+    .modal .err { color: #d9536f; font-size: 12px; min-height: 16px; }
+    .modal .btns { display: flex; justify-content: flex-end; gap: 8px; }
+    .modal .btns button {
+      border-radius: 6px; padding: 6px 16px; font-size: 13px; cursor: pointer; border: 1px solid #f0cfdd;
+    }
+    .modal .btns .ok { background: #f6a5c0; border-color: #f6a5c0; color: #fff; }
+    .modal .btns .ok:hover { background: #ee8fb0; }
+    .modal .btns .cancel { background: #fff; color: #9c6b80; }
+    .toast {
+      position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+      background: #7a4a5e; color: #fff; font-size: 12px;
+      border-radius: 999px; padding: 6px 16px; z-index: 20;
+      opacity: 0; transition: opacity 0.2s; pointer-events: none;
+    }
+    .toast.show { opacity: 0.92; }
   </style>
 </head>
 <body>
@@ -59,15 +221,395 @@
     <button id="btn-max">&#x25a1;</button>
     <button id="btn-close" class="close">&#x2715;</button>
   </div>
+
+  <div id="toolbar">
+    <button class="tab active" data-view="quadrant">四象限</button>
+    <button class="tab" data-view="calendar">日历</button>
+    <button class="tab" data-view="completed">已完成</button>
+    <span class="spacer"></span>
+    <button class="gear" id="btn-settings" title="设置">&#x2699;</button>
+  </div>
+
   <main>
-    <h1>四象限待办工作台</h1>
-    <p>M0 骨架占位页——四象限 / 日历 / 已完成列表三形态在 M4 落地</p>
+    <!-- 形态一：左待办列表 + 右四象限 -->
+    <section class="view active" id="view-quadrant">
+      <div class="list-col">
+        <div class="col-head">待办列表（未完成） <span class="count" id="pending-count">0</span></div>
+        <div class="col-body" id="pending-list"></div>
+      </div>
+      <div class="quad-col">
+        <div class="quad-cell red"><div class="cell-title">重要紧急</div><div class="cell-body" data-q="red"></div></div>
+        <div class="quad-cell green"><div class="cell-title">重要不紧急</div><div class="cell-body" data-q="green"></div></div>
+        <div class="quad-cell yellow"><div class="cell-title">不重要紧急</div><div class="cell-body" data-q="yellow"></div></div>
+        <div class="quad-cell blue"><div class="cell-title">不重要不紧急</div><div class="cell-body" data-q="blue"></div></div>
+      </div>
+    </section>
+
+    <!-- 形态二：左待办列表 + 右日历 -->
+    <section class="view" id="view-calendar">
+      <div class="list-col">
+        <div class="col-head">待办列表（未完成） <span class="count" id="pending-count2">0</span></div>
+        <div class="col-body" id="pending-list2"></div>
+      </div>
+      <div class="cal-col">
+        <div class="cal-nav">
+          <button id="cal-prev">&#x2039;</button>
+          <span class="ym" id="cal-ym"></span>
+          <button id="cal-next">&#x203a;</button>
+        </div>
+        <div class="cal-grid" id="cal-grid"></div>
+        <div class="day-detail" id="day-detail" style="display:none">
+          <div class="dd-title" id="dd-title"></div>
+          <div id="dd-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 形态三：已完成列表 -->
+    <section class="view" id="view-completed">
+      <div class="full-list" id="completed-list"></div>
+    </section>
   </main>
+
+  <!-- 编辑/新建弹层 -->
+  <div class="mask" id="editor-mask">
+    <div class="modal">
+      <h3 id="editor-title">编辑待办</h3>
+      <div class="field">
+        <label>内容</label>
+        <textarea id="ed-content"></textarea>
+      </div>
+      <div class="field">
+        <label>截止时间</label>
+        <input type="datetime-local" id="ed-deadline" />
+        <div class="inline"><input type="checkbox" id="ed-nodeadline" /><span>无明确截止时间</span></div>
+      </div>
+      <div class="field">
+        <label>分类（由你判断轻重缓急）</label>
+        <div class="quad-pick" id="ed-quadrants"></div>
+      </div>
+      <div class="err" id="ed-error"></div>
+      <div class="btns">
+        <button class="cancel" id="ed-cancel">取消</button>
+        <button class="ok" id="ed-save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置弹层（NapCat 配置面，§3.43） -->
+  <div class="mask" id="settings-mask">
+    <div class="modal">
+      <h3>设置 · QQ 提醒通道（NapCat）</h3>
+      <p style="font-size:11px;color:#b58a9c;line-height:1.6">
+        二期功能的外发配置入口，现在填好即可。未配置时提醒只走本机系统通知，不影响任何现有功能。
+        前提：NapCat 已开启 OneBot HTTP API 服务。
+      </p>
+      <div class="field"><label>HTTP 服务地址</label><input type="text" id="st-url" placeholder="http://127.0.0.1:3000" /></div>
+      <div class="field"><label>access token</label><input type="password" id="st-token" placeholder="留空表示无鉴权" /></div>
+      <div class="field"><label>目标 QQ 号</label><input type="text" id="st-qq" placeholder="提醒发到哪个号" /></div>
+      <div class="err" id="st-error"></div>
+      <div class="btns">
+        <button class="cancel" id="st-cancel">取消</button>
+        <button class="ok" id="st-save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
   <script>
     const { ipcRenderer } = require("electron");
-    document.getElementById("btn-min").addEventListener("click", () => ipcRenderer.send("plugin:quadrant-todo:win-minimize"));
-    document.getElementById("btn-max").addEventListener("click", () => ipcRenderer.send("plugin:quadrant-todo:win-maximize"));
-    document.getElementById("btn-close").addEventListener("click", () => ipcRenderer.send("plugin:quadrant-todo:win-close"));
+    const CH = (name) => `plugin:quadrant-todo:${name}`;
+    const Q_COLOR = { red: "#d9536f", green: "#35996b", yellow: "#c08f1a", blue: "#5b7fce" };
+    const Q_LABEL = { red: "重要紧急", green: "重要不紧急", yellow: "不重要紧急", blue: "不重要不紧急" };
+    const S_LABEL = { done: "已完成", "auto-done": "默认完成" };
+
+    let tasks = [];
+    let settings = {};
+    let editing = null;        // { id } = 编辑；{ regret: task } = 反请新建；null = 关闭
+    let calY = new Date().getFullYear();
+    let calM = new Date().getMonth();
+    let selectedDay = null;    // "YYYY-MM-DD"
+
+    // ── 基础工具 ──
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    function toast(msg) {
+      const el = $("toast");
+      el.textContent = msg;
+      el.classList.add("show");
+      setTimeout(() => el.classList.remove("show"), 2200);
+    }
+    function fmtDeadline(d) {
+      if (!d) return "无明确截止时间";
+      return d.length > 10 ? d.slice(5).replace(" ", " ") : d.slice(5);
+    }
+    function deadlineDate(d) { return d ? d.slice(0, 10) : null; }
+    function deadlineTime(d) { return d && d.length > 10 ? d.slice(11, 16) : null; }
+    async function call(ch, ...args) {
+      try {
+        return await ipcRenderer.invoke(CH(ch), ...args);
+      } catch (err) {
+        toast(String(err && err.message ? err.message : err).replace(/^Error invoking remote method '[^']*': (Error: )?/, ""));
+        throw err;
+      }
+    }
+
+    // ── 数据加载与渲染 ──
+    async function reload() {
+      const data = await call("data-load");
+      tasks = data.tasks;
+      settings = data.settings;
+      renderAll();
+    }
+    function pendingTasks() {
+      return tasks.filter((t) => t.status === "pending").sort((a, b) => {
+        const da = a.deadline ?? "9999-99-99 99:99", db = b.deadline ?? "9999-99-99 99:99";
+        return da < db ? -1 : da > db ? 1 : a.createdAt - b.createdAt;
+      });
+    }
+    function completedTasks() {
+      return tasks.filter((t) => t.status !== "pending")
+        .sort((a, b) => (b.completedAt ?? b.createdAt) - (a.completedAt ?? a.createdAt));
+    }
+    function taskCard(t) {
+      const q = t.quadrant;
+      return `<div class="task q-${q}">
+        <div class="row1">
+          <span class="content">${esc(t.content)}</span>
+          <span class="ops">
+            <button data-op="complete" data-id="${t.id}" title="标记完成">&#x2713;</button>
+            <button data-op="edit" data-id="${t.id}" title="编辑">&#x270e;</button>
+            <button data-op="remove" data-id="${t.id}" title="删除">&#x1f5d1;</button>
+          </span>
+        </div>
+        <span class="deadline">${esc(fmtDeadline(t.deadline))}</span>
+      </div>`;
+    }
+    function renderAll() {
+      // 左列表（形态一/二共用同一份数据）
+      const pending = pendingTasks();
+      $("pending-count").textContent = pending.length;
+      $("pending-count2").textContent = pending.length;
+      const listHtml = pending.length
+        ? pending.map(taskCard).join("")
+        : `<div class="empty">暂无未完成的待办<br>去和昔涟聊一句就记上了</div>`;
+      $("pending-list").innerHTML = listHtml;
+      $("pending-list2").innerHTML = listHtml;
+
+      // 四象限归格（按当前分类，滑动后自然归位）
+      for (const q of ["red", "green", "yellow", "blue"]) {
+        const cell = document.querySelector(`.quad-cell .cell-body[data-q="${q}"]`);
+        const inQ = pending.filter((t) => t.quadrant === q);
+        cell.innerHTML = inQ.length ? inQ.map(taskCard).join("") : `<div class="empty">空</div>`;
+      }
+
+      // 已完成列表（保留原分类信息，灰阶着色）
+      const done = completedTasks();
+      $("completed-list").innerHTML = done.length
+        ? done.map((t) => `<div class="task ${t.status === "done" ? "done" : "auto-done"}">
+            <div class="row1">
+              <span class="content">${esc(t.content)}</span>
+              <span class="ops">
+                <button data-op="regret" data-id="${t.id}" title="反悔：删除后重走新建">&#x21ba;</button>
+                <button data-op="remove" data-id="${t.id}" title="删除">&#x1f5d1;</button>
+              </span>
+            </div>
+            <span class="meta">
+              <span class="qtag" style="color:${Q_COLOR[t.quadrant]}">${Q_LABEL[t.quadrant]}</span>
+              <span>${S_LABEL[t.status]}</span>
+              <span>截止 ${esc(fmtDeadline(t.deadline))}</span>
+              ${t.completedAt ? `<span>完成于 ${new Date(t.completedAt).toLocaleString("zh-CN", { hour12: false })}</span>` : ""}
+            </span>
+          </div>`).join("")
+        : `<div class="empty">还没有完成的待办</div>`;
+
+      renderCalendar();
+    }
+
+    // ── 日历（形态二：月历 + 点开某天的 24 小时视图） ──
+    function renderCalendar() {
+      $("cal-ym").textContent = `${calY} 年 ${calM + 1} 月`;
+      const first = new Date(calY, calM, 1);
+      const startOffset = (first.getDay() + 6) % 7; // 周一为首
+      const grid = $("cal-grid");
+      let html = ["一", "二", "三", "四", "五", "六", "日"].map((d) => `<div class="cal-wd">${d}</div>`).join("");
+      const byDay = {};
+      for (const t of tasks) {
+        const d = deadlineDate(t.deadline);
+        if (d) (byDay[d] = byDay[d] || []).push(t);
+      }
+      const daysInMonth = new Date(calY, calM + 1, 0).getDate();
+      const prevDays = new Date(calY, calM, 0).getDate();
+      for (let i = 0; i < 42; i++) {
+        const dayNum = i - startOffset + 1;
+        const inMonth = dayNum >= 1 && dayNum <= daysInMonth;
+        const shown = inMonth ? dayNum : (dayNum <= 0 ? prevDays + dayNum : dayNum - daysInMonth);
+        const ym = inMonth ? `${calY}-${String(calM + 1).padStart(2, "0")}` : null;
+        const key = ym ? `${ym}-${String(shown).padStart(2, "0")}` : null;
+        const items = key && byDay[key] ? byDay[key] : [];
+        const dots = items.slice(0, 6).map((t) => `<i style="background:${Q_COLOR[t.quadrant]}"></i>`).join("");
+        const more = items.length > 6 ? `<span class="more">+${items.length - 6}</span>` : "";
+        html += `<div class="cal-day ${inMonth ? "" : "dim"} ${key === selectedDay ? "selected" : ""}" data-day="${key ?? ""}">
+          <span class="dnum">${shown}</span>
+          <span class="dots">${dots}${more}</span>
+        </div>`;
+      }
+      grid.innerHTML = html;
+      renderDayDetail();
+    }
+    function renderDayDetail() {
+      if (!selectedDay) { $("day-detail").style.display = "none"; return; }
+      const items = tasks
+        .filter((t) => deadlineDate(t.deadline) === selectedDay)
+        .sort((a, b) => (deadlineTime(a.deadline) ?? "00:00") < (deadlineTime(b.deadline) ?? "00:00") ? -1 : 1);
+      $("day-detail").style.display = "block";
+      $("dd-title").textContent = `${selectedDay} 的待办`;
+      $("dd-list").innerHTML = items.length
+        ? items.map((t) => {
+            const time = deadlineTime(t.deadline);
+            return `<div class="dd-item ${t.status === "pending" ? `q-${t.quadrant}` : t.status === "done" ? "done" : "auto-done"}">
+              <span class="time">${time ? esc(time) : "全天"}</span>
+              <span class="content">${esc(t.content)}</span>
+            </div>`;
+          }).join("")
+        : `<div class="empty">这天没有待办</div>`;
+    }
+
+    // ── 编辑弹层（编辑 / 反请新建共用） ──
+    function openEditor(mode, task) {
+      editing = mode;
+      $("ed-error").textContent = "";
+      $("editor-title").textContent = mode === "edit" ? "编辑待办" : "重走新建（反悔）";
+      $("ed-content").value = task.content;
+      const noDl = task.deadline === null;
+      $("ed-nodeadline").checked = noDl;
+      $("ed-deadline").disabled = noDl;
+      // datetime-local 需要 "YYYY-MM-DDTHH:mm"；date-only 按 00:00 计
+      const dt = task.deadline ? task.deadline.replace(" ", "T").slice(0, 16) : "";
+      $("ed-deadline").value = dt.length === 10 ? dt + "T00:00" : dt;
+      $("ed-quadrants").innerHTML = Object.keys(Q_LABEL).map((q) =>
+        `<label><input type="radio" name="ed-q" value="${q}" ${task.quadrant === q ? "checked" : ""} />
+          <i style="background:${Q_COLOR[q]}"></i>${Q_LABEL[q]}</label>`).join("");
+      $("editor-mask").classList.add("show");
+      $("ed-content").focus();
+    }
+    function closeEditor() {
+      editing = null;
+      $("editor-mask").classList.remove("show");
+    }
+    async function saveEditor() {
+      const content = $("ed-content").value.trim();
+      const noDl = $("ed-nodeadline").checked;
+      const dlRaw = $("ed-deadline").value; // "YYYY-MM-DDTHH:mm"
+      const deadline = noDl ? "无明确截止时间" : (dlRaw ? dlRaw.replace("T", " ") : "");
+      const qEl = document.querySelector('input[name="ed-q"]:checked');
+      const quadrant = qEl ? qEl.value : "";
+      if (!content) { $("ed-error").textContent = "内容不能为空。"; return; }
+      if (!noDl && !dlRaw) { $("ed-error").textContent = "请填写截止时间，或勾选“无明确截止时间”。"; return; }
+      if (!quadrant) { $("ed-error").textContent = "请选择分类。"; return; }
+
+      try {
+        if (editing === "edit") {
+          const r = await call("task-update", editing.id, { content, deadline, quadrant });
+          if (r && r.ok === false) { $("ed-error").textContent = r.error; return; }
+        } else {
+          // 反悔 = 删除 + 新建（§3.36）：先建新成功，再删旧；新分类由用户在表单里拍板
+          const r = await call("task-add", { content, deadline, quadrant });
+          if (r && r.ok === false) { $("ed-error").textContent = r.error; return; }
+          if (editing && editing.regret) await call("task-remove", editing.regret.id);
+        }
+        closeEditor();
+        await reload();
+      } catch { /* 错误已在 toast 提示 */ }
+    }
+
+    // ── 操作分发（列表条目上的按钮） ──
+    document.addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-op]");
+      if (btn) {
+        const id = btn.dataset.id;
+        const task = tasks.find((t) => t.id === id);
+        try {
+          switch (btn.dataset.op) {
+            case "complete": await call("task-complete", id); await reload(); break;
+            case "remove":
+              await call("task-remove", id);
+              if (selectedDay) renderCalendar();
+              await reload();
+              break;
+            case "edit": if (task) openEditor("edit", task); break;
+            case "regret": if (task) openEditor({ regret: task }, { content: task.content, deadline: task.deadline, quadrant: task.quadrant }); break;
+          }
+        } catch { /* toast 已提示 */ }
+        return;
+      }
+      const day = e.target.closest(".cal-day");
+      if (day && day.dataset.day) {
+        selectedDay = selectedDay === day.dataset.day ? null : day.dataset.day;
+        renderCalendar();
+      }
+    });
+
+    // ── 视图切换 ──
+    document.querySelectorAll("#toolbar .tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll("#toolbar .tab").forEach((t) => t.classList.remove("active"));
+        tab.classList.add("active");
+        document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
+        $(`view-${tab.dataset.view}`).classList.add("active");
+      });
+    });
+
+    // ── 设置弹层 ──
+    $("btn-settings").addEventListener("click", () => {
+      $("st-url").value = settings.url ?? "";
+      $("st-token").value = settings.token ?? "";
+      $("st-qq").value = settings.targetQq ?? "";
+      $("st-error").textContent = "";
+      $("settings-mask").classList.add("show");
+    });
+    $("st-cancel").addEventListener("click", () => $("settings-mask").classList.remove("show"));
+    $("st-save").addEventListener("click", async () => {
+      try {
+        const r = await call("settings-save", {
+          url: $("st-url").value,
+          token: $("st-token").value,
+          targetQq: $("st-qq").value,
+        });
+        if (r && r.ok === false) { $("st-error").textContent = r.error; return; }
+        settings = r.settings;
+        $("settings-mask").classList.remove("show");
+        toast("设置已保存");
+      } catch { /* toast 已提示 */ }
+    });
+
+    // ── 编辑弹层事件 ──
+    $("ed-cancel").addEventListener("click", closeEditor);
+    $("ed-save").addEventListener("click", saveEditor);
+    $("ed-nodeadline").addEventListener("change", (e) => {
+      $("ed-deadline").disabled = e.target.checked;
+      if (e.target.checked) $("ed-deadline").value = "";
+    });
+
+    // ── 日历翻页 ──
+    $("cal-prev").addEventListener("click", () => {
+      calM -= 1;
+      if (calM < 0) { calM = 11; calY -= 1; }
+      renderCalendar();
+    });
+    $("cal-next").addEventListener("click", () => {
+      calM += 1;
+      if (calM > 11) { calM = 0; calY += 1; }
+      renderCalendar();
+    });
+
+    // ── 窗口控制（自绘标题栏） ──
+    $("btn-min").addEventListener("click", () => ipcRenderer.send(CH("win-minimize")));
+    $("btn-max").addEventListener("click", () => ipcRenderer.send(CH("win-maximize")));
+    $("btn-close").addEventListener("click", () => ipcRenderer.send(CH("win-close")));
+
+    reload();
   </script>
 </body>
 </html>

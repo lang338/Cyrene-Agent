@@ -10,6 +10,7 @@
 import { app, BrowserWindow, Notification, ipcMain } from "electron";
 import * as path from "node:path";
 import type { CyrenePlugin, PluginContext } from "../../../src/plugins/api";
+import { createUiBridge } from "./bridge";
 import { buildPromptProvider } from "./prompts";
 import { notifySettleEvents, ReminderTimers } from "./reminders";
 import { SCAN_INTERVAL_MS, scanAndSettle, type SettleDeps } from "./settle";
@@ -143,6 +144,33 @@ const plugin: CyrenePlugin = {
       ctx.registerTool(tool);
     }
     ctx.registerPromptProvider(buildPromptProvider({ store }));
+
+    // 工作台数据桥（§3.36）：UI 操作与对话操作共享同一条"结算→落库→抛事件"
+    // 编排与提醒重排；通道经 ctx.registerIpc（invoke 语义，自动加
+    // plugin:quadrant-todo: 前缀，卸载随资源跟踪器统一清理）。
+    // handler 抛错由 Electron invoke 回传渲染页，不让异常炸主进程回调。
+    const bridge = createUiBridge({
+      store,
+      storage: context.storage,
+      onSettleEvents: settleDeps.onSettleEvents,
+      onStoreChanged: () => timers?.rearm(),
+      log,
+    });
+    const uiCall = <T>(fn: () => T): T => {
+      try {
+        return fn();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log(`四象限待办：工作台操作失败：${message}`);
+        throw err;
+      }
+    };
+    ctx.registerIpc("data-load", () => uiCall(() => bridge.load()));
+    ctx.registerIpc("task-add", (_event, input) => uiCall(() => bridge.addTask(input)));
+    ctx.registerIpc("task-update", (_event, id, patch) => uiCall(() => bridge.updateTask(id, patch)));
+    ctx.registerIpc("task-complete", (_event, id) => uiCall(() => bridge.completeTask(id, "done")));
+    ctx.registerIpc("task-remove", (_event, id) => uiCall(() => bridge.removeTask(id)));
+    ctx.registerIpc("settings-save", (_event, input) => uiCall(() => bridge.saveSettings(input)));
 
     // 单轮：扫描结算 → 重排计时器；开机补检（register 即先跑一轮）与
     // 兜底扫描（每小时）共用，到点触发的计时器也走它（§8.1/§8.2）。

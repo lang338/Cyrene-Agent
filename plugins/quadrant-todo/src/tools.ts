@@ -32,8 +32,8 @@ const ERR_NO_TIME = "登记失败：缺时间（时间须为“xx年xx月xx日xx
 const ERR_NO_QUADRANT = "登记失败：缺分类（分类只能是“重要紧急/重要不紧急/不重要紧急/不重要不紧急”四词之一，且须由用户明确回答）";
 const ERR_NO_CONFIRM = "登记失败：分类未获用户确认（先用自然的方式问清这件事重不重要、急不着急，得到用户明确回答后重试）";
 
-/** deadline 工具入参 → 存储值；"无明确截止时间"（及宽容别名）归 null，其余须可解析 */
-function parseDeadlineInput(raw: unknown): { ok: true; value: string | null } | { ok: false } {
+/** deadline 工具入参 → 存储值；"无明确截止时间"（及宽容别名）归 null，其余须可解析（UI 桥接层复用） */
+export function parseDeadlineInput(raw: unknown): { ok: true; value: string | null } | { ok: false } {
   if (typeof raw !== "string") return { ok: false };
   const s = raw.trim();
   if (!s) return { ok: false };
@@ -42,7 +42,8 @@ function parseDeadlineInput(raw: unknown): { ok: true; value: string | null } | 
   return { ok: false };
 }
 
-function parseQuadrantInput(raw: unknown): Quadrant | null {
+/** 四词中文 → 存储枚举；own-property 检查防原型链绕过（UI 桥接层复用） */
+export function parseQuadrantInput(raw: unknown): Quadrant | null {
   if (typeof raw !== "string") return null;
   const s = raw.trim();
   // 须 own-property 检查：普通对象的 "constructor"/"toString" 会命中原型链
