@@ -26,8 +26,19 @@ const CH_MIN = "plugin:quadrant-todo:win-minimize";
 const CH_MAX = "plugin:quadrant-todo:win-maximize";
 const CH_CLOSE = "plugin:quadrant-todo:win-close";
 
-/** Windows 原生通知需要进程级 AppUserModelID；宿主未设置（§四 #9），幂等代设一次 */
-const AUMID = "com.cyrene.quadrant-todo";
+/**
+ * Windows 原生通知要求进程身份（AUMID）可被系统解析。宿主是免安装目录运行
+ * （无开始菜单快捷方式背书，系统亦未注册任何 Cyrene AUMID），任意自定义
+ * AUMID 的弹窗会被系统静默丢弃（2026-11-04 实测）。通行解法：用 exe 完整
+ * 路径作为 AUMID，Windows 可直接解析到进程本身。register 只调一次。
+ */
+function ensureAppUserModelId(): void {
+  try {
+    if (process.platform === "win32") app.setAppUserModelId(process.execPath);
+  } catch {
+    // 设置失败忽略——通知失败时发送路再兜
+  }
+}
 
 function createWorkbenchWindow(): void {
   win = new BrowserWindow({
