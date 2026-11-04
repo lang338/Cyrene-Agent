@@ -90,15 +90,6 @@ function openWorkbench(): void {
   createWorkbenchWindow();
 }
 
-function ensureAppUserModelId(): void {
-  try {
-    // register 只调一次；重复设置同值无害，无需读回（宿主 Electron 类型未暴露 getter）
-    app.setAppUserModelId(AUMID);
-  } catch {
-    // 个别环境设置 AUMID 可能失败：忽略——通知仍可能可用，失败时发送路再兜
-  }
-}
-
 /** 系统通知发送（Electron 胶水）：环境不支持时记日志跳过，点击通知打开工作台 */
 function makeNotifier(log: (...args: unknown[]) => void): (notice: { title: string; body: string }) => void {
   return (notice) => {
