@@ -46,7 +46,8 @@ function parseQuadrantInput(raw: unknown): Quadrant | null {
   const s = raw.trim();
   // 须 own-property 检查：普通对象的 "constructor"/"toString" 会命中原型链
   // 返回继承函数（truthy），绕过"缺分类"硬校验（CodeRabbit 评审发现）
-  return Object.hasOwn(QUADRANT_INPUT, s) ? QUADRANT_INPUT[s] : null;
+  const mapped = Object.hasOwn(QUADRANT_INPUT, s) ? QUADRANT_INPUT[s] : undefined;
+  return mapped ?? null;
 }
 
 /** update 的 status 入参："auto-done" 单列（属程序结算专属，拒收） */
