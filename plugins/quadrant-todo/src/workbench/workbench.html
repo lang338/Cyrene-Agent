@@ -539,12 +539,19 @@
         const task = tasks.find((t) => t.id === id);
         try {
           switch (btn.dataset.op) {
-            case "complete": await call("task-complete", id); await reload(); break;
-            case "remove":
-              await call("task-remove", id);
+            case "complete": {
+              const r = await call("task-complete", id);
+              if (r && r.ok === false) { toast(r.error); break; }
+              await reload();
+              break;
+            }
+            case "remove": {
+              const r = await call("task-remove", id);
+              if (r && r.ok === false) { toast(r.error); break; }
               if (selectedDay) renderCalendar();
               await reload();
               break;
+            }
             case "edit": if (task) openEditor("edit", task); break;
             case "regret": if (task) openEditor({ regret: task }, { content: task.content, deadline: task.deadline, quadrant: task.quadrant }); break;
           }

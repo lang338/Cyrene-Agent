@@ -165,12 +165,15 @@ const plugin: CyrenePlugin = {
         throw err;
       }
     };
+    // 宿主 registerIpc 的 handler 约定是纯业务参数（event 已在宿主装配层剥除，
+    // 见 ipc-router.ts invokeRegistered 的 handler(...args)），不按 ipcMain.handle
+    // 的 (event, ...args) 签名写——否则首参错位，全部带参通道静默失败。
     ctx.registerIpc("data-load", () => uiCall(() => bridge.load()));
-    ctx.registerIpc("task-add", (_event, input) => uiCall(() => bridge.addTask(input)));
-    ctx.registerIpc("task-update", (_event, id, patch) => uiCall(() => bridge.updateTask(id, patch)));
-    ctx.registerIpc("task-complete", (_event, id) => uiCall(() => bridge.completeTask(id, "done")));
-    ctx.registerIpc("task-remove", (_event, id) => uiCall(() => bridge.removeTask(id)));
-    ctx.registerIpc("settings-save", (_event, input) => uiCall(() => bridge.saveSettings(input)));
+    ctx.registerIpc("task-add", (input) => uiCall(() => bridge.addTask(input)));
+    ctx.registerIpc("task-update", (id, patch) => uiCall(() => bridge.updateTask(id, patch)));
+    ctx.registerIpc("task-complete", (id) => uiCall(() => bridge.completeTask(id, "done")));
+    ctx.registerIpc("task-remove", (id) => uiCall(() => bridge.removeTask(id)));
+    ctx.registerIpc("settings-save", (input) => uiCall(() => bridge.saveSettings(input)));
 
     // 单轮：扫描结算 → 重排计时器；开机补检（register 即先跑一轮）与
     // 兜底扫描（每小时）共用，到点触发的计时器也走它（§8.1/§8.2）。
