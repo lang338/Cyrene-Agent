@@ -495,8 +495,10 @@
       // datetime-local 需要 "YYYY-MM-DDTHH:mm"；date-only 按 00:00 计
       const dt = task.deadline ? task.deadline.replace(" ", "T").slice(0, 16) : "";
       $("ed-deadline").value = dt.length === 10 ? dt + "T00:00" : dt;
+      // value 传中文四词：桥接层复用对话路径的 parseQuadrantInput（中文 → 枚举），
+      // 传枚举值会被判"分类无效"（与昔涟对话的入参格式保持一致）
       $("ed-quadrants").innerHTML = Object.keys(Q_LABEL).map((q) =>
-        `<label><input type="radio" name="ed-q" value="${q}" ${task.quadrant === q ? "checked" : ""} />
+        `<label><input type="radio" name="ed-q" value="${Q_LABEL[q]}" ${task.quadrant === q ? "checked" : ""} />
           <i style="background:${Q_COLOR[q]}"></i>${Q_LABEL[q]}</label>`).join("");
       $("editor-mask").classList.add("show");
       $("ed-content").focus();
