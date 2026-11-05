@@ -7,11 +7,11 @@
  * 与工具面的差异：UI 路径的用户表态由用户本人操作天然保证（§3.13 双保险的
  * UI 侧），无需 LLM 自检项；报错文案直接面向界面展示。
  * 设置面（§3.4/§3.43）：NapCat 地址/token/目标 QQ 存插件自有存储 key "settings"，
- * 本期只做配置入口与存储，外发通道随功能四（二期）实现。
+ * 本期只做配置入口与存储，外发通道随 M6 功能四实现。
  */
 import { randomUUID } from "node:crypto";
 import type { PluginStorage } from "../../../src/plugins/api";
-import { settleTask, type SettleEvent } from "./quadrant";
+import { parseDeadline, settleTask, type SettleEvent } from "./quadrant";
 import { parseDeadlineInput, parseQuadrantInput } from "./tools";
 import type { TaskStore } from "./store";
 import { NO_DEADLINE_INPUTS, type Quadrant, type Status, type Task } from "./types";
@@ -58,6 +58,20 @@ function readSettings(storage: PluginStorage): NapCatSettings {
 const ERR_EDIT_DONE = "完成态任务不支持修改属性，可在已完成列表删除后重走新建（反悔）。";
 const ERR_COMPLETE_DONE = "该待办已是完成态。";
 const ERR_NOT_FOUND = "未找到该待办，请刷新后重试。";
+
+/**
+ * 两个 deadline 存储值是否指向同一时刻：字符串不同但时刻相同（如
+ * "2026-11-10" 与 "2026-11-10 00:00"）视为等值；任一端不可解析（null/非法）
+ * 时退回字符串判等——null 与带时刻的值互为真变更。
+ */
+function sameInstant(a: string | null, b: string | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  const da = parseDeadline(a);
+  const db = parseDeadline(b);
+  if (!da || !db) return false;
+  return da.getTime() === db.getTime();
+}
 
 export function createUiBridge(deps: UiBridgeDeps) {
   const now = deps.now ?? Date.now;
@@ -126,13 +140,20 @@ export function createUiBridge(deps: UiBridgeDeps) {
       if (p.quadrant !== undefined) {
         const quadrant = parseQuadrantInput(p.quadrant);
         if (!quadrant) return { ok: false, error: "分类无效：只能从四个象限中选择。" };
-        // §七：手动改分类直接覆盖并清除滑动记录
-        next = { ...next, quadrant, slidFrom: undefined };
+        // 等值跳过：工作台每次编辑都全量回传三属性，同值回传不算"手动改分类"
+        // ——否则会清掉滑动记录，让后续改期无法自动滑回（CodeRabbit 评审）
+        if (quadrant !== next.quadrant) {
+          // §七：手动改分类直接覆盖并清除滑动记录
+          next = { ...next, quadrant, slidFrom: undefined };
+        }
       }
       if (p.deadline !== undefined) {
         const deadline = parseDeadlineInput(p.deadline);
         if (!deadline.ok) return { ok: false, error: "时间无效：须为具体日期时间，或勾选“无明确截止时间”。" };
-        if (deadline.value !== next.deadline) {
+        // 等值跳过：日期型 deadline 在编辑器里被补全成 "YYYY-MM-DD 00:00"，
+        // 字符串不等但时刻相等，视为未变更（否则提醒标记被误清、重复提醒）
+        const changed = !sameInstant(next.deadline, deadline.value);
+        if (changed) {
           next = { ...next, deadline: deadline.value };
           deadlineChanged = true;
         }

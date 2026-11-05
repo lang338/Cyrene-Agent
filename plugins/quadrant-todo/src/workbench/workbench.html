@@ -476,9 +476,9 @@
         : `<div class="empty">这天没有待办</div>`;
     }
 
-    // ── 编辑弹层（编辑 / 反请新建共用） ──
+    // ── 编辑弹层（编辑 / 反请新建共用）：editing = { id } 编辑模式；{ regret } 反悔模式 ──
     function openEditor(mode, task) {
-      editing = mode;
+      editing = mode === "edit" ? { id: task.id } : mode;
       $("ed-error").textContent = "";
       $("editor-title").textContent = mode === "edit" ? "编辑待办" : "重走新建（反悔）";
       $("ed-content").value = task.content;
@@ -510,14 +510,14 @@
       if (!quadrant) { $("ed-error").textContent = "请选择分类。"; return; }
 
       try {
-        if (editing === "edit") {
+        if (editing && editing.id) {
           const r = await call("task-update", editing.id, { content, deadline, quadrant });
           if (r && r.ok === false) { $("ed-error").textContent = r.error; return; }
-        } else {
+        } else if (editing && editing.regret) {
           // 反悔 = 删除 + 新建（§3.36）：先建新成功，再删旧；新分类由用户在表单里拍板
           const r = await call("task-add", { content, deadline, quadrant });
           if (r && r.ok === false) { $("ed-error").textContent = r.error; return; }
-          if (editing && editing.regret) await call("task-remove", editing.regret.id);
+          await call("task-remove", editing.regret.id);
         }
         closeEditor();
         await reload();

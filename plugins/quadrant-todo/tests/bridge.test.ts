@@ -126,6 +126,40 @@ describe("updateTask：编辑未完成待办", () => {
     h.bridge.updateTask(id, { content: "新内容" });
     expect(h.onStoreChanged).toHaveBeenCalledTimes(1);
   });
+
+  it("同值回传分类不清滑动记录（工作台全量回传场景，CodeRabbit 评审）", () => {
+    const h = makeHarness();
+    const r1 = h.bridge.addTask({ content: "写周报", deadline: IN_50H, quadrant: "重要不紧急" });
+    expect(r1.ok).toBe(true);
+    const slid = h.storage.dump()[0]!;
+    expect(slid.quadrant).toBe("red");
+    expect(slid.slidFrom).toBe("green");
+    const eventsBefore = h.events.length;
+    const r2 = h.bridge.updateTask(slid.id, { content: "改个名", quadrant: "重要紧急" });
+    expect(r2.ok).toBe(true);
+    const after = h.storage.dump()[0]!;
+    expect(after.slidFrom).toBe("green");
+    expect(after.quadrant).toBe("red");
+    expect(h.events.slice(eventsBefore).some((e) => e.events.includes("slide-back"))).toBe(false);
+  });
+
+  it("同时刻不同写法的 deadline 视为未变更，不重置提醒（CodeRabbit 评审）", () => {
+    const h = makeHarness();
+    // date-only 明天 00:00 → 红 + 剩 12h 在 24h 窗口内，登记即提醒
+    const dayStr = fmt(NOW + 12 * 3_600_000).slice(0, 10);
+    const r1 = h.bridge.addTask({ content: "写周报", deadline: dayStr, quadrant: "重要紧急" });
+    expect(r1.ok).toBe(true);
+    const seeded = h.storage.dump()[0]!;
+    expect(seeded.reminded?.due24).toBe(dayStr);
+    const eventsBefore = h.events.length;
+    // 编辑器把 date-only 补成 "YYYY-MM-DD 00:00" 连同 content 全量回传
+    const r2 = h.bridge.updateTask(seeded.id, { content: seeded.content, deadline: `${dayStr} 00:00` });
+    expect(r2.ok).toBe(true);
+    const after = h.storage.dump()[0]!;
+    expect(after.deadline).toBe(dayStr);
+    expect(after.reminded?.due24).toBe(dayStr);
+    expect(h.events.slice(eventsBefore).some((e) => e.events.includes("remind-24h"))).toBe(false);
+  });
 });
 
 describe("completeTask / removeTask", () => {
