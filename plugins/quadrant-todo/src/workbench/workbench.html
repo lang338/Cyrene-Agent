@@ -65,6 +65,12 @@
       font-size: 16px; color: #9c6b80; padding: 4px 8px; border-radius: 6px;
     }
     #toolbar .gear:hover { background: #f6d5e2; }
+    #toolbar .add-btn {
+      border: none; background: #f6a5c0; color: #fff;
+      border-radius: 999px; padding: 4px 14px;
+      font-size: 13px; cursor: pointer;
+    }
+    #toolbar .add-btn:hover { background: #ee8fb0; }
     /* ── 主区 ── */
     main { flex: 1; display: flex; overflow: hidden; }
     .view { flex: 1; display: none; overflow: hidden; }
@@ -227,6 +233,7 @@
     <button class="tab" data-view="calendar">日历</button>
     <button class="tab" data-view="completed">已完成</button>
     <span class="spacer"></span>
+    <button class="add-btn" id="btn-add">＋ 新增待办</button>
     <button class="gear" id="btn-settings" title="设置">&#x2699;</button>
   </div>
 
@@ -476,11 +483,11 @@
         : `<div class="empty">这天没有待办</div>`;
     }
 
-    // ── 编辑弹层（编辑 / 反请新建共用）：editing = { id } 编辑模式；{ regret } 反悔模式 ──
+    // ── 编辑弹层（新建 / 编辑 / 反悔共用）：editing = {} 新建；{ id } 编辑；{ regret } 反悔 ──
     function openEditor(mode, task) {
-      editing = mode === "edit" ? { id: task.id } : mode;
+      editing = mode === "edit" ? { id: task.id } : mode === "add" ? {} : mode;
       $("ed-error").textContent = "";
-      $("editor-title").textContent = mode === "edit" ? "编辑待办" : "重走新建（反悔）";
+      $("editor-title").textContent = mode === "edit" ? "编辑待办" : mode === "add" ? "新增待办" : "重走新建（反悔）";
       $("ed-content").value = task.content;
       const noDl = task.deadline === null;
       $("ed-nodeadline").checked = noDl;
@@ -513,11 +520,11 @@
         if (editing && editing.id) {
           const r = await call("task-update", editing.id, { content, deadline, quadrant });
           if (r && r.ok === false) { $("ed-error").textContent = r.error; return; }
-        } else if (editing && editing.regret) {
-          // 反悔 = 删除 + 新建（§3.36）：先建新成功，再删旧；新分类由用户在表单里拍板
+        } else {
+          // 新建（含反悔的"新建"半步，§3.36）：先建新成功，反悔场景再删旧
           const r = await call("task-add", { content, deadline, quadrant });
           if (r && r.ok === false) { $("ed-error").textContent = r.error; return; }
-          await call("task-remove", editing.regret.id);
+          if (editing && editing.regret) await call("task-remove", editing.regret.id);
         }
         closeEditor();
         await reload();
@@ -585,6 +592,7 @@
     });
 
     // ── 编辑弹层事件 ──
+    $("btn-add").addEventListener("click", () => openEditor("add", { content: "", deadline: "", quadrant: null }));
     $("ed-cancel").addEventListener("click", closeEditor);
     $("ed-save").addEventListener("click", saveEditor);
     $("ed-nodeadline").addEventListener("change", (e) => {
