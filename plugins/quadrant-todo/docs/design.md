@@ -339,7 +339,7 @@
 | 7  | 插件可经 PromptProvider 机制注入 prompt，不经宿主代码修改                                                                                  | 注入面向全部会话模式                                                       |
 | 8  | **插件运行在宿主主进程，持有完整 Node.js 与 Electron 能力**：BrowserWindow、ipcMain、原生 Notification、定时器、网络请求均可直接使用                            | 本插件提醒通道与工作台窗口的技术基础                                               |
 | 9  | **宿主自身从不设置 AppUserModelID**（全仓库无 setAppUserModelId 调用），但分发形态决定系统侧的身份背书：NSIS 安装版的开始菜单快捷方式以 electron-builder 的 appId（com.cyrene.live2d）作为 AUMID；免安装 --dir 目录运行无任何背书 | Windows 原生通知正常弹出需要可解析的 AUMID——插件注册时按分发形态代设（安装版用 appId，探测 Uninstall Cyrene.exe 区分；免安装用 exe 完整路径），进程级幂等一次 |
-| 10 | **宿主的 Toast（注意力提醒中心）由主进程 ToastService 统一管理**：独立无边框渲染窗口仅负责显示；事件源自模块级单例 toastEvents 总线（审批/选择卡/抽查/计划审批/定时任务完成五类）。插件正规途径无法触达——PluginDeps 无 toast 服务、插件事件总线与 toastEvents 相互隔离、TOAST_* IPC 均有 sender 校验 | 提醒不走它，走 Electron 原生 Notification；如需宿主 toast 须宿主开放 API（上游建议） |
+| 10 | **宿主的 Toast（注意力提醒中心）由主进程 ToastService 统一管理**：独立无边框渲染窗口仅负责显示；事件源自模块级单例 toastEvents 总线（审批/选择卡/抽查/计划审批/定时任务完成五类）。插件正规途径无法触达——PluginDeps 无 toast 服务、插件事件总线与 toastEvents 相互隔离、TOAST_* IPC 均有 sender 校验 | 提醒不走它，走 Electron 原生 Notification |
 | 11 | **定时任务的会话回复只投递桌面端当前活跃会话**（渲染进程 IPC），不经过任何聊天渠道管线；插件 API 亦无任何消息发送接口                                                         | 插件无法借宿主能力向 QQ 主动递消息——移动端提醒必须自建外发链路                               |
 | 12 | **QQ（NapCat）为 OneBot 反向 WebSocket**：宿主监听、NapCat 接入；OneBot 另有标准 HTTP API（`send_private_msg`），NapCat 开启 HTTP 服务后插件可直连发送私聊消息 | 与宿主的反向 WS 链路相互独立，互不影响——功能四外发的通道                                  |
 | 13 | **宿主定时任务的授权模型与提醒场景冲突**：插件任务创建即停用、须用户逐条在宿主界面授权；执行规格任何变化都撤销授权；已启用的单次任务在宿主关闭期间错过触发时刻，宿主启动归一化时被记 skipped 并清除授权（引擎行为，不可更改）     | "登记后还得去授权、重启后还要再授权"与"提醒必须可靠送达"根本矛盾——**提醒通道不使用宿主定时任务，全部自建**（见 §八） |
@@ -479,7 +479,7 @@ PromptProvider 常驻注入两块内容：**行为规范**与**当前待办概�
 | M8  | 集成验收：DoD 全清单 + 真机验证                           | 待实施 |
 | M9  | 发布：构建产物打包 + README 打磨 + 插件市场收录                | 待实施 |
 
-四个功能全部实现，无分期：功能二字段与 prompt 增补、功能四外发链路均已在本文件定型，按 M5 → M6 → M7 → M8 顺序实施。
+四个功能均已在本文件定型（无分期），按 M5 → M6 → M7 → M8 顺序实施。
 
 ### 9.2 验收清单（DoD 十条）
 
