@@ -59,6 +59,37 @@ describe("reminderMoments（未来提醒时刻计算，§3.15）", () => {
     expect(reminderMoments(t, NOW)).toEqual([{ kind: "remind-24h", runAt: dl(d) - 24 * HOUR }]);
   });
 
+  it("小目标（child）：只排自定义单次提醒，不排 72h/24h（§3.24）", () => {
+    const d = fmt(NOW + 7 * DAY);
+    const t = makeTask({
+      id: "c1",
+      content: "x",
+      parentId: "g1",
+      deadline: d,
+      quadrant: "green",
+      reminder: { type: "once", at: fmt(NOW + 2 * HOUR) },
+    });
+    expect(reminderMoments(t, NOW, "child")).toEqual([{ kind: "remind-custom", runAt: dl(fmt(NOW + 2 * HOUR)) }]);
+  });
+
+  it("小目标无自定义提醒 / 周期型扩展位：零时刻", () => {
+    const d = fmt(NOW + 7 * DAY);
+    expect(reminderMoments(makeTask({ id: "c1", content: "x", parentId: "g1", deadline: d, quadrant: "green" }), NOW, "child")).toEqual([]);
+    expect(
+      reminderMoments(
+        makeTask({ id: "c1", content: "x", parentId: "g1", deadline: d, quadrant: "green", reminder: { type: "periodic", everyNDays: 1, time: "08:00" } }),
+        NOW,
+        "child",
+      ),
+    ).toEqual([]);
+  });
+
+  it("大目标（goal）：无主动提醒时刻", () => {
+    const d = fmt(NOW + 7 * DAY);
+    const t = makeTask({ id: "g1", content: "x", deadline: d, quadrant: "green" });
+    expect(reminderMoments(t, NOW, "goal")).toEqual([]);
+  });
+
   it("已完成 / 无截止时间 → 空数组", () => {
     const far = makeTask({ id: "t1", content: "x", deadline: fmt(NOW + 7 * DAY), quadrant: "green", status: "done" });
     const noDeadline = makeTask({ id: "t2", content: "x", deadline: null, quadrant: "green" });

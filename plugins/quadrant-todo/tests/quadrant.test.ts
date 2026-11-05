@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  evaluateGoalCompletion,
   msRemaining,
   parseDeadline,
   settleAll,
@@ -177,5 +178,99 @@ describe("settleAll", () => {
     const changed = settleAll([a, b], NOW);
     expect(changed).toHaveLength(1);
     expect(changed[0]?.task.id).toBe("a");
+  });
+
+  it("树内资格：带 parentId 的小目标不滑动，被引用的顶层任务（大目标）不默认完成", () => {
+    const goal = makeTask({ id: "goal", quadrant: "green", deadline: hoursFromNow(71) });
+    const child = makeTask({ id: "child", parentId: "goal", quadrant: "green", deadline: hoursFromNow(71) });
+    const changed = settleAll([goal, child], NOW, {}, [goal, child]);
+    expect(changed).toHaveLength(0);
+  });
+});
+
+describe("功能二：树内机制资格与大目标联动（§3.24/§3.25）", () => {
+  it("小目标（child）到点自动转默认完成，但不滑动", () => {
+    const child = makeTask({ id: "c1", parentId: "g1", quadrant: "green", deadline: hoursFromNow(-1) });
+    const r = settleTask(child, NOW, {}, "child");
+    expect(r.task.status).toBe("auto-done");
+    expect(r.task.quadrant).toBe("green");
+    expect(r.events).toEqual(["auto-done"]);
+  });
+
+  it("小目标剩余 50h 不滑动、不做滑红/24h 提醒", () => {
+    const child = makeTask({ id: "c1", parentId: "g1", quadrant: "green", deadline: hoursFromNow(50) });
+    const r = settleTask(child, NOW, {}, "child");
+    expect(r.task.quadrant).toBe("green");
+    expect(r.events).toEqual([]);
+  });
+
+  it("小目标自定义单次提醒：到点触发一次并标记，重复结算不再触发", () => {
+    const child = makeTask({
+      id: "c1",
+      parentId: "g1",
+      deadline: hoursFromNow(48),
+      reminder: { type: "once", at: hoursFromNow(-1) },
+    });
+    const r1 = settleTask(child, NOW, {}, "child");
+    expect(r1.events).toEqual(["remind-custom"]);
+    expect(r1.task.reminded?.custom).toBe(hoursFromNow(-1));
+    const r2 = settleTask(r1.task, NOW, {}, "child");
+    expect(r2.events).toEqual([]);
+  });
+
+  it("小目标自定义提醒未到点不触发", () => {
+    const child = makeTask({
+      id: "c1",
+      parentId: "g1",
+      deadline: hoursFromNow(48),
+      reminder: { type: "once", at: hoursFromNow(1) },
+    });
+    const r = settleTask(child, NOW, {}, "child");
+    expect(r.events).toEqual([]);
+  });
+
+  it("大目标（goal）全机制豁免：即使过期也不单点默认完成", () => {
+    const goal = makeTask({ id: "g1", deadline: hoursFromNow(-1) });
+    const r = settleTask(goal, NOW, {}, "goal");
+    expect(r.task.status).toBe("pending");
+    expect(r.events).toEqual([]);
+  });
+
+  it("大目标改期（deadlineChanged）不产生滑回与提醒标记清理", () => {
+    const goal = makeTask({ id: "g1", quadrant: "green", deadline: hoursFromNow(71) });
+    const r = settleTask(goal, NOW, { deadlineChanged: true }, "goal");
+    expect(r.events).toEqual([]);
+    expect(r.task).toBe(goal);
+  });
+
+  it("evaluateGoalCompletion：已到时限 且 所有小目标完成 → 默认完成", () => {
+    const goal = makeTask({ id: "g1", deadline: hoursFromNow(-1) });
+    const children = [
+      makeTask({ id: "c1", parentId: "g1", status: "done", completedAt: NOW - 1000 }),
+      makeTask({ id: "c2", parentId: "g1", status: "auto-done", completedAt: NOW - 2000 }),
+    ];
+    const r = evaluateGoalCompletion(goal, children, NOW);
+    expect(r?.task.status).toBe("auto-done");
+    expect(r?.events).toEqual(["auto-done"]);
+  });
+
+  it("evaluateGoalCompletion：小目标未全完成 / 尚无小目标 / 未到时限 / 无时限 → 均不转", () => {
+    const goal = makeTask({ id: "g1", deadline: hoursFromNow(-1) });
+    const pendingChild = makeTask({ id: "c1", parentId: "g1", deadline: hoursFromNow(48) });
+    expect(evaluateGoalCompletion(goal, [pendingChild], NOW)).toBeNull();
+    expect(evaluateGoalCompletion(goal, [], NOW)).toBeNull();
+    const futureGoal = makeTask({ id: "g2", deadline: hoursFromNow(48) });
+    const doneChild = makeTask({ id: "c2", parentId: "g2", status: "done", completedAt: NOW });
+    expect(evaluateGoalCompletion(futureGoal, [doneChild], NOW)).toBeNull();
+    const noDeadlineGoal = makeTask({ id: "g3", deadline: null });
+    expect(evaluateGoalCompletion(noDeadlineGoal, [doneChild], NOW)).toBeNull();
+  });
+
+  it("evaluateGoalCompletion：完成态大目标不再结算，小目标（带 parentId）传入直接拒绝", () => {
+    const doneGoal = makeTask({ id: "g1", deadline: hoursFromNow(-1), status: "done", completedAt: NOW });
+    const doneChild = makeTask({ id: "c1", parentId: "g1", status: "done", completedAt: NOW });
+    expect(evaluateGoalCompletion(doneGoal, [doneChild], NOW)).toBeNull();
+    const childAsGoal = makeTask({ id: "c9", parentId: "g9", deadline: hoursFromNow(-1) });
+    expect(evaluateGoalCompletion(childAsGoal, [], NOW)).toBeNull();
   });
 });

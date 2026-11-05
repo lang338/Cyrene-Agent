@@ -183,6 +183,21 @@ describe("completeTask / removeTask", () => {
     expect(h.onStoreChanged).toHaveBeenCalledTimes(1);
   });
 
+  it("UI 挂小目标：分类随父级、删除大目标连带删小目标（§3.23/§3.26）", () => {
+    const h = makeHarness();
+    h.bridge.addTask({ content: "过四级", deadline: "2026-12-20", quadrant: "重要不紧急" });
+    const goal = h.storage.dump()[0]!;
+    const added = h.bridge.addTask({ content: "背单词", deadline: fmt(NOW + 24 * 3_600_000), parentId: goal.id });
+    expect(added.ok).toBe(true);
+    const child = h.storage.dump().find((t) => t.parentId === goal.id)!;
+    expect(child.quadrant).toBe("green");
+    // UI 编辑小目标分类 → 拒绝（随大目标）
+    expect(h.bridge.updateTask(child.id, { quadrant: "重要紧急" })).toMatchObject({ ok: false });
+    // 删除大目标 → 连带删除
+    expect(h.bridge.removeTask(goal.id)).toMatchObject({ ok: true });
+    expect(h.storage.dump()).toHaveLength(0);
+  });
+
   it("纯删除移除条目；不存在的 id 报错", () => {
     const h = makeHarness();
     h.bridge.addTask({ content: "写周报", deadline: IN_7D, quadrant: "重要紧急" });

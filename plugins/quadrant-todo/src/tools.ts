@@ -5,7 +5,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginTool } from "../../../src/plugins/api";
-import { parseDeadline, sameInstant, settleTask, type SettleEvent, type SettleOptions } from "./quadrant";
+import { evaluateGoalCompletion, parseDeadline, sameInstant, settleTask, type SettleEvent, type SettleOptions, type TreeKind } from "./quadrant";
 import type { TaskStore } from "./store";
 import {
   NO_DEADLINE_INPUTS,
@@ -88,12 +88,59 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
     if (events.length > 0) deps.onSettleEvents?.(task, events);
   };
 
-  /** 写时结算：结算→最终状态写回 store（update/complete 传入的是未入库新对象，必须写；add 场景写回同引用幂等）→抛事件 */
+  /** 树内机制资格（§3.24）：按数据形态推导——带 parentId 即小目标，被引用即大目标 */
+  const kindOf = (t: Task): TreeKind => {
+    if (t.parentId) return "child";
+    return deps.store.list().some((c) => c.parentId === t.id) ? "goal" : "normal";
+  };
+
+  /** 写时结算：结算→最终状态写回 store（update/complete 传入的是未入库新对象，必须写；add 场景写回同引用幂等）→抛事件。kind 按数据形态推导 */
   const settleAndPersist = (task: Task, options: SettleOptions = {}): Task => {
-    const r = settleTask(task, now(), options);
+    const r = settleTask(task, now(), options, kindOf(task));
     deps.store.replace(r.task);
     emit(r.task, r.events);
     return r.task;
+  };
+
+  /** 大目标默认完成联动（§3.25）：小目标写入后评估其父级——已到时限 且 所有小目标完成即自动转 */
+  const settleParentLinkage = (child: Task): void => {
+    if (!child.parentId) return;
+    const parent = deps.store.get(child.parentId);
+    if (!parent || parent.status !== "pending") return;
+    const children = deps.store.list().filter((t) => t.parentId === parent.id);
+    const r = evaluateGoalCompletion(parent, children, now());
+    if (r) {
+      deps.store.replace(r.task);
+      emit(r.task, r.events);
+    }
+  };
+
+  /** 小目标挂载校验（§3.22/§3.23）：父级须为未完成的顶层大目标，不支持嵌套 */
+  const validateParentForChild = (parentId: string): string | null => {
+    const parent = deps.store.get(parentId);
+    if (!parent) return "未找到该大目标，可用 quadrant-todo_list_tasks 查看现有列表。";
+    if (parent.parentId) return "小目标只能挂在顶层大目标下，不支持嵌套。";
+    if (parent.status !== "pending") return "该大目标已是完成态，不能再挂小目标。";
+    return null;
+  };
+
+  /** 大目标删除连带（§3.26）：连带删除其下全部小目标，返回连带条数 */
+  const cascadeDeleteChildren = (goalId: string): number => {
+    const children = deps.store.list().filter((t) => t.parentId === goalId);
+    for (const c of children) deps.store.remove(c.id);
+    return children.length;
+  };
+
+  /** 大目标手动标完成连带（§3.25）：其下全部未完成小目标连带标"已完成"（亮灰），返回连带条数 */
+  const cascadeCompleteChildren = (goalId: string): number => {
+    let n = 0;
+    for (const c of deps.store.list().filter((t) => t.parentId === goalId)) {
+      if (c.status === "pending") {
+        deps.store.replace({ ...c, status: "done", completedAt: now() });
+        n += 1;
+      }
+    }
+    return n;
   };
 
   const addTask: ChatPluginTool = {
@@ -101,7 +148,7 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
     chatBuiltin: true,
     name: "登记待办",
     description:
-      "把一条待办登记进四象限待办列表。调用前必须完成属性收集：四象限分类只能由用户明确回答（可以建议，不得代答）；时间与内容以用户表述为准，缺什么追问什么，三项属性齐备前不得调用本工具；属性收集过程即确认，调用前不做整体复述。",
+      "把一条待办登记进四象限待办列表，也用于登记大目标拆解出的小目标。顶层任务：调用前必须完成属性收集——四象限分类只能由用户明确回答（可以建议，不得代答），时间与内容以用户表述为准，缺什么追问什么，属性齐备前不得调用。小目标（传 parentId 挂入大目标）：分类自动随大目标（无需询问、无需确认门），截止时间须精确到时分，录入前逐个询问用户是否需要提醒（需要且为单次时刻时传 reminder；仅在用户要求时设置）。属性收集过程即确认，调用前不做整体复述。",
     enabled: true,
     risk: "safe",
     effectKind: "mutation",
@@ -112,20 +159,33 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
         deadline: {
           type: "string",
           description:
-            "截止时间，取值三选一：“YYYY-MM-DD HH:mm”、“YYYY-MM-DD”（按当天 00:00 计）、字面值“无明确截止时间”",
+            "截止时间，取值三选一：“YYYY-MM-DD HH:mm”、“YYYY-MM-DD”（按当天 00:00 计）、字面值“无明确截止时间”。小目标须精确到时分",
         },
         quadrant: {
           type: "string",
           enum: ["重要紧急", "重要不紧急", "不重要紧急", "不重要不紧急"],
-          description: "四象限分类，必须由用户明确回答",
+          description: "四象限分类，顶层任务必须由用户明确回答；登记小目标时省略（自动随大目标）",
         },
         quadrantConfirmed: {
           type: "boolean",
           description:
-            "提交前必答自检：是否已获得用户对四象限分类的明确表态（提问卡片点选或文字回答都算）？用户尚未表态时必须传 false（程序将拒绝本次登记），严禁未经询问就传 true",
+            "顶层任务提交前必答自检：是否已获得用户对四象限分类的明确表态（提问卡片点选或文字回答都算）？用户尚未表态时必须传 false（程序将拒绝本次登记），严禁未经询问就传 true。登记小目标时省略",
+        },
+        parentId: {
+          type: "string",
+          description: "（可选）所属大目标 id——登记大目标拆解出的小目标时传入；分类自动随大目标",
+        },
+        reminder: {
+          type: "object",
+          description:
+            '（可选，仅小目标）自定义提醒：{"type":"once","at":"YYYY-MM-DD HH:mm"} 单次时刻。仅按用户要求设置，用户没要求不传',
+          properties: {
+            type: { type: "string", enum: ["once"] },
+            at: { type: "string", description: "提醒时刻 YYYY-MM-DD HH:mm" },
+          },
         },
       },
-      required: ["content", "deadline", "quadrant", "quadrantConfirmed"],
+      required: ["content", "deadline"],
     },
     async execute(args) {
       const content = typeof args.content === "string" ? args.content.trim() : "";
@@ -134,12 +194,36 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
       const deadline = parseDeadlineInput(args.deadline);
       if (!deadline.ok) return ERR_NO_TIME;
 
-      // 分类确认门（§六硬校验）：模型先答"是否已获用户表态"，否/缺省即拒写；
-      // 确认放行后再校验分类取值本身
-      if (args.quadrantConfirmed !== true) return ERR_NO_CONFIRM;
+      // 功能二：parentId 存在即小目标录入（§3.22/§3.23）
+      const parentId = typeof args.parentId === "string" ? args.parentId.trim() : "";
+      const parentErr = parentId ? validateParentForChild(parentId) : null;
+      if (parentErr) return parentErr;
 
-      const quadrant = parseQuadrantInput(args.quadrant);
-      if (!quadrant) return ERR_NO_QUADRANT;
+      let quadrant: Quadrant;
+      if (parentId) {
+        // 小目标时间精确时限，最低到时分（§3.23）——日期型按 00:00 计，不算时分
+        if (!deadline.value || deadline.value.length <= 10) {
+          return "登记失败：小目标的截止时间须精确到时分（“YYYY-MM-DD HH:mm”）。";
+        }
+        // 小目标分类从属大目标：继承父级，无需用户拍板，不算缺分类（§3.23）
+        quadrant = deps.store.get(parentId)!.quadrant;
+      } else {
+        // 分类确认门（§六硬校验）：模型先答"是否已获用户表态"，否/缺省即拒写；
+        // 确认放行后再校验分类取值本身
+        if (args.quadrantConfirmed !== true) return ERR_NO_CONFIRM;
+        const parsed = parseQuadrantInput(args.quadrant);
+        if (!parsed) return ERR_NO_QUADRANT;
+        quadrant = parsed;
+      }
+
+      // 小目标自定义提醒（可选，仅单次时刻；模型按用户要求设置，§3.23 权限边界）
+      let reminder: Task["reminder"] = null;
+      if (parentId && args.reminder !== undefined && args.reminder !== null) {
+        const r = args.reminder as Record<string, unknown>;
+        if (r.type === "once" && typeof r.at === "string" && parseDeadlineInput(r.at).ok) {
+          reminder = { type: "once", at: (r.at as string).trim() };
+        }
+      }
 
       const task: Task = {
         id: randomUUID(),
@@ -148,12 +232,14 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
         quadrant,
         status: "pending",
         createdAt: now(),
+        ...(parentId ? { parentId, reminder } : {}),
       };
       deps.store.add(task);
       const settled = settleAndPersist(task);
+      if (parentId) settleParentLinkage(settled);
       deps.onStoreChanged?.();
       log(`登记待办: ${settled.content}`);
-      return `已登记待办：${describeTask(settled)}`;
+      return `已登记待办：${describeTask(settled)}${parentId ? "（小目标，已挂入大目标）" : ""}`;
     },
   };
 
@@ -202,6 +288,8 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
       if (task.status !== "pending") {
         return reject("该待办已是完成态，不支持修改属性；如发现没做完，可删除后重新登记（反悔）。");
       }
+      const isChild = !!task.parentId;
+      const isGoal = !isChild && deps.store.list().some((c) => c.parentId === task.id);
 
       let next = task;
       let deadlineChanged = false;
@@ -214,6 +302,8 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
       if (args.quadrant !== undefined) {
         const quadrant = parseQuadrantInput(args.quadrant);
         if (!quadrant) return reject("修改失败：分类无效（只能是四词之一）。");
+        // §3.23：小目标分类从属大目标，不可直接修改
+        if (isChild) return reject("修改失败：小目标的分类随大目标，如需调整请修改大目标分类。");
         // 等值跳过：同值回传不算"手动改分类"——否则会清掉滑动记录，让后续
         // 改期无法自动滑回（CodeRabbit 评审；与 bridge.ts 同规则）
         if (quadrant !== next.quadrant) {
@@ -239,10 +329,25 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
 
       if (next === task) return reject("没有需要修改的属性，请至少给出一项。");
 
+      // 大目标级联（§3.26/§3.25）：改分类 → 小目标跟随；手动标完成 → 未完成小目标连带完成
+      const cascadeQuadrant = isGoal && next.quadrant !== task.quadrant ? next.quadrant : null;
+      const manualDone = isGoal && next.status === "done";
+
       const settled = settleAndPersist(next, { deadlineChanged });
+      let extra = "";
+      if (cascadeQuadrant) {
+        const children = deps.store.list().filter((t) => t.parentId === settled.id);
+        for (const c of children) deps.store.replace({ ...c, quadrant: cascadeQuadrant });
+        extra = `，其下 ${children.length} 个小目标分类已跟随`;
+      }
+      if (manualDone) {
+        const n = cascadeCompleteChildren(settled.id);
+        if (n > 0) extra += `${extra ? "；" : ""}${n} 个未完成小目标已连带标为已完成`;
+      }
+      if (settled.parentId) settleParentLinkage(settled);
       deps.onStoreChanged?.();
       log(`修改待办: ${settled.content}`);
-      return `已修改待办：${describeTask(settled)}`;
+      return `已修改待办：${describeTask(settled)}${extra}`;
     },
   };
 
@@ -275,9 +380,16 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
       if (task.status === "auto-done") return reject("该待办已到点自动转为默认完成，无需再标记。");
       const next: Task = { ...task, status: "done", completedAt: now() };
       const settled = settleAndPersist(next);
+      // 大目标手动标完成（§3.25）：未完成小目标连带标"已完成"；小目标完成 → 父级联动评估
+      let extra = "";
+      if (!settled.parentId && deps.store.list().some((t) => t.parentId === settled.id)) {
+        const n = cascadeCompleteChildren(settled.id);
+        if (n > 0) extra = `，${n} 个未完成小目标已连带标为已完成`;
+      }
+      if (settled.parentId) settleParentLinkage(settled);
       deps.onStoreChanged?.();
       log(`完成待办: ${settled.content}`);
-      return `已完成：${describeTask(settled)}`;
+      return `已完成：${describeTask(settled)}${extra}`;
     },
   };
 
@@ -302,9 +414,11 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
       const task = deps.store.get(id);
       if (!task) return "未找到该待办，可用 quadrant-todo_list_tasks 查看现有列表。";
       deps.store.remove(id);
+      // 删除大目标 = 连带删除其下全部小目标（§3.26；口述删除的连带范围确认由 prompt 规范约束）
+      const cascaded = cascadeDeleteChildren(id);
       deps.onStoreChanged?.();
-      log(`删除待办: ${task.content}`);
-      return `已删除待办：${describeTask(task)}`;
+      log(`删除待办: ${task.content}${cascaded ? `（连带 ${cascaded} 条小目标）` : ""}`);
+      return `已删除待办：${describeTask(task)}${cascaded ? `，连带删除其下 ${cascaded} 条小目标` : ""}`;
     },
   };
 
@@ -334,7 +448,9 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
 
       const render = (t: Task): string => {
         const base = `- [${t.id}] ${t.content} ｜ ${QUADRANT_LABELS[t.quadrant]} ｜ 截止 ${formatDeadline(t.deadline)} ｜ ${STATUS_LABELS[t.status]}`;
-        return t.completedAt ? `${base}（完成于 ${new Date(t.completedAt).toLocaleString("zh-CN")}）` : base;
+        // 小目标标注隶属关系（§3.27 树形），模型回答拆解类问题需要看到从属
+        const attach = t.parentId ? ` ｜ 隶属「${deps.store.get(t.parentId)?.content ?? "?"}」` : "";
+        return t.completedAt ? `${base}${attach}（完成于 ${new Date(t.completedAt).toLocaleString("zh-CN")}）` : `${base}${attach}`;
       };
 
       if (scope === "completed") {

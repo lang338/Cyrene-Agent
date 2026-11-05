@@ -67,14 +67,22 @@ export function sameInstant(a: string | null, b: string | null): boolean {
   return da.getTime() === db.getTime();
 }
 
-/** 结算事件：滑动 / 滑回 / 默认完成 / 两类提醒触发 */
+/** 结算事件：滑动 / 滑回 / 默认完成 / 提醒触发（功能一两类 + 小目标自定义） */
 export type SettleEvent =
   | "slide-red" // green → red
   | "slide-yellow" // blue → yellow
   | "slide-back" // 滑回原分类
   | "auto-done" // 过期默认完成
   | "remind-slide" // 滑红提醒
-  | "remind-24h"; // 重要紧急剩 24h 提醒
+  | "remind-24h" // 重要紧急剩 24h 提醒
+  | "remind-custom"; // 小目标自定义单次提醒（§3.23/§3.24）
+
+/**
+ * 树内机制资格（§3.24，按数据形态推导）：小目标不滑动不做 72h/24h 提醒、
+ * 到点自动转；大目标不滑动无主动提醒、默认完成由联动结算（evaluateGoalCompletion）
+ * 负责；普通任务走功能一全量机制。kind 由调用方按全量数据推导后传入。
+ */
+export type TreeKind = "normal" | "child" | "goal";
 
 export interface SettleOptions {
   /**
@@ -91,16 +99,27 @@ export interface SettleResult {
 
 /**
  * 对单个任务做一次结算。status ≠ pending 的任务原样返回（完成态不再结算）。
+ * kind 为树内机制资格（§3.24）：normal 走功能一全量机制；child 不滑动不做
+ * 72h/24h 提醒（保留到点自动转 + 自定义单次提醒）；goal 全部机制豁免——其
+ * 默认完成由 evaluateGoalCompletion 联动结算负责。kind 由调用方按全量数据
+ * 推导后传入（数据形态：有 parentId 即 child，被引用即 goal）。
  * 返回的新 task 对象仅在发生变更时与输入不同（不原地修改）。
  */
-export function settleTask(input: Task, now: number, options: SettleOptions = {}): SettleResult {
+export function settleTask(
+  input: Task,
+  now: number,
+  options: SettleOptions = {},
+  kind: TreeKind = "normal",
+): SettleResult {
   const events: SettleEvent[] = [];
   let task = input;
 
   if (task.status !== "pending") return { task, events };
+  // 大目标全机制豁免：不滑动、无主动提醒、不单点默认完成（§3.24/§3.25/§3.27 过期态）
+  if (kind === "goal") return { task, events };
 
-  if (options.deadlineChanged) {
-    // D6：截止时间修改 = 提醒新一轮
+  if (options.deadlineChanged && kind === "normal") {
+    // D6：截止时间修改 = 提醒新一轮（仅功能一机制；小目标自定义提醒不随截止时间调整，§3.26）
     if (task.reminded && (task.reminded.slide || task.reminded.due24)) {
       task = { ...task, reminded: {} };
     }
@@ -121,6 +140,20 @@ export function settleTask(input: Task, now: number, options: SettleOptions = {}
     return { task, events };
   }
 
+  // 小目标自定义单次提醒（§3.23/§3.24）：到点触发一次，标记防重复；
+  // 不遵循 72h/24h 规律，与滑动机制无关
+  if (kind === "child" && task.reminder?.type === "once" && task.reminded?.custom !== task.reminder.at) {
+    const at = parseDeadline(task.reminder.at);
+    if (at && at.getTime() <= now) {
+      task = { ...task, reminded: { ...task.reminded, custom: task.reminder.at } };
+      events.push("remind-custom");
+      return { task, events };
+    }
+  }
+
+  if (kind !== "normal") return { task, events };
+
+  // 以下为普通任务专属：象限滑动与 72h/24h 主动提醒（§3.24 资格表）
   // 象限滑动：绿/蓝 + 剩余 ≤72h（唯二条件同时满足）
   if (remain !== null && remain <= SLIDE_WINDOW_HOURS * HOUR_MS) {
     // remain 非 null 蕴含 deadline 非 null（msRemaining 对 null deadline 恒返 null）
@@ -153,16 +186,43 @@ export function settleTask(input: Task, now: number, options: SettleOptions = {}
   return { task, events };
 }
 
-/** 批量结算：返回发生变更的任务与各自事件；无变更的任务不出现在结果里 */
+/** 批量结算：返回发生变更的任务与各自事件；无变更的任务不出现在结果里。
+ * context 为全量任务清单（默认即 tasks），用于推导树内机制资格——被引用的
+ * 顶层任务按大目标豁免结算，带 parentId 的按小目标豁免滑动/规律提醒。 */
 export function settleAll(
   tasks: readonly Task[],
   now: number,
   options: SettleOptions = {},
+  context: readonly Task[] = tasks,
 ): Array<{ task: Task; events: SettleEvent[] }> {
   const changed: Array<{ task: Task; events: SettleEvent[] }> = [];
+  const kindOf = (t: Task): TreeKind => {
+    if (t.parentId) return "child";
+    return context.some((c) => c.parentId === t.id) ? "goal" : "normal";
+  };
   for (const t of tasks) {
-    const r = settleTask(t, now, options);
+    const r = settleTask(t, now, options, kindOf(t));
     if (r.events.length > 0 || r.task !== t) changed.push(r);
   }
   return changed;
+}
+
+/**
+ * 大目标默认完成的联动结算（§3.25）：**已到时限 且 所有小目标已完成**——两个
+ * 条件中较晚满足的时刻由程序自动转"默认完成"（每轮扫描/写入时判定，天然在
+ * 较晚时刻触发）。满足时返回结算结果（auto-done 事件），未满足返回 null。
+ * 边界：尚无小目标（未拆解）的大目标即使过期也不自动完成——树上以过期样式
+ * 呈现（§3.27）；无时限的大目标永不自动完成（§3.25）。
+ */
+export function evaluateGoalCompletion(
+  goal: Task,
+  children: readonly Task[],
+  now: number,
+): SettleResult | null {
+  if (goal.status !== "pending" || goal.parentId) return null;
+  if (children.length === 0) return null;
+  if (!children.every((c) => c.status !== "pending")) return null;
+  const remain = msRemaining(goal, now);
+  if (remain === null || remain > 0) return null;
+  return { task: { ...goal, status: "auto-done", completedAt: now }, events: ["auto-done"] };
 }

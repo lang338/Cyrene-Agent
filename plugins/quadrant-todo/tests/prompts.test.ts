@@ -29,6 +29,27 @@ describe("prompt provider", () => {
     expect(text).toContain("complete_task");
   });
 
+  it("功能二规范注入：拆解流程与风险节点（§3.28）", () => {
+    const storage = makeStorage();
+    const store = new TaskStore(storage);
+    const provider = buildPromptProvider({ store });
+    const text = provider.provide({
+      source: "conversation" as const,
+      mode: "chat" as const,
+      userText: "测试",
+      signal: new AbortController().signal,
+    }) as string;
+    expect(text).toContain("大目标拆解（功能二）规范");
+    expect(text).toContain("拆解成有明确时限的小目标");
+    expect(text).toContain("小目标的内容由用户自己决定");
+    expect(text).toContain("分类不用问（自动随大目标）");
+    expect(text).toContain("这个小目标要提醒吗");
+    expect(text).toContain("到了时限且小目标全部完成");
+    expect(text).toContain("操作前先向用户确认连带范围");
+    // 子目标确认门豁免说明
+    expect(text).toContain("无需询问也无需确认门");
+  });
+
   it("概览随数据变化：空列表与有数据时不同", () => {
     const storage = makeStorage();
     const store = new TaskStore(storage);

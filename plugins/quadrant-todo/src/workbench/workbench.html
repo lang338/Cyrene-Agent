@@ -114,6 +114,9 @@
     .q-yellow .content, .q-yellow { color: #c08f1a; }
     .q-blue .content, .q-blue { color: #5b7fce; }
     .task .deadline, .task .ops button { color: #b58a9c; }
+    /* 待办树：小目标缩进挂在大目标下（§3.27） */
+    .task.child { margin-left: 18px; border-style: dashed; }
+    .task .expired-tag { font-size: 11px; color: #d9536f; }
     /* 四象限区 */
     .quad-col { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; padding: 8px; overflow-y: auto; }
     .quad-cell {
@@ -292,7 +295,7 @@
         <div class="inline"><input type="checkbox" id="ed-nodeadline" /><span>无明确截止时间</span></div>
       </div>
       <div class="field">
-        <label>分类（由你判断轻重缓急）</label>
+        <label id="ed-quad-label">分类（由你判断轻重缓急）</label>
         <div class="quad-pick" id="ed-quadrants"></div>
       </div>
       <div class="err" id="ed-error"></div>
@@ -363,6 +366,15 @@
     }
 
     // ── 数据加载与渲染 ──
+    function localNowStr() {
+      const d = new Date();
+      const p = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    }
+    // 大目标判定（数据形态推导，§3.24）：被小目标引用的顶层任务
+    function isGoalTask(t) {
+      return tasks.some((c) => c.parentId === t.id);
+    }
     async function reload() {
       const data = await call("data-load");
       tasks = data.tasks;
@@ -379,11 +391,13 @@
       return tasks.filter((t) => t.status !== "pending")
         .sort((a, b) => (b.completedAt ?? b.createdAt) - (a.completedAt ?? a.createdAt));
     }
-    function taskCard(t) {
+    function taskCard(t, opts = {}) {
       const q = t.quadrant;
-      return `<div class="task q-${q}">
+      const child = !!opts.child;
+      const expired = isGoalTask(t) && t.status === "pending" && t.deadline && t.deadline < localNowStr();
+      return `<div class="task q-${q}${child ? " child" : ""}">
         <div class="row1">
-          <span class="content">${esc(t.content)}</span>
+          <span class="content">${child ? "↳ " : ""}${esc(t.content)}${expired ? ' <span class="expired-tag">已过期</span>' : ""}</span>
           <span class="ops">
             <button data-op="complete" data-id="${t.id}" title="标记完成">&#x2713;</button>
             <button data-op="edit" data-id="${t.id}" title="编辑">&#x270e;</button>
@@ -394,21 +408,33 @@
       </div>`;
     }
     function renderAll() {
-      // 左列表（形态一/二共用同一份数据）
+      // 左列表（形态一/二共用）：待办树——大目标为父节点、小目标缩进为子节点（§3.27）
       const pending = pendingTasks();
       $("pending-count").textContent = pending.length;
       $("pending-count2").textContent = pending.length;
-      const listHtml = pending.length
-        ? pending.map(taskCard).join("")
-        : `<div class="empty">暂无未完成的待办<br>去和昔涟聊一句就记上了</div>`;
+      let listHtml = "";
+      const rendered = new Set();
+      for (const t of pending) {
+        if (rendered.has(t.id) || t.parentId) continue;
+        rendered.add(t.id);
+        if (isGoalTask(t)) {
+          const kids = pending.filter((c) => c.parentId === t.id);
+          kids.forEach((k) => rendered.add(k.id));
+          listHtml += taskCard(t);
+          listHtml += kids.map((k) => taskCard(k, { child: true })).join("");
+        } else {
+          listHtml += taskCard(t);
+        }
+      }
+      if (!listHtml) listHtml = `<div class="empty">暂无未完成的待办<br>去和昔涟聊一句就记上了</div>`;
       $("pending-list").innerHTML = listHtml;
       $("pending-list2").innerHTML = listHtml;
 
-      // 四象限归格（按当前分类，滑动后自然归位）
+      // 四象限归格：小目标按从属分类入格，大目标不入格仅呈现于待办树（§3.27）
       for (const q of ["red", "green", "yellow", "blue"]) {
         const cell = document.querySelector(`.quad-cell .cell-body[data-q="${q}"]`);
-        const inQ = pending.filter((t) => t.quadrant === q);
-        cell.innerHTML = inQ.length ? inQ.map(taskCard).join("") : `<div class="empty">空</div>`;
+        const inQ = pending.filter((t) => t.quadrant === q && !isGoalTask(t));
+        cell.innerHTML = inQ.length ? inQ.map((t) => taskCard(t)).join("") : `<div class="empty">空</div>`;
       }
 
       // 已完成列表（保留原分类信息，灰阶着色）
@@ -443,6 +469,7 @@
       let html = ["一", "二", "三", "四", "五", "六", "日"].map((d) => `<div class="cal-wd">${d}</div>`).join("");
       const byDay = {};
       for (const t of tasks) {
+        if (isGoalTask(t)) continue; // 日历/24h 视图：小目标按精确时限显示，大目标不显示（§3.27）
         const d = deadlineDate(t.deadline);
         if (d) (byDay[d] = byDay[d] || []).push(t);
       }
@@ -468,7 +495,7 @@
     function renderDayDetail() {
       if (!selectedDay) { $("day-detail").style.display = "none"; return; }
       const items = tasks
-        .filter((t) => deadlineDate(t.deadline) === selectedDay)
+        .filter((t) => !isGoalTask(t) && deadlineDate(t.deadline) === selectedDay)
         .sort((a, b) => (deadlineTime(a.deadline) ?? "00:00") < (deadlineTime(b.deadline) ?? "00:00") ? -1 : 1);
       $("day-detail").style.display = "block";
       $("dd-title").textContent = `${selectedDay} 的待办`;
@@ -500,6 +527,10 @@
       $("ed-quadrants").innerHTML = Object.keys(Q_LABEL).map((q) =>
         `<label><input type="radio" name="ed-q" value="${Q_LABEL[q]}" ${task.quadrant === q ? "checked" : ""} />
           <i style="background:${Q_COLOR[q]}"></i>${Q_LABEL[q]}</label>`).join("");
+      // §3.23：小目标分类从属大目标——编辑/反悔小目标时分类禁改
+      const isChildTask = !!task.parentId;
+      document.querySelectorAll('#ed-quadrants input[type="radio"]').forEach((el) => { el.disabled = isChildTask; });
+      $("ed-quad-label").textContent = isChildTask ? "分类（随大目标，不可改）" : "分类（由你判断轻重缓急）";
       $("editor-mask").classList.add("show");
       $("ed-content").focus();
     }
@@ -514,17 +545,24 @@
       const deadline = noDl ? "无明确截止时间" : (dlRaw ? dlRaw.replace("T", " ") : "");
       const qEl = document.querySelector('input[name="ed-q"]:checked');
       const quadrant = qEl ? qEl.value : "";
+      // 子目标（编辑或反悔重挂）分类随大目标：不取值、不校验
+      const childParentId = editing && editing.regret
+        ? (editing.regret.parentId ?? null)
+        : (editing && editing.id ? (tasks.find((t) => t.id === editing.id)?.parentId ?? null) : null);
       if (!content) { $("ed-error").textContent = "内容不能为空。"; return; }
       if (!noDl && !dlRaw) { $("ed-error").textContent = "请填写截止时间，或勾选“无明确截止时间”。"; return; }
-      if (!quadrant) { $("ed-error").textContent = "请选择分类。"; return; }
+      if (!quadrant && !childParentId) { $("ed-error").textContent = "请选择分类。"; return; }
 
       try {
         if (editing && editing.id) {
-          const r = await call("task-update", editing.id, { content, deadline, quadrant });
+          // 子目标不改分类（随大目标）
+          const patch = childParentId ? { content, deadline } : { content, deadline, quadrant };
+          const r = await call("task-update", editing.id, patch);
           if (r && r.ok === false) { $("ed-error").textContent = r.error; return; }
         } else {
-          // 新建（含反悔的"新建"半步，§3.36）：先建新成功，反悔场景再删旧
-          const r = await call("task-add", { content, deadline, quadrant });
+          // 新建（含反悔的"新建"半步，§3.36）：先建新成功，反悔场景再删旧；
+          // 反悔的小目标重录时仍挂原大目标（§3.26）
+          const r = await call("task-add", { content, deadline, quadrant, parentId: childParentId ?? undefined });
           if (r && r.ok === false) { $("ed-error").textContent = r.error; return; }
           if (editing && editing.regret) await call("task-remove", editing.regret.id);
         }
@@ -548,6 +586,11 @@
               break;
             }
             case "remove": {
+              // 删除大目标 = 连带删除其下全部小目标（§3.26），UI 给出连带提示
+              if (task && isGoalTask(task)) {
+                const kids = tasks.filter((c) => c.parentId === task.id);
+                if (!window.confirm(`删除大目标「${task.content}」将连带删除其下 ${kids.length} 个小目标，确定？`)) break;
+              }
               const r = await call("task-remove", id);
               if (r && r.ok === false) { toast(r.error); break; }
               if (selectedDay) renderCalendar();

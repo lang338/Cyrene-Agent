@@ -305,6 +305,75 @@ describe("update_task 其余校验", () => {
     const out2 = await h.call("update_task", { id: "expired-1", content: "改" });
     expect(out2).toContain("完成态");
   });
+
+  it("小目标录入：传 parentId 挂入大目标，分类继承免问免确认门", async () => {
+    const h = makeHarness();
+    await h.call("add_task", { content: "过四级", deadline: "2026-12-20", quadrant: "重要不紧急", quadrantConfirmed: true });
+    const goal = h.storage.dump()[0]!;
+    const out = await h.call("add_task", { content: "背单词", deadline: fmt(NOW + 24 * 3_600_000), parentId: goal.id });
+    expect(out).toContain("小目标");
+    const child = h.storage.dump().find((t) => t.parentId === goal.id)!;
+    expect(child.content).toBe("背单词");
+    expect(child.quadrant).toBe("green");
+    expect(child.reminded).toBeUndefined();
+  });
+
+  it("小目标校验：date-only 拒绝、父级不存在/完成态拒绝、不支持嵌套", async () => {
+    const h = makeHarness();
+    await h.call("add_task", { content: "过四级", deadline: "2026-12-20", quadrant: "重要不紧急", quadrantConfirmed: true });
+    const goal = h.storage.dump()[0]!;
+    expect(await h.call("add_task", { content: "背单词", deadline: "2026-12-20", parentId: goal.id })).toContain("须精确到时分");
+    expect(await h.call("add_task", { content: "背单词", deadline: fmt(NOW + 3_600_000), parentId: "missing" })).toContain("未找到该大目标");
+    await h.call("complete_task", { id: goal.id });
+    expect(await h.call("add_task", { content: "背单词", deadline: fmt(NOW + 3_600_000), parentId: goal.id })).toContain("完成态");
+  });
+
+  it("改大目标分类 → 小目标跟随；改小目标分类 → 拒绝并指引改父级", async () => {
+    const h = makeHarness();
+    await h.call("add_task", { content: "过四级", deadline: "2026-12-20", quadrant: "重要不紧急", quadrantConfirmed: true });
+    const goal = h.storage.dump()[0]!;
+    await h.call("add_task", { content: "背单词", deadline: fmt(NOW + 24 * 3_600_000), parentId: goal.id });
+    await h.call("update_task", { id: goal.id, quadrant: "重要紧急" });
+    const after = h.storage.dump();
+    expect(after.find((t) => t.id === goal.id)?.quadrant).toBe("red");
+    expect(after.find((t) => t.parentId === goal.id)?.quadrant).toBe("red");
+    const child = after.find((t) => t.parentId === goal.id)!;
+    const out = await h.call("update_task", { id: child.id, quadrant: "重要不紧急" });
+    expect(out).toContain("随大目标");
+  });
+
+  it("大目标手动标完成 → 未完成小目标连带标已完成；删除大目标 → 连带删除小目标", async () => {
+    const h = makeHarness();
+    await h.call("add_task", { content: "过四级", deadline: "2026-12-20", quadrant: "重要不紧急", quadrantConfirmed: true });
+    const goal = h.storage.dump()[0]!;
+    await h.call("add_task", { content: "背单词", deadline: fmt(NOW + 24 * 3_600_000), parentId: goal.id });
+    const done = await h.call("complete_task", { id: goal.id });
+    expect(done).toContain("连带标为已完成");
+    expect(h.storage.dump().find((t) => t.parentId === goal.id)?.status).toBe("done");
+    const del = await h.call("delete_task", { id: goal.id });
+    expect(del).toContain("连带删除其下 1 条小目标");
+    expect(h.storage.dump()).toHaveLength(0);
+  });
+
+  it("完成最后一个小目标 → 大目标联动转默认完成（已到时限时）", async () => {
+    const h = makeHarness();
+    // 直接种一个"时限已过但仍 pending"的大目标（跳过登记时的普通结算）
+    h.store.add({ id: "g1", content: "过四级", deadline: fmt(NOW - 1000), quadrant: "green", status: "pending", createdAt: NOW - 2000 });
+    await h.call("add_task", { content: "背单词", deadline: fmt(NOW + 24 * 3_600_000), parentId: "g1" });
+    const child = h.storage.dump().find((t) => t.parentId === "g1")!;
+    expect(child.status).toBe("pending");
+    await h.call("complete_task", { id: child.id });
+    expect(h.storage.dump().find((t) => t.id === "g1")?.status).toBe("auto-done");
+  });
+
+  it("list_tasks 小目标标注隶属", async () => {
+    const h = makeHarness();
+    await h.call("add_task", { content: "过四级", deadline: "2026-12-20", quadrant: "重要不紧急", quadrantConfirmed: true });
+    const goal = h.storage.dump()[0]!;
+    await h.call("add_task", { content: "背单词", deadline: fmt(NOW + 24 * 3_600_000), parentId: goal.id });
+    const out = await h.call("list_tasks", {});
+    expect(out).toContain("隶属「过四级」");
+  });
 });
 
 describe("complete_task / delete_task", () => {
