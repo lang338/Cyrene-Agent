@@ -328,6 +328,21 @@ describe("update_task 其余校验", () => {
     expect(await h.call("add_task", { content: "背单词", deadline: fmt(NOW + 3_600_000), parentId: goal.id })).toContain("完成态");
   });
 
+  it("小目标自定义提醒：宽容别名拒绝并报错（CodeRabbit 评审），合法时刻存储生效", async () => {
+    const h = makeHarness();
+    await h.call("add_task", { content: "过四级", deadline: "2026-12-20", quadrant: "重要不紧急", quadrantConfirmed: true });
+    const goal = h.storage.dump()[0]!;
+    const dl = fmt(NOW + 24 * 3_600_000);
+    // 宽容别名（parseDeadlineInput 会放行的值）必须被 parseDeadline 拒绝，且登记整体失败
+    const bad = await h.call("add_task", { content: "背单词", deadline: dl, parentId: goal.id, reminder: { type: "once", at: "none" } });
+    expect(bad).toContain("提醒时刻无效");
+    expect(h.storage.dump().find((t) => t.content === "背单词")).toBeUndefined();
+    // 合法时刻 → 存储生效
+    const ok = await h.call("add_task", { content: "背单词", deadline: dl, parentId: goal.id, reminder: { type: "once", at: fmt(NOW + 2 * 3_600_000) } });
+    expect(ok).toContain("已登记");
+    expect(h.storage.dump().find((t) => t.content === "背单词")?.reminder).toEqual({ type: "once", at: fmt(NOW + 2 * 3_600_000) });
+  });
+
   it("改大目标分类 → 小目标跟随；改小目标分类 → 拒绝并指引改父级", async () => {
     const h = makeHarness();
     await h.call("add_task", { content: "过四级", deadline: "2026-12-20", quadrant: "重要不紧急", quadrantConfirmed: true });

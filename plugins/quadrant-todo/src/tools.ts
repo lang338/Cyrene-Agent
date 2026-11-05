@@ -216,13 +216,19 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
         quadrant = parsed;
       }
 
-      // 小目标自定义提醒（可选，仅单次时刻；模型按用户要求设置，§3.23 权限边界）
+      // 小目标自定义提醒（可选，仅单次时刻；模型按用户要求设置，§3.23 权限边界）。
+      // 严格校验：用 parseDeadline 拒绝宽容别名（"none" 等），非法直接报错而非
+      // 静默丢弃——否则模型以为提醒已设，实际永不触发（CodeRabbit 评审）
       let reminder: Task["reminder"] = null;
       if (parentId && args.reminder !== undefined && args.reminder !== null) {
         const r = args.reminder as Record<string, unknown>;
-        if (r.type === "once" && typeof r.at === "string" && parseDeadlineInput(r.at).ok) {
-          reminder = { type: "once", at: (r.at as string).trim() };
+        if (r.type !== "once" || typeof r.at !== "string" || !r.at.trim()) {
+          return "登记失败：自定义提醒格式无效（须为 {\"type\":\"once\",\"at\":\"YYYY-MM-DD HH:mm\"}）。";
         }
+        if (!parseDeadline(r.at.trim())) {
+          return "登记失败：提醒时刻无效（须为“YYYY-MM-DD HH:mm”）。";
+        }
+        reminder = { type: "once", at: r.at.trim() };
       }
 
       const task: Task = {
