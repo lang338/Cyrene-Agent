@@ -1,0 +1,11 @@
+{
+  "apiVersion": 1,
+  "id": "quadrant-todo",
+  "name": "四象限待办——昔涟帮你记录待办事项",
+  "version": "0.1.0",
+  "description": "把要做的事告诉昔涟，她按重要×紧急四象限整理成待办清单：对话登记一次长期保存，临近截止自动滑动优先级、按分类自动弹系统提醒、到点自动结算完成状态。",
+  "author": "lang338",
+  "entry": "index.cjs",
+  "defaultEnabled": false,
+  "deps": []
+}
