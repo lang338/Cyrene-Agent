@@ -266,6 +266,45 @@ describe("update_task 其余校验", () => {
     const out = await h.call("update_task", { id: task?.id, content: "改内容" });
     expect(out).toContain("完成态");
   });
+
+  it("同值回传分类不清滑动记录（CodeRabbit 评审）", async () => {
+    const h = makeHarness();
+    await h.call("add_task", { content: "写周报", deadline: IN_50H, quadrant: "重要不紧急", quadrantConfirmed: true });
+    const slid = h.storage.dump()[0]!;
+    expect(slid.quadrant).toBe("red");
+    expect(slid.slidFrom).toBe("green");
+    const eventsBefore = h.events.length;
+    const out = await h.call("update_task", { id: slid.id, content: "改个名", quadrant: "重要紧急" });
+    expect(out).toContain("已修改");
+    expect(h.storage.dump()[0]?.slidFrom).toBe("green");
+    expect(h.events.slice(eventsBefore).some((e) => e.events.includes("slide-back"))).toBe(false);
+  });
+
+  it("等值时刻 deadline 不重置提醒（日期型被补全场景，CodeRabbit 评审）", async () => {
+    const h = makeHarness();
+    const dayStr = fmt(NOW + 12 * 3_600_000).slice(0, 10);
+    await h.call("add_task", { content: "写周报", deadline: dayStr, quadrant: "重要紧急", quadrantConfirmed: true });
+    const seeded = h.storage.dump()[0]!;
+    expect(seeded.reminded?.due24).toBe(dayStr);
+    const eventsBefore = h.events.length;
+    const out = await h.call("update_task", { id: seeded.id, content: seeded.content, deadline: `${dayStr} 00:00` });
+    expect(out).toContain("已修改");
+    const after = h.storage.dump()[0]!;
+    expect(after.deadline).toBe(dayStr);
+    expect(after.reminded?.due24).toBe(dayStr);
+    expect(h.events.slice(eventsBefore).some((e) => e.events.includes("remind-24h"))).toBe(false);
+  });
+
+  it("过期未结算的 pending 任务：先结算转默认完成，再拒绝修改/完成（CodeRabbit 评审）", async () => {
+    const h = makeHarness();
+    // 绕过 add_task 的写时结算，直接造"过期但仍是 pending"的存储态
+    h.store.add({ id: "expired-1", content: "过期的事", deadline: fmt(NOW - 1000), quadrant: "red", status: "pending", createdAt: NOW - 2000 });
+    const out = await h.call("complete_task", { id: "expired-1" });
+    expect(out).toContain("默认完成");
+    expect(h.storage.dump()[0]?.status).toBe("auto-done");
+    const out2 = await h.call("update_task", { id: "expired-1", content: "改" });
+    expect(out2).toContain("完成态");
+  });
 });
 
 describe("complete_task / delete_task", () => {

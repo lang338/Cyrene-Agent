@@ -9,6 +9,7 @@
  */
 import { app, BrowserWindow, Notification, ipcMain } from "electron";
 import * as path from "node:path";
+import { existsSync } from "node:fs";
 import type { CyrenePlugin, PluginContext } from "../../../src/plugins/api";
 import { createUiBridge } from "./bridge";
 import { buildPromptProvider } from "./prompts";
@@ -28,14 +29,20 @@ const CH_MAX = "plugin:quadrant-todo:win-maximize";
 const CH_CLOSE = "plugin:quadrant-todo:win-close";
 
 /**
- * Windows 原生通知要求进程身份（AUMID）可被系统解析。宿主是免安装目录运行
- * （无开始菜单快捷方式背书，系统亦未注册任何 Cyrene AUMID），任意自定义
- * AUMID 的弹窗会被系统静默丢弃（2026-11-04 实测）。通行解法：用 exe 完整
- * 路径作为 AUMID，Windows 可直接解析到进程本身。register 只调一次。
+ * Windows 原生通知要求进程身份（AUMID）可被系统解析。宿主自身从不设置 AUMID
+ * （全仓库无 setAppUserModelId 调用），身份背书取决于分发形态：
+ * - NSIS 安装版：开始菜单快捷方式以 electron-builder 的 appId
+ *   `com.cyrene.live2d` 作为 AUMID 背书（有 Uninstall Cyrene.exe 可探测）；
+ * - 免安装 --dir 目录运行：无任何背书，须用 exe 完整路径（Windows 可直接
+ *   解析到进程本身）。
+ * 探测卸载器区分两种形态，不能用 app.isPackaged（两者都是打包产物）
+ * （CodeRabbit 评审）。register 只调一次。
  */
 function ensureAppUserModelId(): void {
   try {
-    if (process.platform === "win32") app.setAppUserModelId(process.execPath);
+    if (process.platform !== "win32") return;
+    const installed = existsSync(path.join(path.dirname(process.execPath), "Uninstall Cyrene.exe"));
+    app.setAppUserModelId(installed ? "com.cyrene.live2d" : process.execPath);
   } catch {
     // 设置失败忽略——通知失败时发送路再兜
   }

@@ -172,6 +172,17 @@ describe("completeTask / removeTask", () => {
     expect(h.bridge.completeTask(id)).toMatchObject({ ok: false });
   });
 
+  it("过期未结算任务：先结算转默认完成，再拒绝完成并重排计时器（CodeRabbit 评审）", () => {
+    const h = makeHarness();
+    h.store.add({ id: "expired-1", content: "过期的事", deadline: fmt(NOW - 1000), quadrant: "red", status: "pending", createdAt: NOW - 2000 });
+    h.onStoreChanged.mockClear();
+    const r = h.bridge.completeTask("expired-1");
+    expect(r.ok).toBe(false);
+    expect(h.storage.dump()[0]?.status).toBe("auto-done");
+    // reject 路径同样触发 onStoreChanged——提醒计时器不失守
+    expect(h.onStoreChanged).toHaveBeenCalledTimes(1);
+  });
+
   it("纯删除移除条目；不存在的 id 报错", () => {
     const h = makeHarness();
     h.bridge.addTask({ content: "写周报", deadline: IN_7D, quadrant: "重要紧急" });

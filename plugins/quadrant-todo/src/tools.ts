@@ -5,7 +5,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginTool } from "../../../src/plugins/api";
-import { parseDeadline, settleTask, type SettleEvent, type SettleOptions } from "./quadrant";
+import { parseDeadline, sameInstant, settleTask, type SettleEvent, type SettleOptions } from "./quadrant";
 import type { TaskStore } from "./store";
 import {
   NO_DEADLINE_INPUTS,
@@ -190,10 +190,17 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
     },
     async execute(args) {
       const id = typeof args.id === "string" ? args.id : "";
-      const task = deps.store.get(id);
-      if (!task) return "未找到该待办，可用 quadrant-todo_list_tasks 查看现有列表。";
+      const stored = deps.store.get(id);
+      if (!stored) return "未找到该待办，可用 quadrant-todo_list_tasks 查看现有列表。";
+      // 先结算再校验（§8.1 写时结算）：过期未扫描的 pending 任务先走默认完成/
+      // 滑动结算，再做修改资格判定（CodeRabbit 评审）
+      const task = settleAndPersist(stored);
+      const reject = (message: string): string => {
+        if (task !== stored) deps.onStoreChanged?.();
+        return message;
+      };
       if (task.status !== "pending") {
-        return "该待办已是完成态，不支持修改属性；如发现没做完，可删除后重新登记（反悔）。";
+        return reject("该待办已是完成态，不支持修改属性；如发现没做完，可删除后重新登记（反悔）。");
       }
 
       let next = task;
@@ -201,31 +208,36 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
 
       if (args.content !== undefined) {
         const content = typeof args.content === "string" ? args.content.trim() : "";
-        if (!content) return "修改失败：内容不能为空。";
+        if (!content) return reject("修改失败：内容不能为空。");
         next = { ...next, content };
       }
       if (args.quadrant !== undefined) {
         const quadrant = parseQuadrantInput(args.quadrant);
-        if (!quadrant) return "修改失败：分类无效（只能是四词之一）。";
-        // §七：用户手动改分类直接覆盖并清除滑动记录
-        next = { ...next, quadrant, slidFrom: undefined };
+        if (!quadrant) return reject("修改失败：分类无效（只能是四词之一）。");
+        // 等值跳过：同值回传不算"手动改分类"——否则会清掉滑动记录，让后续
+        // 改期无法自动滑回（CodeRabbit 评审；与 bridge.ts 同规则）
+        if (quadrant !== next.quadrant) {
+          // §七：用户手动改分类直接覆盖并清除滑动记录
+          next = { ...next, quadrant, slidFrom: undefined };
+        }
       }
       if (args.deadline !== undefined) {
         const deadline = parseDeadlineInput(args.deadline);
-        if (!deadline.ok) return "修改失败：时间格式无效（须为“YYYY-MM-DD HH:mm”、“YYYY-MM-DD”或“无明确截止时间”）。";
-        if (deadline.value !== next.deadline) {
+        if (!deadline.ok) return reject("修改失败：时间格式无效（须为“YYYY-MM-DD HH:mm”、“YYYY-MM-DD”或“无明确截止时间”）。");
+        // 时刻判等：字符串不同但时刻相同（日期型被补全等）不算改期，不重置提醒
+        if (!sameInstant(next.deadline, deadline.value)) {
           next = { ...next, deadline: deadline.value };
           deadlineChanged = true;
         }
       }
       if (args.status !== undefined) {
         const status = parseStatusInput(args.status);
-        if (status === null) return "修改失败：完成状态无效。";
-        if (status === "auto-done") return "默认完成状态由程序到点结算产生，不能手动设置。";
+        if (status === null) return reject("修改失败：完成状态无效。");
+        if (status === "auto-done") return reject("默认完成状态由程序到点结算产生，不能手动设置。");
         if (status === "done") next = { ...next, status: "done", completedAt: now() };
       }
 
-      if (next === task) return "没有需要修改的属性，请至少给出一项。";
+      if (next === task) return reject("没有需要修改的属性，请至少给出一项。");
 
       const settled = settleAndPersist(next, { deadlineChanged });
       deps.onStoreChanged?.();
@@ -251,10 +263,16 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
     },
     async execute(args) {
       const id = typeof args.id === "string" ? args.id : "";
-      const task = deps.store.get(id);
-      if (!task) return "未找到该待办，可用 quadrant-todo_list_tasks 查看现有列表。";
-      if (task.status === "done") return "该待办此前已被标记为已完成。";
-      if (task.status === "auto-done") return "该待办已到点自动转为默认完成，无需再标记。";
+      const stored = deps.store.get(id);
+      if (!stored) return "未找到该待办，可用 quadrant-todo_list_tasks 查看现有列表。";
+      // 先结算再校验：过期未扫描的 pending 任务先转默认完成，再拒绝手动完成
+      const task = settleAndPersist(stored);
+      const reject = (message: string): string => {
+        if (task !== stored) deps.onStoreChanged?.();
+        return message;
+      };
+      if (task.status === "done") return reject("该待办此前已被标记为已完成。");
+      if (task.status === "auto-done") return reject("该待办已到点自动转为默认完成，无需再标记。");
       const next: Task = { ...task, status: "done", completedAt: now() };
       const settled = settleAndPersist(next);
       deps.onStoreChanged?.();

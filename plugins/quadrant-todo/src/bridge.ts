@@ -11,7 +11,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginStorage } from "../../../src/plugins/api";
-import { parseDeadline, settleTask, type SettleEvent } from "./quadrant";
+import { sameInstant, settleTask, type SettleEvent } from "./quadrant";
 import { parseDeadlineInput, parseQuadrantInput } from "./tools";
 import type { TaskStore } from "./store";
 import { NO_DEADLINE_INPUTS, type Quadrant, type Status, type Task } from "./types";
@@ -58,20 +58,6 @@ function readSettings(storage: PluginStorage): NapCatSettings {
 const ERR_EDIT_DONE = "完成态任务不支持修改属性，可在已完成列表删除后重走新建（反悔）。";
 const ERR_COMPLETE_DONE = "该待办已是完成态。";
 const ERR_NOT_FOUND = "未找到该待办，请刷新后重试。";
-
-/**
- * 两个 deadline 存储值是否指向同一时刻：字符串不同但时刻相同（如
- * "2026-11-10" 与 "2026-11-10 00:00"）视为等值；任一端不可解析（null/非法）
- * 时退回字符串判等——null 与带时刻的值互为真变更。
- */
-function sameInstant(a: string | null, b: string | null): boolean {
-  if (a === b) return true;
-  if (a === null || b === null) return false;
-  const da = parseDeadline(a);
-  const db = parseDeadline(b);
-  if (!da || !db) return false;
-  return da.getTime() === db.getTime();
-}
 
 export function createUiBridge(deps: UiBridgeDeps) {
   const now = deps.now ?? Date.now;
@@ -124,9 +110,16 @@ export function createUiBridge(deps: UiBridgeDeps) {
     /** 编辑未完成待办属性（内容/截止时间/分类）；改期自动滑回并重置提醒（新一轮） */
     updateTask(id: unknown, patch: unknown): UiOpResult {
       const tid = typeof id === "string" ? id : "";
-      const task = deps.store.get(tid);
-      if (!task) return { ok: false, error: ERR_NOT_FOUND };
-      if (task.status !== "pending") return { ok: false, error: ERR_EDIT_DONE };
+      const stored = deps.store.get(tid);
+      if (!stored) return { ok: false, error: ERR_NOT_FOUND };
+      // 先结算再校验（§8.1 写时结算）：工作台可能赶在小时扫描前拿到过期任务，
+      // 先让它走完默认完成/滑动结算，再做编辑资格判定（CodeRabbit 评审）
+      const task = settleAndPersist(stored);
+      const reject = (error: string): UiOpResult => {
+        if (task !== stored) changed();
+        return { ok: false, error };
+      };
+      if (task.status !== "pending") return reject(ERR_EDIT_DONE);
 
       const p = (patch ?? {}) as Record<string, unknown>;
       let next = task;
@@ -134,12 +127,12 @@ export function createUiBridge(deps: UiBridgeDeps) {
 
       if (p.content !== undefined) {
         const content = typeof p.content === "string" ? p.content.trim() : "";
-        if (!content) return { ok: false, error: "内容不能为空。" };
+        if (!content) return reject("内容不能为空。");
         next = { ...next, content };
       }
       if (p.quadrant !== undefined) {
         const quadrant = parseQuadrantInput(p.quadrant);
-        if (!quadrant) return { ok: false, error: "分类无效：只能从四个象限中选择。" };
+        if (!quadrant) return reject("分类无效：只能从四个象限中选择。");
         // 等值跳过：工作台每次编辑都全量回传三属性，同值回传不算"手动改分类"
         // ——否则会清掉滑动记录，让后续改期无法自动滑回（CodeRabbit 评审）
         if (quadrant !== next.quadrant) {
@@ -149,16 +142,16 @@ export function createUiBridge(deps: UiBridgeDeps) {
       }
       if (p.deadline !== undefined) {
         const deadline = parseDeadlineInput(p.deadline);
-        if (!deadline.ok) return { ok: false, error: "时间无效：须为具体日期时间，或勾选“无明确截止时间”。" };
+        if (!deadline.ok) return reject("时间无效：须为具体日期时间，或勾选“无明确截止时间”。");
         // 等值跳过：日期型 deadline 在编辑器里被补全成 "YYYY-MM-DD 00:00"，
         // 字符串不等但时刻相等，视为未变更（否则提醒标记被误清、重复提醒）
-        const changed = !sameInstant(next.deadline, deadline.value);
-        if (changed) {
+        const changedDeadline = !sameInstant(next.deadline, deadline.value);
+        if (changedDeadline) {
           next = { ...next, deadline: deadline.value };
           deadlineChanged = true;
         }
       }
-      if (next === task) return { ok: false, error: "没有需要修改的属性。" };
+      if (next === task) return reject("没有需要修改的属性。");
 
       const settled = settleAndPersist(next, { deadlineChanged });
       changed();
@@ -169,10 +162,16 @@ export function createUiBridge(deps: UiBridgeDeps) {
     /** 标记完成（仅未完成态；status 仅接受 done——默认完成由结算产生） */
     completeTask(id: unknown, status?: unknown): UiOpResult {
       const tid = typeof id === "string" ? id : "";
-      const task = deps.store.get(tid);
-      if (!task) return { ok: false, error: ERR_NOT_FOUND };
-      if (task.status !== "pending") return { ok: false, error: ERR_COMPLETE_DONE };
-      if (status !== undefined && status !== "done") return { ok: false, error: "完成状态仅支持标记完成。" };
+      const stored = deps.store.get(tid);
+      if (!stored) return { ok: false, error: ERR_NOT_FOUND };
+      // 先结算再校验：过期未扫描的 pending 任务先转默认完成，再拒绝手动完成
+      const task = settleAndPersist(stored);
+      const reject = (error: string): UiOpResult => {
+        if (task !== stored) changed();
+        return { ok: false, error };
+      };
+      if (task.status !== "pending") return reject(ERR_COMPLETE_DONE);
+      if (status !== undefined && status !== "done") return reject("完成状态仅支持标记完成。");
 
       const settled = settleAndPersist({ ...task, status: "done" as Status, completedAt: now() });
       changed();

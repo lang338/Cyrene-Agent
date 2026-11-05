@@ -51,6 +51,22 @@ export function msRemaining(task: Task, now: number): number | null {
   return deadline ? deadline.getTime() - now : null;
 }
 
+/**
+ * 两个 deadline 存储值是否指向同一时刻：字符串不同但时刻相同（如
+ * "2026-11-10" 与 "2026-11-10 00:00"）视为等值；任一端不可解析（null/非法）
+ * 时退回字符串判等——null 与带时刻的值互为真变更。
+ * 供工具面（tools.ts）与工作台桥（bridge.ts）共用：改期判定须按时刻而非字符串，
+ * 否则等值回传会误清提醒标记、造成重复提醒（CodeRabbit 评审）。
+ */
+export function sameInstant(a: string | null, b: string | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  const da = parseDeadline(a);
+  const db = parseDeadline(b);
+  if (!da || !db) return false;
+  return da.getTime() === db.getTime();
+}
+
 /** 结算事件：滑动 / 滑回 / 默认完成 / 两类提醒触发 */
 export type SettleEvent =
   | "slide-red" // green → red
