@@ -4,17 +4,22 @@
   <meta charset="UTF-8" />
   <title>四象限待办</title>
   <style>
+    /* ══ 主题：与宿主 charcoal-pink 同源（src/renderer/ui/themes/charcoal-pink.css）══ */
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { height: 100%; }
     body {
-      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
-      background: #fff9fc;
-      color: #4a3b45;
+      font-family: ui-sans-serif, system-ui, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+      background: #141414;
+      color: #ebebeb;
       display: flex;
       flex-direction: column;
       overflow: hidden;
       font-size: 14px;
     }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-thumb { background: #4a4a4a; border-radius: 999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #626262; }
+    ::-webkit-scrollbar-track { background: transparent; }
     /* ── 自绘标题栏：可拖动 + 三键 ── */
     #titlebar {
       height: 36px;
@@ -23,21 +28,21 @@
       align-items: center;
       -webkit-app-region: drag;
       user-select: none;
-      background: #ffeef5;
-      border-bottom: 1px solid #f3d9e4;
+      background: #1b1b1b;
+      border-bottom: 1px solid #363636;
       padding-left: 12px;
       gap: 8px;
     }
-    #titlebar .dot { width: 10px; height: 10px; border-radius: 50%; background: #f6a5c0; }
-    #titlebar .title { font-size: 13px; color: #9c6b80; }
+    #titlebar .dot { width: 10px; height: 10px; border-radius: 50%; background: #ff5b8a; box-shadow: 0 0 12px rgb(255 91 138 / 18%); }
+    #titlebar .title { font-size: 13px; color: #a3a3a3; }
     #titlebar .spacer { flex: 1; }
     #titlebar button {
       -webkit-app-region: no-drag;
       width: 44px; height: 36px;
       border: none; background: transparent;
-      font-size: 13px; color: #9c6b80; cursor: pointer;
+      font-size: 13px; color: #a3a3a3; cursor: pointer;
     }
-    #titlebar button:hover { background: #f6d5e2; }
+    #titlebar button:hover { background: #303030; color: #ebebeb; }
     #titlebar button.close:hover { background: #e8555d; color: #fff; }
     /* ── 工具行：三形态切换 + 设置 ── */
     #toolbar {
@@ -46,31 +51,31 @@
       align-items: center;
       gap: 8px;
       padding: 8px 12px;
-      border-bottom: 1px solid #f6e3ec;
-      background: #fffdfd;
+      border-bottom: 1px solid #303030;
+      background: #1b1b1b;
     }
     #toolbar .tab {
-      border: 1px solid #f0cfdd;
-      background: #fff;
-      color: #9c6b80;
+      border: 1px solid #363636;
+      background: #252525;
+      color: #a3a3a3;
       border-radius: 999px;
       padding: 4px 14px;
       font-size: 13px;
       cursor: pointer;
     }
-    #toolbar .tab.active { background: #f6a5c0; border-color: #f6a5c0; color: #fff; }
+    #toolbar .tab.active { background: #ff5b8a; border-color: #ff5b8a; color: #24151b; }
     #toolbar .spacer { flex: 1; }
     #toolbar .gear {
       border: none; background: transparent; cursor: pointer;
-      font-size: 16px; color: #9c6b80; padding: 4px 8px; border-radius: 6px;
+      font-size: 16px; color: #a3a3a3; padding: 4px 8px; border-radius: 6px;
     }
-    #toolbar .gear:hover { background: #f6d5e2; }
+    #toolbar .gear:hover { background: #303030; color: #ebebeb; }
     #toolbar .add-btn {
-      border: none; background: #f6a5c0; color: #fff;
+      border: none; background: #ff5b8a; color: #24151b;
       border-radius: 999px; padding: 4px 14px;
       font-size: 13px; cursor: pointer;
     }
-    #toolbar .add-btn:hover { background: #ee8fb0; }
+    #toolbar .add-btn:hover { background: #ff7aa0; }
     /* ── 主区 ── */
     main { flex: 1; display: flex; overflow: hidden; }
     .view { flex: 1; display: none; overflow: hidden; }
@@ -79,153 +84,155 @@
     .list-col {
       width: 320px; flex: none;
       display: flex; flex-direction: column;
-      border-right: 1px solid #f6e3ec;
+      border-right: 1px solid #303030;
       overflow: hidden;
     }
     .col-head {
       flex: none; padding: 8px 12px;
-      font-size: 12px; color: #b58a9c;
-      border-bottom: 1px solid #f9edf2;
+      font-size: 12px; color: #a3a3a3;
+      border-bottom: 1px solid #303030;
       display: flex; align-items: center; gap: 6px;
     }
-    .col-head .count { background: #f6d5e2; color: #9c6b80; border-radius: 999px; padding: 0 8px; font-size: 11px; }
+    .col-head .count { background: #3a232c; color: #ff9bb8; border-radius: 999px; padding: 0 8px; font-size: 11px; }
     .col-body { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
-    .empty { color: #c3a8b4; font-size: 12px; text-align: center; padding: 24px 0; }
+    .empty { color: #707070; font-size: 12px; text-align: center; padding: 24px 0; }
     /* 任务条目 */
     .task {
-      border: 1px solid #f3dce6; border-radius: 8px;
-      background: #fff;
+      border: 1px solid #363636; border-radius: 8px;
+      background: #252525;
       padding: 7px 9px;
       display: flex; flex-direction: column; gap: 3px;
     }
+    .task:hover { background: #2b2b2b; }
     .task .row1 { display: flex; align-items: flex-start; gap: 6px; }
     .task .content { flex: 1; word-break: break-all; font-size: 13px; }
-    .task .deadline { font-size: 11px; color: #b58a9c; }
+    .task .deadline { font-size: 11px; color: #a3a3a3; }
     .task .ops { display: none; gap: 2px; flex: none; }
     .task:hover .ops { display: flex; }
     .task .ops button {
       border: none; background: transparent; cursor: pointer;
-      font-size: 12px; color: #b58a9c; padding: 1px 4px; border-radius: 4px;
+      font-size: 12px; color: #a3a3a3; padding: 1px 4px; border-radius: 4px;
     }
-    .task .ops button:hover { background: #fbe7ef; color: #7a4a5e; }
-    /* 分类色（未完成 = 分类色，§3.33） */
-    .q-red .content, .q-red.deadline, .q-red { color: #d9536f; }
-    .q-green .content, .q-green { color: #35996b; }
-    .q-yellow .content, .q-yellow { color: #c08f1a; }
-    .q-blue .content, .q-blue { color: #5b7fce; }
-    .task .deadline, .task .ops button { color: #b58a9c; }
+    .task .ops button:hover { background: #303030; color: #ebebeb; }
+    /* 分类色（未完成 = 分类色，§3.33；dark 主题下取宿主语义色） */
+    .q-red .content, .q-red { color: #ff7aa0; }
+    .q-green .content, .q-green { color: #56c58b; }
+    .q-yellow .content, .q-yellow { color: #e6b45c; }
+    .q-blue .content, .q-blue { color: #91caff; }
+    .task .deadline, .task .ops button { color: #a3a3a3; }
     /* 待办树：小目标缩进挂在大目标下（§3.27） */
     .task.child { margin-left: 18px; border-style: dashed; }
-    .task .expired-tag { font-size: 11px; color: #d9536f; }
-    /* 折叠：大目标收起/展开小目标（左树 + 象限格分组共用状态） */
+    .task .expired-tag { font-size: 11px; color: #ff6b78; }
+    /* 折叠：大目标收起/展开小目标（左树 + 象限格分组状态各自独立） */
     .task .ops button[data-op="toggle"] { font-weight: bold; }
-    .task .goal-hint { font-size: 11px; color: #b58a9c; margin-left: 8px; }
+    .task .goal-hint { font-size: 11px; color: #707070; margin-left: 8px; }
     .q-group { margin: 4px 0; }
     .q-group-head {
       display: flex; align-items: center; gap: 6px;
-      font-size: 12px; color: #b58a9c; cursor: pointer;
+      font-size: 12px; color: #ff9bb8; cursor: pointer;
       padding: 3px 6px; border-radius: 6px; user-select: none;
     }
-    .q-group-head:hover { background: rgba(216, 120, 153, 0.12); }
+    .q-group-head:hover { background: rgb(255 91 138 / 12%); }
     .arrow { display: inline-block; width: 12px; }
     /* 四象限区 */
     .quad-col { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; padding: 8px; overflow-y: auto; }
     .quad-cell {
       flex: 1 1 44%; min-width: 240px; min-height: 150px;
-      border-radius: 10px; border: 1.5px solid transparent;
+      border-radius: 12px; border: 1.5px solid transparent;
       padding: 8px; display: flex; flex-direction: column; gap: 5px; overflow-y: auto;
     }
-    .quad-cell.red    { background: #fdf0f3; border-color: #f3c3ce; }
-    .quad-cell.green  { background: #eef8f2; border-color: #c3e2d1; }
-    .quad-cell.yellow { background: #faf5e6; border-color: #e6d5a8; }
-    .quad-cell.blue   { background: #eff3fb; border-color: #c9d5ef; }
+    .quad-cell.red    { background: #2a1f26; border-color: #4a2936; }
+    .quad-cell.green  { background: #1e2921; border-color: #2e4437; }
+    .quad-cell.yellow { background: #2a261e; border-color: #45402e; }
+    .quad-cell.blue   { background: #1e242e; border-color: #2e3d52; }
     .quad-cell .cell-title { font-size: 12px; font-weight: bold; }
-    .quad-cell.red .cell-title    { color: #d9536f; }
-    .quad-cell.green .cell-title  { color: #35996b; }
-    .quad-cell.yellow .cell-title { color: #c08f1a; }
-    .quad-cell.blue .cell-title   { color: #5b7fce; }
+    .quad-cell.red .cell-title    { color: #ff7aa0; }
+    .quad-cell.green .cell-title  { color: #56c58b; }
+    .quad-cell.yellow .cell-title { color: #e6b45c; }
+    .quad-cell.blue .cell-title   { color: #91caff; }
     .quad-cell .task { color: inherit; }
     .quad-cell .task .content { color: inherit; }
     /* 日历区 */
     .cal-col { flex: 1; display: flex; flex-direction: column; padding: 10px 14px; overflow-y: auto; }
     .cal-nav { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-    .cal-nav .ym { font-size: 15px; font-weight: bold; color: #7a4a5e; }
+    .cal-nav .ym { font-size: 15px; font-weight: bold; color: #ebebeb; }
     .cal-nav button {
-      border: 1px solid #f0cfdd; background: #fff; color: #9c6b80;
+      border: 1px solid #363636; background: #252525; color: #a3a3a3;
       border-radius: 6px; width: 26px; height: 26px; cursor: pointer; font-size: 13px;
     }
-    .cal-nav button:hover { background: #f6d5e2; }
+    .cal-nav button:hover { background: #303030; color: #ebebeb; }
     .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
-    .cal-wd { text-align: center; font-size: 11px; color: #b58a9c; padding: 2px 0; }
+    .cal-wd { text-align: center; font-size: 11px; color: #707070; padding: 2px 0; }
     .cal-day {
-      min-height: 52px; border: 1px solid #f6e8ee; border-radius: 6px;
-      background: #fff; padding: 3px 4px; cursor: pointer;
+      min-height: 52px; border: 1px solid #303030; border-radius: 6px;
+      background: #1b1b1b; padding: 3px 4px; cursor: pointer;
       display: flex; flex-direction: column; gap: 2px;
     }
-    .cal-day:hover { border-color: #f6a5c0; }
-    .cal-day.selected { border-color: #f6a5c0; background: #fff0f6; }
+    .cal-day:hover { border-color: #ff5b8a; }
+    .cal-day.selected { border-color: #ff5b8a; background: #3a232c; }
     .cal-day.dim { opacity: 0.45; }
-    .cal-day .dnum { font-size: 11px; color: #7a4a5e; }
+    .cal-day .dnum { font-size: 11px; color: #a3a3a3; }
     .cal-day .dots { display: flex; flex-wrap: wrap; gap: 2px; }
     .cal-day .dots i { width: 6px; height: 6px; border-radius: 50%; }
-    .cal-day .more { font-size: 10px; color: #b58a9c; }
+    .cal-day .more { font-size: 10px; color: #707070; }
     /* 24 小时视图 */
-    .day-detail { margin-top: 10px; border-top: 1px dashed #f0cfdd; padding-top: 8px; }
-    .day-detail .dd-title { font-size: 13px; color: #7a4a5e; margin-bottom: 6px; }
+    .day-detail { margin-top: 10px; border-top: 1px dashed #363636; padding-top: 8px; }
+    .day-detail .dd-title { font-size: 13px; color: #ebebeb; margin-bottom: 6px; }
     .dd-item {
       display: flex; align-items: baseline; gap: 8px;
-      padding: 4px 6px; border-radius: 6px; background: #fff;
-      border: 1px solid #f6e8ee; margin-bottom: 4px;
+      padding: 4px 6px; border-radius: 6px; background: #252525;
+      border: 1px solid #303030; margin-bottom: 4px;
     }
-    .dd-item .time { font-size: 12px; color: #b58a9c; flex: none; min-width: 38px; }
+    .dd-item .time { font-size: 12px; color: #a3a3a3; flex: none; min-width: 38px; }
     .dd-item .content { font-size: 13px; }
     /* 已完成列表（形态三）：亮灰=已完成 暗灰=默认完成，保留原分类信息 */
     .full-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
-    .task.done .content, .dd-item.done .content { color: #a8a3ad; }
-    .task.auto-done .content, .dd-item.auto-done .content { color: #6e6875; }
-    .task .meta { font-size: 11px; color: #b58a9c; display: flex; gap: 8px; flex-wrap: wrap; }
+    .task.done .content, .dd-item.done .content { color: #a3a3a3; }
+    .task.auto-done .content, .dd-item.auto-done .content { color: #707070; }
+    .task .meta { font-size: 11px; color: #707070; display: flex; gap: 8px; flex-wrap: wrap; }
     .qtag { border: 1px solid currentColor; border-radius: 999px; padding: 0 6px; font-size: 10px; }
     /* ── 弹层 ── */
     .mask {
-      position: fixed; inset: 0; background: rgba(74, 59, 69, 0.35);
+      position: fixed; inset: 0; background: rgb(0 0 0 / 50%);
       display: none; align-items: center; justify-content: center; z-index: 10;
     }
     .mask.show { display: flex; }
     .modal {
       width: 380px; max-width: 92vw;
-      background: #fff; border-radius: 12px;
-      box-shadow: 0 8px 32px rgba(74, 59, 69, 0.25);
+      background: #252525; border: 1px solid #363636; border-radius: 12px;
+      box-shadow: 0 8px 28px rgb(0 0 0 / 36%);
       padding: 16px; display: flex; flex-direction: column; gap: 10px;
     }
-    .modal h3 { font-size: 15px; color: #7a4a5e; }
-    .modal label { font-size: 12px; color: #9c6b80; display: block; margin-bottom: 3px; }
+    .modal h3 { font-size: 15px; color: #ebebeb; }
+    .modal label { font-size: 12px; color: #a3a3a3; display: block; margin-bottom: 3px; }
     .modal textarea, .modal input[type="text"], .modal input[type="datetime-local"], .modal input[type="password"] {
-      width: 100%; border: 1px solid #f0cfdd; border-radius: 6px;
-      padding: 6px 8px; font-size: 13px; font-family: inherit; color: #4a3b45;
-      background: #fffdfa;
+      width: 100%; border: 1px solid #363636; border-radius: 6px;
+      padding: 6px 8px; font-size: 13px; font-family: inherit; color: #ebebeb;
+      background: #1b1b1b;
     }
     .modal textarea { resize: vertical; min-height: 56px; }
     .modal .field { margin-bottom: 2px; }
-    .modal .inline { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #9c6b80; }
+    .modal .inline { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #a3a3a3; }
     .quad-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
     .quad-pick label {
       display: flex; align-items: center; gap: 6px;
-      border: 1px solid #f0cfdd; border-radius: 6px; padding: 6px 8px;
-      font-size: 12px; color: #4a3b45; cursor: pointer; margin: 0;
+      border: 1px solid #363636; border-radius: 6px; padding: 6px 8px;
+      font-size: 12px; color: #ebebeb; cursor: pointer; margin: 0;
     }
-    .quad-pick label:hover { background: #fff0f6; }
+    .quad-pick label:hover { background: #3a232c; }
     .quad-pick i { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-    .modal .err { color: #d9536f; font-size: 12px; min-height: 16px; }
+    .modal .err { color: #ff6b78; font-size: 12px; min-height: 16px; }
     .modal .btns { display: flex; justify-content: flex-end; gap: 8px; }
     .modal .btns button {
-      border-radius: 6px; padding: 6px 16px; font-size: 13px; cursor: pointer; border: 1px solid #f0cfdd;
+      border-radius: 6px; padding: 6px 16px; font-size: 13px; cursor: pointer; border: 1px solid #363636;
     }
-    .modal .btns .ok { background: #f6a5c0; border-color: #f6a5c0; color: #fff; }
-    .modal .btns .ok:hover { background: #ee8fb0; }
-    .modal .btns .cancel { background: #fff; color: #9c6b80; }
+    .modal .btns .ok { background: #ff5b8a; border-color: #ff5b8a; color: #24151b; }
+    .modal .btns .ok:hover { background: #ff7aa0; }
+    .modal .btns .cancel { background: #252525; color: #ebebeb; }
+    .modal .btns .cancel:hover { background: #303030; }
     .toast {
       position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
-      background: #7a4a5e; color: #fff; font-size: 12px;
+      background: #3a232c; color: #ff9bb8; border: 1px solid #ff5b8a; font-size: 12px;
       border-radius: 999px; padding: 6px 16px; z-index: 20;
       opacity: 0; transition: opacity 0.2s; pointer-events: none;
     }
