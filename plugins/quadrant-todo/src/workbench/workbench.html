@@ -403,10 +403,14 @@
       return tasks.filter((t) => t.status !== "pending")
         .sort((a, b) => (b.completedAt ?? b.createdAt) - (a.completedAt ?? a.createdAt));
     }
-    // 折叠状态：按大目标 id 记忆，存 localStorage（跨开合会话保留）
+    // 折叠状态：左树与象限格各自独立记忆，存 localStorage（跨开合会话保留）
     let collapsedGoals = new Set(JSON.parse(localStorage.getItem("qt-collapsed") || "[]"));
-    const saveCollapsed = () => localStorage.setItem("qt-collapsed", JSON.stringify([...collapsedGoals]));
-    const goalArrow = (id) => (collapsedGoals.has(id) ? "▸" : "▾");
+    let collapsedCells = new Set(JSON.parse(localStorage.getItem("qt-collapsed-cells") || "[]"));
+    const saveCollapsed = () => {
+      localStorage.setItem("qt-collapsed", JSON.stringify([...collapsedGoals]));
+      localStorage.setItem("qt-collapsed-cells", JSON.stringify([...collapsedCells]));
+    };
+    const arrowOf = (set, id) => (set.has(id) ? "▸" : "▾");
 
     function taskCard(t, opts = {}) {
       const q = t.quadrant;
@@ -415,7 +419,7 @@
       const expired = isGoal && t.status === "pending" && t.deadline && t.deadline < localNowStr();
       const pendingKids = isGoal ? tasks.filter((c) => c.parentId === t.id && c.status === "pending").length : 0;
       const toggle = isGoal
-        ? `<button data-op="toggle" data-id="${t.id}" title="收起/展开小目标"><span class="arrow">${goalArrow(t.id)}</span></button>`
+        ? `<button data-op="toggle" data-id="${t.id}" title="收起/展开小目标"><span class="arrow">${arrowOf(collapsedGoals, t.id)}</span></button>`
         : "";
       const hint = isGoal && collapsedGoals.has(t.id) && pendingKids > 0
         ? `<span class="goal-hint">${pendingKids} 个小目标已收起</span>`
@@ -471,8 +475,8 @@
         for (const [pid, kids] of groups) {
           const parent = tasks.find((x) => x.id === pid);
           html += `<div class="q-group"><div class="q-group-head" data-op="toggle" data-id="${pid}" title="收起/展开">
-            <span class="arrow">${goalArrow(pid)}</span><span>${esc(parent ? parent.content : "小目标")}（${kids.length}）</span></div>`;
-          if (!collapsedGoals.has(pid)) {
+            <span class="arrow">${arrowOf(collapsedCells, pid)}</span><span>${esc(parent ? parent.content : "小目标")}（${kids.length}）</span></div>`;
+          if (!collapsedCells.has(pid)) {
             html += kids.map((k) => taskCard(k, { child: true })).join("");
           }
           html += `</div>`;
@@ -623,10 +627,12 @@
         try {
           switch (btn.dataset.op) {
             case "toggle": {
-              // 收起/展开大目标下的小目标（左树与象限格共用同一状态）
+              // 收起/展开大目标下的小目标——左树与象限格状态独立互不同步
               if (!id) break;
-              if (collapsedGoals.has(id)) collapsedGoals.delete(id);
-              else collapsedGoals.add(id);
+              const cellSide = btn.classList.contains("q-group-head");
+              const set = cellSide ? collapsedCells : collapsedGoals;
+              if (set.has(id)) set.delete(id);
+              else set.add(id);
               saveCollapsed();
               renderAll();
               break;
