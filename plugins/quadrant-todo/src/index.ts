@@ -7,9 +7,9 @@
  * 工作台窗口（自绘标题栏），unregister 停扫描与计时、关窗清理。
  * 关闭窗口不卸载插件。
  */
-import { app, BrowserWindow, Notification, ipcMain } from "electron";
+import { app, BrowserWindow, nativeTheme, Notification, ipcMain } from "electron";
 import * as path from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { CyrenePlugin, PluginContext } from "../../../src/plugins/api";
 import { createUiBridge } from "./bridge";
 import { buildPromptProvider } from "./prompts";
@@ -48,7 +48,26 @@ function ensureAppUserModelId(): void {
   }
 }
 
+export type WorkbenchTheme = "charcoal-pink" | "pearl-white";
+
+/** 读宿主当前 UI 主题：app-settings.json 的 uiTheme（pearl-white/charcoal-pink/system）。
+ * "system" 与缺省按 nativeTheme 深浅解析；读不到时同样落 nativeTheme。
+ * 只在打开工作台时读取——宿主内切换主题后重开窗口即同步。 */
+function readHostUiTheme(): WorkbenchTheme {
+  let choice: string | undefined;
+  try {
+    const raw = JSON.parse(readFileSync(path.join(app.getPath("userData"), "app-settings.json"), "utf8")) as Record<string, unknown>;
+    choice = typeof raw.uiTheme === "string" ? raw.uiTheme : undefined;
+  } catch {
+    // 缺文件/解析失败按系统深浅走
+  }
+  if (choice === "charcoal-pink") return "charcoal-pink";
+  if (choice === "pearl-white") return "pearl-white";
+  return nativeTheme.shouldUseDarkColors ? "charcoal-pink" : "pearl-white";
+}
+
 function createWorkbenchWindow(): void {
+  const theme = readHostUiTheme();
   win = new BrowserWindow({
     width: 960,
     height: 640,
@@ -57,7 +76,7 @@ function createWorkbenchWindow(): void {
     frame: false, // 无系统边框，标题栏由页面自绘
     resizable: true,
     autoHideMenuBar: true,
-    backgroundColor: "#fff9fc",
+    backgroundColor: theme === "pearl-white" ? "#ECECEE" : "#141414",
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
@@ -86,7 +105,9 @@ function createWorkbenchWindow(): void {
     win = null;
   });
 
-  void win.loadFile(path.join(__dirname, "workbench", "workbench.html"));
+  void win.loadFile(path.join(__dirname, "workbench", "workbench.html"), {
+    query: { theme },
+  });
 }
 
 /** 打开（或聚焦）工作台窗口；宿主 open() 钩子与通知点击共用 */
