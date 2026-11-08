@@ -117,6 +117,17 @@
     /* 待办树：小目标缩进挂在大目标下（§3.27） */
     .task.child { margin-left: 18px; border-style: dashed; }
     .task .expired-tag { font-size: 11px; color: #d9536f; }
+    /* 折叠：大目标收起/展开小目标（左树 + 象限格分组共用状态） */
+    .task .ops button[data-op="toggle"] { font-weight: bold; }
+    .task .goal-hint { font-size: 11px; color: #b58a9c; margin-left: 8px; }
+    .q-group { margin: 4px 0; }
+    .q-group-head {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 12px; color: #b58a9c; cursor: pointer;
+      padding: 3px 6px; border-radius: 6px; user-select: none;
+    }
+    .q-group-head:hover { background: rgba(216, 120, 153, 0.12); }
+    .arrow { display: inline-block; width: 12px; }
     /* 四象限区 */
     .quad-col { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; padding: 8px; overflow-y: auto; }
     .quad-cell {
@@ -391,20 +402,34 @@
       return tasks.filter((t) => t.status !== "pending")
         .sort((a, b) => (b.completedAt ?? b.createdAt) - (a.completedAt ?? a.createdAt));
     }
+    // 折叠状态：按大目标 id 记忆，存 localStorage（跨开合会话保留）
+    let collapsedGoals = new Set(JSON.parse(localStorage.getItem("qt-collapsed") || "[]"));
+    const saveCollapsed = () => localStorage.setItem("qt-collapsed", JSON.stringify([...collapsedGoals]));
+    const goalArrow = (id) => (collapsedGoals.has(id) ? "▸" : "▾");
+
     function taskCard(t, opts = {}) {
       const q = t.quadrant;
       const child = !!opts.child;
-      const expired = isGoalTask(t) && t.status === "pending" && t.deadline && t.deadline < localNowStr();
+      const isGoal = isGoalTask(t);
+      const expired = isGoal && t.status === "pending" && t.deadline && t.deadline < localNowStr();
+      const pendingKids = isGoal ? tasks.filter((c) => c.parentId === t.id && c.status === "pending").length : 0;
+      const toggle = isGoal
+        ? `<button data-op="toggle" data-id="${t.id}" title="收起/展开小目标"><span class="arrow">${goalArrow(t.id)}</span></button>`
+        : "";
+      const hint = isGoal && collapsedGoals.has(t.id) && pendingKids > 0
+        ? `<span class="goal-hint">${pendingKids} 个小目标已收起</span>`
+        : "";
       return `<div class="task q-${q}${child ? " child" : ""}">
         <div class="row1">
           <span class="content">${child ? "↳ " : ""}${esc(t.content)}${expired ? ' <span class="expired-tag">已过期</span>' : ""}</span>
           <span class="ops">
+            ${toggle}
             <button data-op="complete" data-id="${t.id}" title="标记完成">&#x2713;</button>
             <button data-op="edit" data-id="${t.id}" title="编辑">&#x270e;</button>
             <button data-op="remove" data-id="${t.id}" title="删除">&#x1f5d1;</button>
           </span>
         </div>
-        <span class="deadline">${esc(fmtDeadline(t.deadline))}</span>
+        <span class="deadline">${esc(fmtDeadline(t.deadline))}</span>${hint}
       </div>`;
     }
     function renderAll() {
@@ -421,7 +446,9 @@
           const kids = pending.filter((c) => c.parentId === t.id);
           kids.forEach((k) => rendered.add(k.id));
           listHtml += taskCard(t);
-          listHtml += kids.map((k) => taskCard(k, { child: true })).join("");
+          if (!collapsedGoals.has(t.id)) {
+            listHtml += kids.map((k) => taskCard(k, { child: true })).join("");
+          }
         } else {
           listHtml += taskCard(t);
         }
@@ -430,11 +457,26 @@
       $("pending-list").innerHTML = listHtml;
       $("pending-list2").innerHTML = listHtml;
 
-      // 四象限归格：小目标按从属分类入格，大目标不入格仅呈现于待办树（§3.27）
+      // 四象限归格：小目标按从属分类入格，大目标不入格仅呈现于待办树（§3.27）；
+      // 格内小目标按父级分组，可整体收起/展开
       for (const q of ["red", "green", "yellow", "blue"]) {
         const cell = document.querySelector(`.quad-cell .cell-body[data-q="${q}"]`);
         const inQ = pending.filter((t) => t.quadrant === q && !isGoalTask(t));
-        cell.innerHTML = inQ.length ? inQ.map((t) => taskCard(t)).join("") : `<div class="empty">空</div>`;
+        let html = inQ.filter((t) => !t.parentId).map((t) => taskCard(t)).join("");
+        const groups = new Map();
+        for (const t of inQ) {
+          if (t.parentId) groups.set(t.parentId, [...(groups.get(t.parentId) || []), t]);
+        }
+        for (const [pid, kids] of groups) {
+          const parent = tasks.find((x) => x.id === pid);
+          html += `<div class="q-group"><div class="q-group-head" data-op="toggle" data-id="${pid}" title="收起/展开">
+            <span class="arrow">${goalArrow(pid)}</span><span>${esc(parent ? parent.content : "小目标")}（${kids.length}）</span></div>`;
+          if (!collapsedGoals.has(pid)) {
+            html += kids.map((k) => taskCard(k, { child: true })).join("");
+          }
+          html += `</div>`;
+        }
+        cell.innerHTML = html || `<div class="empty">空</div>`;
       }
 
       // 已完成列表（保留原分类信息，灰阶着色）
@@ -571,14 +613,23 @@
       } catch { /* 错误已在 toast 提示 */ }
     }
 
-    // ── 操作分发（列表条目上的按钮） ──
+    // ── 操作分发（列表条目上的按钮 + 象限格分组头） ──
     document.addEventListener("click", async (e) => {
-      const btn = e.target.closest("button[data-op]");
+      const btn = e.target.closest("[data-op]");
       if (btn) {
         const id = btn.dataset.id;
         const task = tasks.find((t) => t.id === id);
         try {
           switch (btn.dataset.op) {
+            case "toggle": {
+              // 收起/展开大目标下的小目标（左树与象限格共用同一状态）
+              if (!id) break;
+              if (collapsedGoals.has(id)) collapsedGoals.delete(id);
+              else collapsedGoals.add(id);
+              saveCollapsed();
+              renderAll();
+              break;
+            }
             case "complete": {
               const r = await call("task-complete", id);
               if (r && r.ok === false) { toast(r.error); break; }
