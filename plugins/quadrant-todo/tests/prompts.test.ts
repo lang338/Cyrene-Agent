@@ -46,6 +46,9 @@ describe("prompt provider", () => {
     expect(text).toContain("这个小目标要提醒吗");
     expect(text).toContain("到了时限且小目标全部完成");
     expect(text).toContain("操作前先向用户确认连带范围");
+    // Learn 模式协同（§3.21/§3.28 流程第 5 步）
+    expect(text).toContain("Learn 模式协同");
+    expect(text).toContain("顺势提议一次");
     // 子目标确认门豁免说明
     expect(text).toContain("无需询问也无需确认门");
   });
