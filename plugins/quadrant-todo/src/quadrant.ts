@@ -198,7 +198,9 @@ export function settleAll(
   const changed: Array<{ task: Task; events: SettleEvent[] }> = [];
   const kindOf = (t: Task): TreeKind => {
     if (t.parentId) return "child";
-    return context.some((c) => c.parentId === t.id) ? "goal" : "normal";
+    // 大目标身份：持久化标记优先，"被引用"推导兜底旧数据（CodeRabbit 评审——
+    // 删光小目标后身份不得丢失，否则会被误判普通任务滑动/默认完成）
+    return t.goal === true || context.some((c) => c.parentId === t.id) ? "goal" : "normal";
   };
   for (const t of tasks) {
     const r = settleTask(t, now, options, kindOf(t));

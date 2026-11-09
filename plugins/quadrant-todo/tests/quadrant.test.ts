@@ -186,6 +186,17 @@ describe("settleAll", () => {
     const changed = settleAll([goal, child], NOW, {}, [goal, child]);
     expect(changed).toHaveLength(0);
   });
+
+  it("持久化 goal 身份：删光小目标后仍按大目标豁免，不滑动不默认完成（CodeRabbit 评审）", () => {
+    // 同样 72h 窗口内 + 已过期两种情况：无标记的会被滑红/默认完成，有 goal 标记的豁免
+    const withMarker = makeTask({ id: "g1", quadrant: "green", deadline: hoursFromNow(50), goal: true });
+    const withoutMarker = makeTask({ id: "g2", quadrant: "green", deadline: hoursFromNow(50) });
+    const expiredWithMarker = makeTask({ id: "g3", quadrant: "green", deadline: hoursFromNow(-1), goal: true });
+    const changed = settleAll([withMarker, withoutMarker, expiredWithMarker], NOW);
+    expect(changed.map((r) => r.task.id)).toEqual(["g2"]);
+    expect(changed[0]?.events).toContain("slide-red");
+    expect(withMarker.goal).toBe(true);
+  });
 });
 
 describe("功能二：树内机制资格与大目标联动（§3.24/§3.25）", () => {

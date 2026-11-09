@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildTools } from "../src/tools";
+import { scanAndSettle } from "../src/settle";
 import { TaskStore } from "../src/store";
 import type { Task } from "../src/types";
 import { NOW, fmt, makeStorage } from "./helpers";
@@ -490,5 +491,44 @@ describe("list_tasks 查询", () => {
     expect(out).toContain("【已完成】");
     expect(out.indexOf("【未完成】")).toBeLessThan(out.indexOf("任务C"));
     expect(out.indexOf("【已完成】")).toBeLessThan(out.indexOf("任务A"));
+  });
+});
+
+describe("大目标身份持久化与挂载前结算（CodeRabbit 评审）", () => {
+  it("删光小目标后身份保留：过期不默认完成，可再挂小目标", async () => {
+    const h = makeHarness();
+    await h.call("add_task", { content: "过四级", deadline: IN_7D, quadrant: "重要不紧急", quadrantConfirmed: true });
+    const goal = h.storage.dump()[0]!;
+    await h.call("add_task", { content: "背单词", deadline: fmt(NOW + 1 * 3_600_000), parentId: goal.id });
+    expect(h.storage.dump().find((t) => t.id === goal.id)?.goal).toBe(true);
+    const child = h.storage.dump().find((t) => t.content === "背单词")!;
+    await h.call("delete_task", { id: child.id });
+    // 删光后扫描（时间推到截止后）：身份保留 → 按大目标豁免，不默认完成
+    scanAndSettle({ store: h.store, now: () => NOW + 8 * 24 * 3_600_000 });
+    const after = h.storage.dump().find((t) => t.id === goal.id)!;
+    expect(after.status).toBe("pending");
+    expect(after.quadrant).toBe("green");
+    expect(after.goal).toBe(true);
+    // 身份保留 → 仍可继续挂新小目标
+    const again = await h.call("add_task", { content: "背单词", deadline: fmt(NOW + 9 * 24 * 3_600_000), parentId: goal.id });
+    expect(again).toContain("已登记");
+  });
+
+  it("add_task 挂子目标前先结算父级：过期且全完成的大目标先转默认完成再拒绝新挂", async () => {
+    const h = makeHarness();
+    // 注入陈旧状态（经 store.add 绕过结算）：大目标已过期未结算，唯一小目标已完成
+    const goal: Task = {
+      id: "g1", content: "过四级", deadline: fmt(NOW - 3_600_000), quadrant: "green",
+      status: "pending", createdAt: NOW, goal: true,
+    };
+    const child: Task = {
+      id: "c1", content: "背单词", deadline: fmt(NOW - 7_200_000), quadrant: "green",
+      status: "done", createdAt: NOW, completedAt: NOW, parentId: "g1",
+    };
+    h.store.add(goal);
+    h.store.add(child);
+    const r = await h.call("add_task", { content: "背单词", deadline: fmt(NOW + 3_600_000), parentId: "g1" });
+    expect(r).toContain("已是完成态");
+    expect(h.storage.dump().find((t) => t.id === "g1")?.status).toBe("auto-done");
   });
 });

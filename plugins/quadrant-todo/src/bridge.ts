@@ -62,10 +62,11 @@ const ERR_NOT_FOUND = "未找到该待办，请刷新后重试。";
 export function createUiBridge(deps: UiBridgeDeps) {
   const now = deps.now ?? Date.now;
 
-  /** 树内机制资格（§3.24）：与 tools.ts 同规则，按数据形态推导 */
+  /** 树内机制资格（§3.24）：与 tools.ts 同规则；大目标身份持久化标记优先，
+   * "被引用"推导兜底旧数据（删光小目标后身份不丢失，CodeRabbit 评审） */
   const kindOf = (t: Task): TreeKind => {
     if (t.parentId) return "child";
-    return deps.store.list().some((c) => c.parentId === t.id) ? "goal" : "normal";
+    return t.goal === true || deps.store.list().some((c) => c.parentId === t.id) ? "goal" : "normal";
   };
 
   /** 写时结算编排（与 tools.ts settleAndPersist 同形）：结算→落库→抛事件。kind 按数据形态推导 */
@@ -76,17 +77,29 @@ export function createUiBridge(deps: UiBridgeDeps) {
     return r.task;
   };
 
-  /** 大目标默认完成联动（§3.25）：小目标写入后评估其父级 */
-  const settleParentLinkage = (child: Task): void => {
-    if (!child.parentId) return;
-    const parent = deps.store.get(child.parentId);
-    if (!parent || parent.status !== "pending") return;
+  /** 大目标默认完成联动结算（§3.25）：已到时限 且 所有小目标完成 → auto-done。
+   * 挂子目标前（先按现有小目标结算，CodeRabbit 评审）与挂子目标后共用 */
+  const evaluateGoalNow = (parentId: string): void => {
+    const parent = deps.store.get(parentId);
+    if (!parent || parent.parentId || parent.status !== "pending") return;
     const children = deps.store.list().filter((t) => t.parentId === parent.id);
     const r = evaluateGoalCompletion(parent, children, now());
     if (r) {
       deps.store.replace(r.task);
       if (r.events.length > 0) deps.onSettleEvents?.(r.task, r.events);
     }
+  };
+
+  /** 大目标默认完成联动（§3.25）：小目标写入后评估其父级 */
+  const settleParentLinkage = (child: Task): void => {
+    if (!child.parentId) return;
+    evaluateGoalNow(child.parentId);
+  };
+
+  /** 持久化大目标身份（§3.24）：首次挂入小目标时置 true，删光小目标后身份不丢失 */
+  const markGoal = (parentId: string): void => {
+    const parent = deps.store.get(parentId);
+    if (parent && parent.goal !== true) deps.store.replace({ ...parent, goal: true });
   };
 
   /** 大目标删除连带（§3.26）：连带删除其下全部小目标，返回连带条数 */
@@ -129,6 +142,9 @@ export function createUiBridge(deps: UiBridgeDeps) {
       if (!deadline.ok) return { ok: false, error: "时间无效：须为具体日期时间，或勾选“无明确截止时间”。" };
 
       const parentId = typeof args.parentId === "string" ? args.parentId.trim() : "";
+      // 挂载前先按现有小目标结算父级（CodeRabbit 评审）：过期且全部完成的
+      // 大目标先转默认完成，下方"完成态"校验自然拒绝新挂
+      if (parentId) evaluateGoalNow(parentId);
       let quadrant: Quadrant;
       if (parentId) {
         const parent = deps.store.get(parentId);
@@ -156,7 +172,10 @@ export function createUiBridge(deps: UiBridgeDeps) {
       };
       deps.store.add(task);
       const settled = settleAndPersist(task);
-      if (parentId) settleParentLinkage(settled);
+      if (parentId) {
+        markGoal(parentId);
+        settleParentLinkage(settled);
+      }
       changed();
       deps.log?.(`UI 登记待办: ${settled.content}`);
       return { ok: true, task: settled };

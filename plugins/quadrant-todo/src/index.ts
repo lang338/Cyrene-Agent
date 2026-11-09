@@ -27,6 +27,9 @@ let timers: ReminderTimers | null = null;
 const CH_MIN = "plugin:quadrant-todo:win-minimize";
 const CH_MAX = "plugin:quadrant-todo:win-maximize";
 const CH_CLOSE = "plugin:quadrant-todo:win-close";
+// 数据变更广播：对话工具登记/后台结算改动数据时，通知打开中的工作台重载快照
+// （CodeRabbit 评审——工作台开着时不刷新会看不到新任务/完成态变化）
+const CH_STORE_CHANGED = "plugin:quadrant-todo:store-changed";
 
 /**
  * Windows 原生通知要求进程身份（AUMID）可被系统解析。宿主自身从不设置 AUMID
@@ -148,6 +151,19 @@ function makeNotifier(log: (...args: unknown[]) => void): (notice: { title: stri
   };
 }
 
+/** 数据变更的统一出口：重排提醒计时器 + 通知打开中的工作台重载快照。
+ * 对话工具与 UI 桥（onStoreChanged）两条写路径共用；扫描路（runPass）有变更时也走这里 */
+function onStoreChanged(): void {
+  timers?.rearm();
+  if (win && !win.isDestroyed()) {
+    try {
+      win.webContents.send(CH_STORE_CHANGED);
+    } catch {
+      // 推送失败不影响数据面，下次渲染自会取最新
+    }
+  }
+}
+
 const plugin: CyrenePlugin = {
   register(context: PluginContext): void {
     ctx = context;
@@ -165,8 +181,8 @@ const plugin: CyrenePlugin = {
     for (const tool of buildTools({
       store,
       onSettleEvents: settleDeps.onSettleEvents,
-      // 提醒计时器随任何数据变更重排（§8.2）
-      onStoreChanged: () => timers?.rearm(),
+      // 数据变更统一出口：计时器重排 + 工作台快照推送（§8.2）
+      onStoreChanged,
       log,
     })) {
       ctx.registerTool(tool);
@@ -177,11 +193,11 @@ const plugin: CyrenePlugin = {
     // 编排与提醒重排；通道经 ctx.registerIpc（invoke 语义，自动加
     // plugin:quadrant-todo: 前缀，卸载随资源跟踪器统一清理）。
     // handler 抛错由 Electron invoke 回传渲染页，不让异常炸主进程回调。
-    const bridge = createUiBridge({
+    const uiBridge = createUiBridge({
       store,
       storage: context.storage,
       onSettleEvents: settleDeps.onSettleEvents,
-      onStoreChanged: () => timers?.rearm(),
+      onStoreChanged,
       log,
     });
     const uiCall = <T>(fn: () => T): T => {
@@ -196,12 +212,12 @@ const plugin: CyrenePlugin = {
     // 宿主 registerIpc 的 handler 约定是纯业务参数（event 已在宿主装配层剥除，
     // 见 ipc-router.ts invokeRegistered 的 handler(...args)），不按 ipcMain.handle
     // 的 (event, ...args) 签名写——否则首参错位，全部带参通道静默失败。
-    ctx.registerIpc("data-load", () => uiCall(() => bridge.load()));
-    ctx.registerIpc("task-add", (input) => uiCall(() => bridge.addTask(input)));
-    ctx.registerIpc("task-update", (id, patch) => uiCall(() => bridge.updateTask(id, patch)));
-    ctx.registerIpc("task-complete", (id) => uiCall(() => bridge.completeTask(id, "done")));
-    ctx.registerIpc("task-remove", (id) => uiCall(() => bridge.removeTask(id)));
-    ctx.registerIpc("settings-save", (input) => uiCall(() => bridge.saveSettings(input)));
+    ctx.registerIpc("data-load", () => uiCall(() => uiBridge.load()));
+    ctx.registerIpc("task-add", (input) => uiCall(() => uiBridge.addTask(input)));
+    ctx.registerIpc("task-update", (id, patch) => uiCall(() => uiBridge.updateTask(id, patch)));
+    ctx.registerIpc("task-complete", (id) => uiCall(() => uiBridge.completeTask(id, "done")));
+    ctx.registerIpc("task-remove", (id) => uiCall(() => uiBridge.removeTask(id)));
+    ctx.registerIpc("settings-save", (input) => uiCall(() => uiBridge.saveSettings(input)));
 
     // 单轮：扫描结算 → 重排计时器；开机补检（register 即先跑一轮）与
     // 兜底扫描（每小时）共用，到点触发的计时器也走它（§8.1/§8.2）。
@@ -209,7 +225,8 @@ const plugin: CyrenePlugin = {
     // finally 里执行——否则一次失败就让提醒窗口失守（CodeRabbit 评审）。
     const runPass = (): void => {
       try {
-        scanAndSettle(settleDeps);
+        // 有变更才走统一出口（推送工作台快照）；无变更的整点扫描只重排计时器
+        if (scanAndSettle(settleDeps) > 0) onStoreChanged();
       } catch (err) {
         log(`四象限待办：结算扫描失败：${err instanceof Error ? err.message : String(err)}`);
       } finally {

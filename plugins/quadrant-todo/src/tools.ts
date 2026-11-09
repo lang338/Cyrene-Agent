@@ -88,10 +88,11 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
     if (events.length > 0) deps.onSettleEvents?.(task, events);
   };
 
-  /** 树内机制资格（§3.24）：按数据形态推导——带 parentId 即小目标，被引用即大目标 */
+  /** 树内机制资格（§3.24）：带 parentId 即小目标；大目标身份持久化标记优先，
+   * "被引用"推导兜底旧数据（删光小目标后身份不丢失，CodeRabbit 评审） */
   const kindOf = (t: Task): TreeKind => {
     if (t.parentId) return "child";
-    return deps.store.list().some((c) => c.parentId === t.id) ? "goal" : "normal";
+    return t.goal === true || deps.store.list().some((c) => c.parentId === t.id) ? "goal" : "normal";
   };
 
   /** 写时结算：结算→最终状态写回 store（update/complete 传入的是未入库新对象，必须写；add 场景写回同引用幂等）→抛事件。kind 按数据形态推导 */
@@ -102,17 +103,29 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
     return r.task;
   };
 
-  /** 大目标默认完成联动（§3.25）：小目标写入后评估其父级——已到时限 且 所有小目标完成即自动转 */
-  const settleParentLinkage = (child: Task): void => {
-    if (!child.parentId) return;
-    const parent = deps.store.get(child.parentId);
-    if (!parent || parent.status !== "pending") return;
+  /** 大目标默认完成联动结算（§3.25）：已到时限 且 所有小目标完成 → auto-done。
+   * 挂子目标前（先按现有小目标结算，CodeRabbit 评审）与挂子目标后共用 */
+  const evaluateGoalNow = (parentId: string): void => {
+    const parent = deps.store.get(parentId);
+    if (!parent || parent.parentId || parent.status !== "pending") return;
     const children = deps.store.list().filter((t) => t.parentId === parent.id);
     const r = evaluateGoalCompletion(parent, children, now());
     if (r) {
       deps.store.replace(r.task);
       emit(r.task, r.events);
     }
+  };
+
+  /** 大目标默认完成联动（§3.25）：小目标写入后评估其父级 */
+  const settleParentLinkage = (child: Task): void => {
+    if (!child.parentId) return;
+    evaluateGoalNow(child.parentId);
+  };
+
+  /** 持久化大目标身份（§3.24）：首次挂入小目标时置 true，删光小目标后身份不丢失 */
+  const markGoal = (parentId: string): void => {
+    const parent = deps.store.get(parentId);
+    if (parent && parent.goal !== true) deps.store.replace({ ...parent, goal: true });
   };
 
   /** 小目标挂载校验（§3.22/§3.23）：父级须为未完成的顶层大目标，不支持嵌套 */
@@ -194,8 +207,11 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
       const deadline = parseDeadlineInput(args.deadline);
       if (!deadline.ok) return ERR_NO_TIME;
 
-      // 功能二：parentId 存在即小目标录入（§3.22/§3.23）
+      // 功能二：parentId 存在即小目标录入（§3.22/§3.23）。挂载前先按现有小目标
+      // 结算父级——过期且全部完成的大目标先转默认完成，再按完成态拒绝新挂
+      // （CodeRabbit 评审：不得让新 pending 子目标阻止本该发生的联动完成）
       const parentId = typeof args.parentId === "string" ? args.parentId.trim() : "";
+      if (parentId) evaluateGoalNow(parentId);
       const parentErr = parentId ? validateParentForChild(parentId) : null;
       if (parentErr) return parentErr;
 
@@ -251,7 +267,10 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
       };
       deps.store.add(task);
       const settled = settleAndPersist(task);
-      if (parentId) settleParentLinkage(settled);
+      if (parentId) {
+        markGoal(parentId);
+        settleParentLinkage(settled);
+      }
       deps.onStoreChanged?.();
       log(`登记待办: ${settled.content}`);
       return `已登记待办：${describeTask(settled)}${parentId ? "（小目标，已挂入大目标）" : ""}`;

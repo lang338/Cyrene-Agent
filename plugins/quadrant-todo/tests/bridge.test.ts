@@ -46,6 +46,25 @@ describe("addTask：UI 新建（反请新建半步）", () => {
     expect(h.onStoreChanged).toHaveBeenCalledTimes(1);
   });
 
+  it("挂子目标前先结算父级：过期且全完成的大目标先转默认完成再拒绝新挂（CodeRabbit 评审）", () => {
+    const h = makeHarness();
+    // 注入陈旧状态（经 store.add 绕过结算）：大目标已过期未结算，唯一小目标已完成
+    const goal: Task = {
+      id: "g1", content: "过四级", deadline: fmt(NOW - 3_600_000), quadrant: "green",
+      status: "pending", createdAt: NOW, goal: true,
+    };
+    const child: Task = {
+      id: "c1", content: "背单词", deadline: fmt(NOW - 7_200_000), quadrant: "green",
+      status: "done", createdAt: NOW, completedAt: NOW, parentId: "g1",
+    };
+    h.store.add(goal);
+    h.store.add(child);
+    const r = h.bridge.addTask({ content: "背单词", deadline: fmt(NOW + 3_600_000), parentId: "g1" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("已是完成态");
+    expect(h.storage.dump().find((t) => t.id === "g1")?.status).toBe("auto-done");
+  });
+
   it("缺内容/时间无效/分类无效 → 拒写并返回中文错误", () => {
     const h = makeHarness();
     expect(h.bridge.addTask({ content: "  ", deadline: IN_7D, quadrant: "重要不紧急" })).toMatchObject({ ok: false });
