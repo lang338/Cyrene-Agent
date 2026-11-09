@@ -343,6 +343,34 @@ describe("update_task 其余校验", () => {
     expect(h.storage.dump().find((t) => t.content === "背单词")?.reminder).toEqual({ type: "once", at: fmt(NOW + 2 * 3_600_000) });
   });
 
+  it("小目标自定义提醒：纯日期时刻被拒（CodeRabbit 评审）", async () => {
+    const h = makeHarness();
+    await h.call("add_task", { content: "过四级", deadline: "2026-12-20", quadrant: "重要不紧急", quadrantConfirmed: true });
+    const goal = h.storage.dump()[0]!;
+    const dl = fmt(NOW + 48 * 3_600_000);
+    // parseDeadline 宽容接受纯日期（按 00:00 计），提醒须为完整到分的时刻
+    const dateOnly = await h.call("add_task", { content: "背单词", deadline: dl, parentId: goal.id, reminder: { type: "once", at: fmt(NOW + 2 * 3_600_000).slice(0, 10) } });
+    expect(dateOnly).toContain("提醒时刻无效");
+    expect(h.storage.dump().find((t) => t.content === "背单词")).toBeUndefined();
+  });
+
+  it("小目标自定义提醒：晚于/等于截止时间被拒（CodeRabbit 评审）", async () => {
+    const h = makeHarness();
+    await h.call("add_task", { content: "过四级", deadline: "2026-12-20", quadrant: "重要不紧急", quadrantConfirmed: true });
+    const goal = h.storage.dump()[0]!;
+    const dl = fmt(NOW + 24 * 3_600_000);
+    // 晚于截止：到点任务先转默认完成，提醒永不触发
+    const late = await h.call("add_task", { content: "背单词", deadline: dl, parentId: goal.id, reminder: { type: "once", at: fmt(NOW + 25 * 3_600_000) } });
+    expect(late).toContain("提醒时刻须早于小目标的截止时间");
+    // 等于截止：同样拒绝
+    const same = await h.call("add_task", { content: "背单词", deadline: dl, parentId: goal.id, reminder: { type: "once", at: dl } });
+    expect(same).toContain("提醒时刻须早于小目标的截止时间");
+    expect(h.storage.dump().find((t) => t.content === "背单词")).toBeUndefined();
+    // 早于截止的正常通过
+    const ok = await h.call("add_task", { content: "背单词", deadline: dl, parentId: goal.id, reminder: { type: "once", at: fmt(NOW + 2 * 3_600_000) } });
+    expect(ok).toContain("已登记");
+  });
+
   it("改大目标分类 → 小目标跟随；改小目标分类 → 拒绝并指引改父级", async () => {
     const h = makeHarness();
     await h.call("add_task", { content: "过四级", deadline: "2026-12-20", quadrant: "重要不紧急", quadrantConfirmed: true });

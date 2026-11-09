@@ -225,10 +225,19 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
         if (r.type !== "once" || typeof r.at !== "string" || !r.at.trim()) {
           return "登记失败：自定义提醒格式无效（须为 {\"type\":\"once\",\"at\":\"YYYY-MM-DD HH:mm\"}）。";
         }
-        if (!parseDeadline(r.at.trim())) {
+        const at = r.at.trim();
+        // 须为完整到分的时刻：parseDeadline 宽容接受纯日期（按当日 00:00 计），
+        // 会放过漏写时刻的提醒并让它在午夜静默触发（CodeRabbit 评审）
+        if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(at) || !parseDeadline(at)) {
           return "登记失败：提醒时刻无效（须为“YYYY-MM-DD HH:mm”）。";
         }
-        reminder = { type: "once", at: r.at.trim() };
+        // 提醒时刻须早于截止时间：小目标到点先转默认完成，晚于/等于截止的提醒
+        // 永远轮不到触发（CodeRabbit 评审）；仅登记时校验，改期不自动调整既有
+        // 提醒（§3.26——改小目标截止时间，其自定义提醒不自动调整）
+        if (parseDeadline(at)!.getTime() >= parseDeadline(deadline.value!)!.getTime()) {
+          return "登记失败：提醒时刻须早于小目标的截止时间。";
+        }
+        reminder = { type: "once", at };
       }
 
       const task: Task = {
