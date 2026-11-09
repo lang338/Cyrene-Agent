@@ -29,7 +29,7 @@ export interface ReminderMoment {
  * 当前任务状态下需要提醒的时刻（§3.15/§3.24）：只算"未来仍会到来"的时刻；
  * 已进入窗口的时刻由写时结算即时送达，两者按剩余窗口天然互斥。
  * kind 为树内机制资格：普通任务排 72h/24h 两类；小目标只排自定义单次提醒
- * （不遵循 72h/24h 规律，周期提醒为数据模型扩展位）；大目标无主动提醒。
+ * （不遵循 72h/24h 规律；周期提醒不做，重复诉求由昔涟逐次设单次实现）；大目标无主动提醒。
  */
 export function reminderMoments(task: Task, now: number, kind: "normal" | "child" | "goal" = "normal"): ReminderMoment[] {
   if (task.status !== "pending" || task.deadline === null) return [];

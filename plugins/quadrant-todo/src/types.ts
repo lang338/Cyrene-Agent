@@ -16,7 +16,7 @@ export interface Task {
   status: Status;
   /** 功能二：所属大目标 id。带此字段即小目标——机制资格按数据形态推导（§3.24） */
   parentId?: string;
-  /** 功能二：小目标自定义提醒（§3.23），默认不提醒；大目标恒无。周期型为数据模型扩展位 */
+  /** 功能二：小目标自定义提醒（§3.23），单次时刻，默认不提醒；大目标恒无 */
   reminder?: ReminderSpec | null;
   /** 滑动结算记录的原分类，用于自动滑回；用户手动改分类时清除。小目标永不滑动，恒无此字段 */
   slidFrom?: Quadrant;
@@ -33,13 +33,11 @@ export interface Task {
 }
 
 /**
- * 小目标自定义提醒（§3.23）：粒度两型。
- * - once：单次时刻（"YYYY-MM-DD HH:mm"）
- * - periodic：周期（每 N 天 + 当日 HH:mm）——数据模型扩展位，调度随实现展开（§3.24/§3.27 注记）
+ * 小目标自定义提醒（§3.23）：单次时刻（"YYYY-MM-DD HH:mm"）。周期提醒不做
+ * （§3.24，2026-11-10 决策）——重复性提醒诉求由昔涟按用户明确需求逐次设定
+ * 单次提醒实现。
  */
-export type ReminderSpec =
-  | { type: "once"; at: string }
-  | { type: "periodic"; everyNDays: number; time: string };
+export type ReminderSpec = { type: "once"; at: string };
 
 export const QUADRANT_LABELS: Record<Quadrant, string> = {
   red: "重要紧急",

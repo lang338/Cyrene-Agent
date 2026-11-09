@@ -148,7 +148,7 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
     chatBuiltin: true,
     name: "登记待办",
     description:
-      "把一条待办登记进四象限待办列表，也用于登记大目标拆解出的小目标。顶层任务：调用前必须完成属性收集——四象限分类只能由用户明确回答（可以建议，不得代答），时间与内容以用户表述为准，缺什么追问什么，属性齐备前不得调用。小目标（传 parentId 挂入大目标）：分类自动随大目标（无需询问、无需确认门），截止时间须精确到时分，录入前逐个询问用户是否需要提醒（需要且为单次时刻时传 reminder；仅在用户要求时设置）。属性收集过程即确认，调用前不做整体复述。",
+      "把一条待办登记进四象限待办列表，也用于登记大目标拆解出的小目标。顶层任务：调用前必须完成属性收集——四象限分类只能由用户明确回答（可以建议，不得代答），时间与内容以用户表述为准，缺什么追问什么，属性齐备前不得调用。小目标（传 parentId 挂入大目标）：分类自动随大目标（无需询问、无需确认门），截止时间须精确到时分，录入前逐个询问用户是否需要提醒（仅在用户要求时设置；时刻由你按任务实际情况定，须早于截止时间，用户指定了就用用户的）。属性收集过程即确认，调用前不做整体复述。",
     enabled: true,
     risk: "safe",
     effectKind: "mutation",
@@ -178,7 +178,7 @@ export function buildTools(deps: ToolsDeps): PluginTool[] {
         reminder: {
           type: "object",
           description:
-            '（可选，仅小目标）自定义提醒：{"type":"once","at":"YYYY-MM-DD HH:mm"} 单次时刻。仅按用户要求设置，用户没要求不传',
+            '（可选，仅小目标）自定义提醒：{"type":"once","at":"YYYY-MM-DD HH:mm"} 单次时刻，须早于小目标截止时间。仅按用户要求设置，时刻可由你按实际情况定（用户指定了就用用户说的），用户没要求不传',
           properties: {
             type: { type: "string", enum: ["once"] },
             at: { type: "string", description: "提醒时刻 YYYY-MM-DD HH:mm" },

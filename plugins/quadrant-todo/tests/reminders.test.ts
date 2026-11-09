@@ -72,16 +72,9 @@ describe("reminderMoments（未来提醒时刻计算，§3.15）", () => {
     expect(reminderMoments(t, NOW, "child")).toEqual([{ kind: "remind-custom", runAt: dl(fmt(NOW + 2 * HOUR)) }]);
   });
 
-  it("小目标无自定义提醒 / 周期型扩展位：零时刻", () => {
+  it("小目标无自定义提醒：零时刻", () => {
     const d = fmt(NOW + 7 * DAY);
     expect(reminderMoments(makeTask({ id: "c1", content: "x", parentId: "g1", deadline: d, quadrant: "green" }), NOW, "child")).toEqual([]);
-    expect(
-      reminderMoments(
-        makeTask({ id: "c1", content: "x", parentId: "g1", deadline: d, quadrant: "green", reminder: { type: "periodic", everyNDays: 1, time: "08:00" } }),
-        NOW,
-        "child",
-      ),
-    ).toEqual([]);
   });
 
   it("大目标（goal）：无主动提醒时刻", () => {
